@@ -1,0 +1,1200 @@
+
+============================================================
+FILE: src/use_case/alif_asr/include/PolyUModel1.hpp
+============================================================
+#ifndef POLYU_MODEL1_HPP
+#define POLYU_MODEL1_HPP
+
+#include "mlek/fwk/tflm/TflmModel.hpp"
+
+namespace arm::app::asr {
+extern const int g_FrameLength;
+extern const int g_FrameStride;
+extern const float g_ScoreThreshold;
+extern const int g_ctxLen;
+} // namespace arm::app::asr
+
+namespace arm::app::fwk::tflm {
+
+class PolyUModel1 : public TflmModel {
+
+public:
+    /* Indices for the expected model - based on input and output tensor shapes */
+    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    static constexpr uint32_t ms_inputColsIdx  = 2;
+    static constexpr uint32_t ms_outputRowsIdx = 2;
+    static constexpr uint32_t ms_outputColsIdx = 3;
+
+    /* Model specific constants. */
+    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    static constexpr uint32_t ms_numMfccFeatures = 13;
+
+protected:
+    /** @brief   Gets the reference to op resolver interface class. */
+    const tflite::MicroOpResolver& GetOpResolver() override;
+
+    /** @brief   Adds operations to the op resolver instance. */
+    bool EnlistOperations() override;
+
+private:
+    /* Maximum number of individual operations that can be enlisted. */
+    static constexpr int ms_maxOpCnt = 23;
+
+    /* A mutable op resolver instance. */
+    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+};
+
+} /* namespace arm::app::fwk::tflm */
+
+#endif /* POLYU_MODEL1_HPP */
+
+============================================================
+FILE: src/use_case/alif_asr/src/PolyUModel1.cc
+============================================================
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited and/or its affiliates
+ * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "PolyUModel1.hpp"
+
+#include "mlek/log/log_macros.h"
+#include "reverse_v2.h"
+
+const tflite::MicroOpResolver& arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+{
+    return this->m_opResolver;
+}
+
+TfLiteStatus ParseReverseV2(const tflite::Operator*, tflite::ErrorReporter*, tflite::BuiltinDataAllocator*,
+                        void**) {
+  return kTfLiteOk;
+}
+
+bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+{
+#ifndef ETHOS_U_NPU_ASSUMED
+    
+    this->m_opResolver.AddStridedSlice();
+    this->m_opResolver.AddFullyConnected();
+    this->m_opResolver.AddReshape();
+    this->m_opResolver.AddAveragePool2D();
+    this->m_opResolver.AddUnpack();
+    this->m_opResolver.AddAdd();
+    this->m_opResolver.AddSplit();
+    this->m_opResolver.AddTanh();
+    this->m_opResolver.AddLogistic();
+    this->m_opResolver.AddMul();
+    this->m_opResolver.AddPack();
+    this->m_opResolver.AddConcatenation();
+    this->m_opResolver.AddTranspose();
+    this->m_opResolver.AddGather();
+    this->m_opResolver.AddMean();
+    this->m_opResolver.AddSquaredDifference();
+    this->m_opResolver.AddRsqrt();
+    this->m_opResolver.AddSub();
+    this->m_opResolver.AddPad();
+    this->m_opResolver.AddConv2D();
+    this->m_opResolver.AddSoftmax();
+    //this->m_opResolver.AddCustom("ReverseV2", tflite::Register_REVERSE_V2());
+    const TFLMRegistration& registration = tflite::Register_REVERSE_V2();
+    this->m_opResolver.AddBuiltin(tflite::BuiltinOperator_REVERSE_V2, registration,
+                      ParseReverseV2);
+
+#endif
+
+    if (kTfLiteOk == this->m_opResolver.AddEthosU()) {
+        info("Added %s support to op resolver\n", tflite::GetString_ETHOSU());
+    } else {
+        printf_err("Failed to add Arm NPU support to op resolver.");
+        return false;
+    }
+    return true;
+}
+
+============================================================
+FILE: src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+============================================================
+/* This file was ported to work on Alif Semiconductor devices. */
+
+/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+ * Use, distribution and modification of this code is permitted under the
+ * terms stated in the Alif Semiconductor Software License Agreement
+ *
+ * You should have received a copy of the Alif Semiconductor Software
+ * License Agreement with this file. If not, please write to:
+ * contact@alifsemi.com, or visit: https://alifsemi.com/license
+ *
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright 2021-2022, 2024-2025 Arm Limited and/or its
+ * affiliates <open-source-office@arm.com>
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#if defined(MLEK_FWK_TFLM)
+
+#include "UseCaseHandler.hpp"
+
+#include "AudioBackend.hpp"
+
+#include "mlek/use_case/asr/AsrClassifier.hpp"
+#include "mlek/use_case/asr/AsrResult.hpp"
+#include "mlek/common/AudioSlidingWindow.hpp"
+#include "mlek/use_case/asr/OutputDecode.hpp"
+#include "mlek/use_case/asr/Wav2LetterPostprocess.hpp"
+#include "mlek/use_case/asr/Wav2LetterPreprocess.hpp"
+#include "mlek/fwk/tflm/Wav2LetterModel.hpp"
+#include <zephyr/logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/audio/codec.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/device.h>
+#include <zephyr/pm/device.h>
+
+#include <stdint.h>
+#include <unistd.h>
+#include <cstdio>
+#include <malloc.h>
+#include <cstdlib>
+#include <cstring>
+
+LOG_MODULE_REGISTER(UseCaseHandlerTflm);
+
+#define AUDIO_RATE               (16000)
+#define AUDIO_CHUNK_SIZE_SAMPLES (8000) // 0.5s of audio at 16KHz
+#define AUDIO_CHUNKS             (20)   // ~10s max
+#define AUDIO_SAMPLES            (AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHUNKS)
+
+#define SAMPLE_SIZE    sizeof(int16_t)
+#define WORD_SIZE      (SAMPLE_SIZE * 8)
+#define AUDIO_CHANNELS CONFIG_AUDIO_CHANNELS
+
+#if (IS_ENABLED(CONFIG_SOC_SERIES_E1C) || IS_ENABLED(CONFIG_SOC_SERIES_B1))
+static int16_t audio_inf[AUDIO_SAMPLES + AUDIO_CHUNK_SIZE_SAMPLES];
+#else
+static int16_t audio_inf[AUDIO_SAMPLES + AUDIO_CHUNK_SIZE_SAMPLES]
+	__attribute__((section("SRAM0.audio_inf")));
+#if CONFIG_OUTPUT_TO_LINE_OUT
+static char __aligned(8) my_slab_buffer[AUDIO_CHANNELS * WORD_SIZE * AUDIO_CHUNK_SIZE_SAMPLES]
+	__attribute__((section("SRAM0.audio_slab")));
+#endif
+#endif
+
+volatile bool button_pressed = false;
+
+#if CONFIG_OUTPUT_TO_LINE_OUT
+
+#define CODEC_CFG_NODE DT_ALIAS(audio_codec)
+#define I2S_TX_NODE    DT_ALIAS(i2s_output)
+
+static struct k_mem_slab mem_slab;
+
+static bool configure_streams(const struct device *i2s_dev_tx)
+{
+	struct i2s_config config;
+
+	config.word_size = WORD_SIZE;
+	config.channels = AUDIO_CHANNELS;
+	config.format = I2S_FMT_DATA_FORMAT_I2S;
+	config.options = I2S_OPT_BIT_CLK_MASTER | I2S_OPT_FRAME_CLK_MASTER;
+	config.frame_clk_freq = AUDIO_RATE;
+	config.mem_slab = &mem_slab;
+	config.block_size = AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHANNELS * SAMPLE_SIZE;
+	config.timeout = 1000;
+
+	int ret = i2s_configure(i2s_dev_tx, I2S_DIR_TX, &config);
+	if (ret < 0) {
+		LOG_ERR("Failed to configure TX stream: %d\n", ret);
+		return false;
+	}
+
+	audio_codec_stop_output(DEVICE_DT_GET(CODEC_CFG_NODE));
+
+	struct audio_codec_cfg codec_cfg = {
+		.dai_type = AUDIO_DAI_TYPE_I2S,
+		.dai_cfg =
+			{
+				.i2s =
+					{
+						.word_size = AUDIO_PCM_WIDTH_16_BITS,
+						.channels = 2,
+						.format = I2S_FMT_DATA_FORMAT_I2S,
+						.options = 0,
+						.frame_clk_freq = AUDIO_RATE,
+						.mem_slab = NULL,
+						.block_size = 0,
+						.timeout = 0,
+					},
+			},
+	};
+	ret = audio_codec_configure(DEVICE_DT_GET(CODEC_CFG_NODE), &codec_cfg);
+	if (ret) {
+		LOG_ERR("audio_codec_configure failed with error: %d", ret);
+		return false;
+	}
+
+	return true;
+}
+#endif // CONFIG_OUTPUT_TO_LINE_OUT
+
+namespace arm
+{
+namespace app
+{
+
+/**
+ * @brief       Presents ASR inference results.
+ * @param[in]   results   Vector of ASR classification results to be displayed.
+ * @return      true if successful, false otherwise.
+ **/
+static bool PresentInferenceResult(std::vector<asr::AsrResult> &results);
+
+/* ASR inference handler. */
+bool ClassifyAudioHandler(ApplicationContext &ctx)
+{
+	auto &model = ctx.Get<fwk::iface::Model &>("model");
+	auto mfccFrameLen = ctx.Get<uint32_t>("frameLength");
+	auto mfccFrameStride = ctx.Get<uint32_t>("frameStride");
+	auto scoreThreshold = ctx.Get<float>("scoreThreshold");
+	auto inputCtxLen = ctx.Get<uint32_t>("ctxLen");
+
+	if (!model.IsInited()) {
+		LOG_ERR("Model is not initialised! Terminating processing.\n");
+		return false;
+	}
+
+	const auto inputTensor = model.GetInputTensor(0);
+	const auto outputTensor = model.GetOutputTensor(0);
+
+	/* Get input shape. Dimensions of the tensor should have been verified by
+	 * the callee. */
+	auto inputShape = model.GetInputShape(0);
+
+	const uint32_t inputRowsSize = inputShape[fwk::tflm::Wav2LetterModel::ms_inputRowsIdx];
+	const uint32_t inputInnerLen = inputRowsSize - (2 * inputCtxLen);
+
+	/* Audio data stride corresponds to inputInnerLen feature vectors. */
+	const uint32_t audioDataWindowLen = (inputRowsSize - 1) * mfccFrameStride + (mfccFrameLen);
+	const uint32_t audioDataWindowStride = inputInnerLen * mfccFrameStride;
+
+	/* NOTE: This is only used for time stamp calculation. */
+	const float secondsPerSample = (1.0 / audio::Wav2LetterMFCC::ms_defaultSamplingFreq);
+
+	/* Set up pre and post-processing objects. */
+	AsrPreProcess preProcess =
+		AsrPreProcess(inputTensor, fwk::tflm::Wav2LetterModel::ms_numMfccFeatures,
+			      inputShape[fwk::tflm::Wav2LetterModel::ms_inputRowsIdx], mfccFrameLen,
+			      mfccFrameStride);
+
+	std::vector<ClassificationResult> singleInfResult;
+	AsrPostProcess postProcess =
+		AsrPostProcess(model, ctx.Get<AsrClassifier &>("classifier"),
+			       ctx.Get<std::vector<std::string> &>("labels"), singleInfResult,
+			       inputCtxLen, fwk::tflm::Wav2LetterModel::ms_blankTokenIdx,
+			       fwk::tflm::Wav2LetterModel::ms_outputRowsIdx);
+
+#ifndef CONFIG_PUSH_TO_TALK
+	// Application is not in push-to-talk mode. Start capturing audio once the button is pressed
+	// for the first time, and keep capturing until we have the max number of samples or button
+	// is released.
+	button_pressed = false;
+#endif
+
+	while (!button_pressed) {
+		k_sleep(K_MSEC(500));
+		LOG_INF("Waiting for button press to start audio capture... (btn=%d)",
+			(int)button_pressed);
+	}
+
+	LOG_INF("Button pressed. Init audio and start audio capture...\n");
+
+	int err = audio_init(AUDIO_RATE);
+	if (err) {
+		LOG_ERR("hal_audio_init failed with error: %d", err);
+		return false;
+	}
+
+	// Capture audio as long as button is kept pressed or until we have max samples
+	int16_t *audio_inf_ptr = &audio_inf[0];
+	int audio_idx = 0;
+
+	get_audio_data(audio_inf_ptr, AUDIO_CHUNK_SIZE_SAMPLES);
+
+	while (1) {
+		err = wait_for_audio();
+		if (err) {
+			LOG_ERR("hal_get_audio_data failed with error: %d", err);
+			audio_uninit();
+			return false;
+		}
+
+		// Start next chunk
+		if (audio_idx < (AUDIO_CHUNKS - 1)) {
+			get_audio_data(audio_inf_ptr + ((audio_idx + 1) * AUDIO_CHUNK_SIZE_SAMPLES),
+				       AUDIO_CHUNK_SIZE_SAMPLES);
+		}
+
+		audio_preprocessing(audio_inf_ptr + (audio_idx * AUDIO_CHUNK_SIZE_SAMPLES),
+				    AUDIO_CHUNK_SIZE_SAMPLES);
+
+		if (!button_pressed) {
+			break;
+		}
+
+		if (audio_idx >= (AUDIO_CHUNKS - 1)) {
+			break;
+		}
+		audio_idx++;
+	}
+	LOG_INF("Audio capture finished.\n");
+
+	int16_t *audioArr = audio_inf;
+	uint32_t audioArrSize = (audio_idx + 1) * AUDIO_CHUNK_SIZE_SAMPLES;
+
+#if CONFIG_OUTPUT_TO_LINE_OUT
+	const struct device *const codec_dev = DEVICE_DT_GET(CODEC_CFG_NODE);
+	const struct device *const i2s_dev_tx = DEVICE_DT_GET(I2S_TX_NODE);
+
+	/* Each block is one stereo chunk: AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHANNELS * SAMPLE_SIZE.
+	 * With 2ch 16-bit: 8000 * 2 * 2 = 32000 bytes.
+	 * num_blocks = sizeof(my_slab_buffer) / i2s_block_bytes
+	 *            = (AUDIO_CHANNELS*WORD_SIZE*AUDIO_CHUNK_SIZE_SAMPLES) /
+	 * (AUDIO_CHUNK_SIZE_SAMPLES*AUDIO_CHANNELS*SAMPLE_SIZE) = WORD_SIZE / SAMPLE_SIZE = 16/2
+	 * = 8.
+	 */
+	const size_t i2s_block_bytes = AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHANNELS * SAMPLE_SIZE;
+	const uint32_t i2s_num_blocks = WORD_SIZE / SAMPLE_SIZE; /* = 8 */
+#if (IS_ENABLED(CONFIG_SOC_SERIES_E1C) || IS_ENABLED(CONFIG_SOC_SERIES_B1))
+	char *my_slab_buffer =
+		(char *)malloc(AUDIO_CHANNELS * WORD_SIZE * AUDIO_CHUNK_SIZE_SAMPLES);
+#endif
+	k_mem_slab_init(&mem_slab, my_slab_buffer, i2s_block_bytes, i2s_num_blocks);
+
+	if (!device_is_ready(i2s_dev_tx)) {
+		LOG_ERR("%s is not ready", i2s_dev_tx->name);
+		return 0;
+	}
+
+	if (!device_is_ready(codec_dev)) {
+		LOG_ERR("%s is not ready", codec_dev->name);
+		return 0;
+	}
+	if (!configure_streams(i2s_dev_tx)) {
+		return 0;
+	}
+
+	audio_codec_start_output(codec_dev);
+
+	int xx = 0;
+	bool trigger_started = false;
+	while (xx < audio_idx) {
+		void *slab_block;
+		/* Wait up to 2s for a block to be freed by the I2S ISR. */
+		if (k_mem_slab_alloc(&mem_slab, &slab_block, K_MSEC(2000)) < 0) {
+			LOG_ERR("Failed to allocate TX slab block");
+			break;
+		}
+
+		// we have 16bit mono audio, but I2S is configured for stereo, so we need to
+		// duplicate samples for left and right channels
+		int16_t *stereo_buffer = (int16_t *)slab_block;
+		for (size_t i = 0; i < AUDIO_CHUNK_SIZE_SAMPLES; i++) {
+			stereo_buffer[2 * i] = audio_inf_ptr[xx * AUDIO_CHUNK_SIZE_SAMPLES + i];
+			stereo_buffer[2 * i + 1] = audio_inf_ptr[xx * AUDIO_CHUNK_SIZE_SAMPLES + i];
+		}
+
+		err = i2s_write(i2s_dev_tx, slab_block, i2s_block_bytes);
+		if (err < 0) {
+			LOG_ERR("Failed to write data: %d", err);
+			break;
+		}
+		xx++;
+
+		/* Start the I2S output on the first chunk. */
+		if (!trigger_started) {
+			err = i2s_trigger(i2s_dev_tx, I2S_DIR_TX, I2S_TRIGGER_START);
+			if (err < 0) {
+				LOG_ERR("Failed to start I2S output: %d", err);
+				return 0;
+			}
+			trigger_started = true;
+		}
+	}
+
+	{
+		uint32_t block_ms = (AUDIO_CHUNK_SIZE_SAMPLES * 1000U) / AUDIO_RATE;
+		/* The feed loop above is paced by the i2s_num_blocks-deep slab
+		 * (k_mem_slab_alloc blocks until the ISR frees a played block),
+		 * so most of the audio has already played by the time we get
+		 * here. At most i2s_num_blocks are still queued, so only wait
+		 * for those remaining blocks rather than the whole stream. */
+		uint32_t queued_blocks =
+			((uint32_t)xx < i2s_num_blocks) ? (uint32_t)xx : i2s_num_blocks;
+		k_sleep(K_MSEC(queued_blocks * block_ms + 200U));
+	}
+
+	/* Bring the TX stream back to the READY state. When the queued
+	 * blocks finish playing the DW driver underruns and leaves the
+	 * stream in I2S_STATE_ERROR (or RUNNING). i2s_configure() only
+	 * accepts READY/NOT_READY, so without this the next button press
+	 * would fail with "invalid state" (-EINVAL). I2S_TRIGGER_DROP is
+	 * valid from any state except NOT_READY and resets it to READY. */
+	if (trigger_started) {
+		err = i2s_trigger(i2s_dev_tx, I2S_DIR_TX, I2S_TRIGGER_DROP);
+		if (err < 0) {
+			LOG_ERR("Failed to drop I2S output: %d", err);
+		}
+	}
+
+#if (IS_ENABLED(CONFIG_SOC_SERIES_E1C) || IS_ENABLED(CONFIG_SOC_SERIES_B1))
+	free(my_slab_buffer);
+#endif
+	audio_codec_stop_output(codec_dev);
+	audio_codec_clear_errors(codec_dev);
+#endif /* CONFIG_OUTPUT_TO_LINE_OUT */
+
+	/* Audio clip needs enough samples to produce at least 1 MFCC feature. */
+	if (audioArrSize < mfccFrameLen) {
+		LOG_ERR("Not enough audio samples, minimum needed is %" PRIu32 "\n", mfccFrameLen);
+		return false;
+	}
+
+	/* Creating a sliding window through the whole audio clip. */
+	auto audioDataSlider = audio::FractionalSlidingWindow<const int16_t>(
+		audioArr, audioArrSize, audioDataWindowLen, audioDataWindowStride);
+
+	/* Declare a container for final results. */
+	std::vector<asr::AsrResult> finalResults;
+	size_t inferenceWindowLen = audioDataWindowLen;
+
+	/* Start sliding through audio clip. */
+	while (audioDataSlider.HasNext()) {
+
+		/* If not enough audio, see how much can be sent for processing. */
+		size_t nextStartIndex = audioDataSlider.NextWindowStartIndex();
+		if (nextStartIndex + audioDataWindowLen > audioArrSize) {
+			inferenceWindowLen = audioArrSize - nextStartIndex;
+		}
+
+		const int16_t *inferenceWindow = audioDataSlider.Next();
+
+		LOG_INF("Inference %zu/%zu\n", audioDataSlider.Index() + 1,
+			static_cast<size_t>(ceilf(audioDataSlider.FractionalTotalStrides() + 1)));
+
+		/* Run the pre-processing, inference and post-processing. */
+		if (!preProcess.DoPreProcess(inferenceWindow, inferenceWindowLen)) {
+			LOG_ERR("Pre-processing failed.");
+			return false;
+		}
+
+		if (!model.RunInference()) {
+			LOG_ERR("Inference failed.");
+			return false;
+		}
+
+		LOG_INF("NPU inference done.");
+
+		/* Post processing needs to know if we are on the last audio window. */
+		postProcess.m_lastIteration = !audioDataSlider.HasNext();
+		if (!postProcess.DoPostProcess()) {
+			LOG_ERR("Post-processing failed.");
+			return false;
+		}
+
+		/* Add results from this window to our final results vector. */
+		finalResults.emplace_back(asr::AsrResult(
+			singleInfResult,
+			(audioDataSlider.Index() * secondsPerSample * audioDataWindowStride),
+			audioDataSlider.Index(), scoreThreshold));
+
+	} /* while (audioDataSlider.HasNext()) */
+
+	PresentInferenceResult(finalResults);
+	audio_uninit();
+
+	return true;
+}
+
+static bool PresentInferenceResult(std::vector<asr::AsrResult> &results)
+{
+	LOG_INF("Final results:\n");
+	LOG_INF("Total number of inferences: %zu\n", results.size());
+
+	/* Get each inference result string using the decoder. */
+	std::string combinedResultStr;
+	for (const auto &result : results) {
+		std::string infResultStr = audio::asr::DecodeOutput(result.m_resultVec);
+
+		LOG_INF("For timestamp: %f (inference #: %" PRIu32 "); label: %s\n",
+			(double)result.m_timeStamp, result.m_inferenceNumber, infResultStr.c_str());
+		combinedResultStr += infResultStr;
+	}
+
+	ClassificationResult res;
+	res.m_label = combinedResultStr;
+	std::vector<ClassificationResult> combinedResults;
+	combinedResults.push_back(res);
+
+	/* Get the decoded result for the combined result. */
+	std::string finalResultStr = audio::asr::DecodeOutput(combinedResults);
+
+	LOG_INF("Complete recognition: %s\n", finalResultStr.c_str());
+	return true;
+}
+
+} /* namespace app */
+} /* namespace arm */
+
+#endif /* defined(MLEK_FWK_TFLM) */
+
+============================================================
+FILE: src/use_case/alif_asr/include/reverse_v2.h
+============================================================
+
+#ifndef TENSORFLOW_LITE_MICRO_KERNELS_REVERSE_V2_H_
+#define TENSORFLOW_LITE_MICRO_KERNELS_REVERSE_V2_H_
+
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/micro/micro_common.h"
+
+namespace tflite {
+
+TFLMRegistration Register_REVERSE_V2();
+
+}  // namespace tflite
+
+#endif  // TENSORFLOW_LITE_MICRO_KERNELS_REVERSE_V2_H_
+
+============================================================
+FILE: src/use_case/alif_asr/src/reverse_v2.cc
+============================================================
+
+#include "reverse_v2.h"
+
+#include <cstdint>
+#include <cstring>
+
+#include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+
+namespace tflite {
+namespace {
+
+struct ReverseV2OpData {
+  // No persistent or temporary memory required.
+};
+
+// Check whether a dimension is included in the axis tensor.
+template <typename AxisType>
+bool IsDimensionReversed(
+    int dimension,
+    int rank,
+    const AxisType* axes,
+    int num_axes) {
+
+  for (int i = 0; i < num_axes; ++i) {
+    int axis = static_cast<int>(axes[i]);
+
+    // Normalize negative axes.
+    if (axis < 0) {
+      axis += rank;
+    }
+
+    if (axis == dimension) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Validate axis values.
+template <typename AxisType>
+bool ValidateAxes(
+    const AxisType* axes,
+    int num_axes,
+    int rank) {
+
+  for (int i = 0; i < num_axes; ++i) {
+    const int64_t axis = static_cast<int64_t>(axes[i]);
+
+    if (axis < -rank || axis >= rank) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// Generic reverse implementation.
+template <typename T, typename AxisType>
+void ReverseTensor(
+    const T* input,
+    T* output,
+    const TfLiteIntArray* dims,
+    const AxisType* axes,
+    int num_axes,
+    int rank,
+    int num_elements) {
+
+  for (int out_index = 0;
+       out_index < num_elements;
+       ++out_index) {
+
+    int input_index = 0;
+
+    // Calculate the corresponding input offset.
+    for (int d = 0; d < rank; ++d) {
+
+      const int dim_size = dims->data[d];
+
+      int stride = 1;
+
+      for (int j = d + 1; j < rank; ++j) {
+        stride *= dims->data[j];
+      }
+
+      const int coordinate =
+          (out_index / stride) % dim_size;
+
+      const bool reverse = IsDimensionReversed(
+          d, rank, axes, num_axes);
+
+      const int input_coordinate =
+          reverse ? (dim_size - 1 - coordinate)
+                  : coordinate;
+
+      input_index += input_coordinate * stride;
+    }
+
+    output[out_index] = input[input_index];
+  }
+}
+
+TfLiteStatus Prepare(
+    TfLiteContext* context,
+    TfLiteNode* node) {
+      
+  MicroContext* micro_context = GetMicroContext(context);
+
+  TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
+  TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+
+  TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+  TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 1);
+  TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+
+  TF_LITE_ENSURE(context, input != nullptr);
+  TF_LITE_ENSURE(context, axis != nullptr);
+  TF_LITE_ENSURE(context, output != nullptr);
+
+  TF_LITE_ENSURE_EQ(context, input->type, output->type);
+
+  TF_LITE_ENSURE_EQ(
+      context, input->dims->size, output->dims->size);
+
+  for (int i = 0; i < input->dims->size; ++i) {
+    TF_LITE_ENSURE_EQ(
+        context,
+        input->dims->data[i],
+        output->dims->data[i]);
+  }
+
+  TF_LITE_ENSURE(
+      context,
+      axis->type == kTfLiteInt32 ||
+      axis->type == kTfLiteInt64);
+
+  micro_context->DeallocateTempTfLiteTensor(input);
+  micro_context->DeallocateTempTfLiteTensor(axis);
+  micro_context->DeallocateTempTfLiteTensor(output);
+
+  return kTfLiteOk;
+}
+
+template <typename T, typename AxisType>
+TfLiteStatus EvalTyped(
+    TfLiteContext* context,
+    const TfLiteTensor* input,
+    const TfLiteTensor* axis,
+    TfLiteTensor* output) {
+
+  const AxisType* axes =
+      GetTensorData<AxisType>(axis);
+
+  const int rank = input->dims->size;
+  const int num_axes = NumElements(axis);
+  const int num_elements = NumElements(input);
+
+  if (num_axes > 0) {
+    TF_LITE_ENSURE(context, axes != nullptr);
+
+    TF_LITE_ENSURE(
+        context,
+        ValidateAxes(axes, num_axes, rank));
+  }
+
+  const T* input_data = GetTensorData<T>(input);
+  T* output_data = GetTensorData<T>(output);
+
+  if (num_elements == 0) {
+    return kTfLiteOk;
+  }
+
+  TF_LITE_ENSURE(context, input_data != nullptr);
+  TF_LITE_ENSURE(context, output_data != nullptr);
+
+  ReverseTensor(
+      input_data,
+      output_data,
+      input->dims,
+      axes,
+      num_axes,
+      rank,
+      num_elements);
+
+  return kTfLiteOk;
+}
+
+TfLiteStatus Eval(
+    TfLiteContext* context,
+    TfLiteNode* node) {
+
+  const TfLiteTensor* input =
+      GetInput(context, node, 0);
+
+  const TfLiteTensor* axis =
+      GetInput(context, node, 1);
+
+  TfLiteTensor* output =
+      GetOutput(context, node, 0);
+
+  TF_LITE_ENSURE(context, input != nullptr);
+  TF_LITE_ENSURE(context, axis != nullptr);
+  TF_LITE_ENSURE(context, output != nullptr);
+
+  if (axis->type == kTfLiteInt32) {
+
+    switch (input->type) {
+
+      case kTfLiteFloat32:
+        return EvalTyped<float, int32_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt8:
+        return EvalTyped<int8_t, int32_t>(
+            context, input, axis, output);
+
+      case kTfLiteUInt8:
+        return EvalTyped<uint8_t, int32_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt16:
+        return EvalTyped<int16_t, int32_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt32:
+        return EvalTyped<int32_t, int32_t>(
+            context, input, axis, output);
+
+      default:
+        TF_LITE_KERNEL_LOG(
+            context,
+            "REVERSE_V2: Unsupported input type %d",
+            input->type);
+        return kTfLiteError;
+    }
+  }
+
+  if (axis->type == kTfLiteInt64) {
+
+    switch (input->type) {
+
+      case kTfLiteFloat32:
+        return EvalTyped<float, int64_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt8:
+        return EvalTyped<int8_t, int64_t>(
+            context, input, axis, output);
+
+      case kTfLiteUInt8:
+        return EvalTyped<uint8_t, int64_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt16:
+        return EvalTyped<int16_t, int64_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt32:
+        return EvalTyped<int32_t, int64_t>(
+            context, input, axis, output);
+
+      default:
+        TF_LITE_KERNEL_LOG(
+            context,
+            "REVERSE_V2: Unsupported input type %d",
+            input->type);
+        return kTfLiteError;
+    }
+  }
+
+  return kTfLiteError;
+}
+
+}  // namespace
+
+TFLMRegistration Register_REVERSE_V2() {
+  return tflite::micro::RegisterOp(nullptr, Prepare, Eval);
+}
+
+}  // namespace tflite
+
+============================================================
+FILE: src/application/main/include/AppContext.hpp
+============================================================
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2023 Arm Limited and/or its affiliates
+ * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#ifndef APP_CTX_HPP
+#define APP_CTX_HPP
+
+#include <map>
+#include <memory>
+#include <string>
+namespace arm {
+namespace app {
+
+    class IAttribute
+    {
+    public:
+        virtual ~IAttribute() = default;
+    };
+
+    template<typename T>
+    class Attribute : public IAttribute
+    {
+    public:
+        ~Attribute() override = default;
+
+        explicit Attribute(const T value): m_value(value){}
+
+        T Get()
+        {
+            return m_value;
+        }
+    private:
+        T m_value;
+    };
+
+    /* Application context class */
+    class ApplicationContext {
+    public:
+
+        /**
+         * @brief     Saves given value as a named attribute in the context.
+         * @tparam    T value type.
+         * @param[in] name     Context attribute name.
+         * @param[in] object   Value to save in the context.
+         */
+        template<typename T>
+        void Set(const std::string &name, T object)
+        {
+            /* Attribute exists; reset the smart pointer */
+            if (this->Has(name)) {
+              this->m_attributes.at(name).reset();
+            }
+            this->m_attributes[name] = std::make_unique<Attribute<T>>(object);
+        }
+
+        /**
+         * @brief      Gets the saved attribute from the context by the given name.
+         * @tparam     T value type.
+         * @param[in]  name   Context attribute name.
+         * @return     Value saved in the context.
+         */
+
+        template <typename T>
+        T Get(const std::string& name)
+        {
+            //TODO Add logic to handle access of non-existent attribute
+            auto attributeValue = (Attribute<T>*)m_attributes.at(name).get();
+            return attributeValue->Get(); 
+        }
+
+        /**
+         * @brief      Checks if an attribute for a given name exists in the context.
+         * @param[in]  name   Attribute name.
+         * @return     true if attribute exists, false otherwise
+         */
+        bool Has(const std::string& name)
+        {
+            return m_attributes.find(name) != m_attributes.end();
+        }
+
+        ApplicationContext() = default;
+
+        ~ApplicationContext() = default;
+
+    private:
+        std::map<std::string, std::unique_ptr<IAttribute>> m_attributes;
+    };
+
+} /* namespace app */
+} /* namespace arm */
+
+#endif /* APP_CTX_HPP */
+
+============================================================
+FILE: CMakeLists.txt
+============================================================
+# Copyright (C) Alif Semiconductor - All Rights Reserved.
+# Use, distribution and modification of this code is permitted under the
+# terms stated in the Alif Semiconductor Software License Agreement
+#
+# You should have received a copy of the Alif Semiconductor Software
+# License Agreement with this file. If not, please write to:
+# contact@alifsemi.com, or visit: https://alifsemi.com/license
+
+cmake_minimum_required(VERSION 3.20.0)
+
+if(NOT ospi-flash IN_LIST SNIPPET)
+  set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+endif()
+
+# Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+# so the module is not auto-discovered and must be registered explicitly. Ask
+# west for the module path instead of hardcoding the workspace layout.
+execute_process(
+    COMMAND west list --format "{abspath}" alif-mlek
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE MLEK_ROOT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE MLEK_LIST_RESULT
+    ERROR_QUIET
+)
+if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+    message(FATAL_ERROR
+        "alif-mlek module not found. Enable and fetch it first:\n"
+        "  west config manifest.project-filter -- +alif-mlek\n"
+        "  west update\n")
+endif()
+
+# Register the MLEK Zephyr port as an extra Zephyr module
+list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+
+# ---------------------------------------------------------------------------
+# Ethos-U NPU selection
+# ---------------------------------------------------------------------------
+# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+# the build and the Ethos-U driver targets the requested NPU. This overrides the
+# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+#
+# The parsed value is also used to pick the correct Vela-compiled model below.
+# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+        set(_npu_arch "${CMAKE_MATCH_1}")
+        set(_npu_macs "${CMAKE_MATCH_2}")
+        if (_npu_arch STREQUAL "u55")
+            set(_npu_prefix "H")
+        elseif (_npu_arch STREQUAL "u65")
+            set(_npu_prefix "Y")
+        elseif (_npu_arch STREQUAL "u85")
+            set(_npu_prefix "Z")
+        else()
+            message(FATAL_ERROR
+                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+        endif()
+        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+
+        # Feed the matching Kconfig choice into the Zephyr configuration.
+        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+        message(STATUS
+            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+    else()
+        message(FATAL_ERROR
+            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+    endif()
+endif()
+
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+
+project(alif_asr)
+
+# Silence "changed in GCC 7.1" warnigns from C++ headers
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+
+set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+
+set(ML_FRAMEWORK TensorFlowLiteMicro)
+
+# ---------------------------------------------------------------------------
+# Build-time model and labels generation from MLEK resources
+# ---------------------------------------------------------------------------
+set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+    "Path to MLEK resources (models compiled with Vela)")
+setup_source_generator()
+
+# Source generation output directories
+set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+
+message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+
+# Determine NPU config ID based on Zephyr Kconfig.
+# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+    if (CONFIG_ARM_ETHOS_U85_256)
+        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+    elseif (CONFIG_ARM_ETHOS_U55_256)
+        set(ETHOS_U_NPU_CONFIG_ID "H256")
+    else()
+        set(ETHOS_U_NPU_CONFIG_ID "H128")
+    endif()
+endif()
+
+# Model file path
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+
+if (NOT EXISTS ${POLYU_MODEL_PATH})
+    message(FATAL_ERROR
+        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+endif()
+
+set(EXTRA_MODEL_CODE
+	"/* Model parameters for ${use_case} */"
+	"extern const int   g_FrameLength    = 512"
+	"extern const int   g_FrameStride    = 160"
+	"extern const int   g_ctxLen         = 98"
+	"extern const float g_ScoreThreshold = 0.5"
+	)
+
+# Generate model file
+generate_model_code(
+    MODEL_PATH  ${POLYU_MODEL_PATH}
+    DESTINATION ${SRC_GEN_DIR}
+    EXPRESSIONS ${EXTRA_MODEL_CODE}
+    NAMESPACE   "arm" "app" "asr")
+
+# Generate labels C++ code
+set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+
+# Generate labels file
+set(ASR_LABELS_CPP_FILE Labels)
+generate_labels_code(
+    INPUT           "${ASR_LABELS_FILE}"
+    DESTINATION_SRC ${SRC_GEN_DIR}
+    DESTINATION_HDR ${INC_GEN_DIR}
+    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+)
+
+# Collect the generated source files
+file(GLOB ASR_GENERATED_SOURCES ${SRC_GEN_DIR}/*.cc)
+
+# Create static library
+add_library(asr_iface INTERFACE)
+
+## Common include directories - public
+target_include_directories(asr_iface
+    INTERFACE
+	src/application/main/include)
+
+
+target_include_directories(app PRIVATE
+    src/application/main/include
+    src/use_case/alif_asr/include
+	src/power
+	~/sdk-alif/alif/samples/modules/alif_common
+	~/sdk-alif/alif/samples/modules/alif_common/audio
+	~/sdk-alif/alif/samples/modules/alif_common/audio/include
+	 ${INC_GEN_DIR}
+)
+
+target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+
+
+if (CONFIG_USE_APP_MENU)
+target_compile_definitions(app PRIVATE USE_APP_MENU)
+endif()
+
+target_sources(app PRIVATE
+    src/application/main/Main.cc
+    src/use_case/alif_asr/src/MainLoop.cc
+	src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+    src/use_case/alif_asr/src/reverse_v2.cc
+    src/use_case/alif_asr/src/PolyUModel1.cc
+	src/power/power_mgr.c
+	~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+	${ASR_GENERATED_SOURCES}
+)
+
+set(SRC_MAIN "src/application/main/Main.cc")
+
+list(APPEND SRC_MAIN_DEFS
+    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+
+set_source_files_properties(${SRC_MAIN}
+    PROPERTIES COMPILE_DEFINITIONS
+    "${SRC_MAIN_DEFS}")
+
+target_link_libraries(app PRIVATE
+	asr_iface
+    mlek::asr_impl
+)
