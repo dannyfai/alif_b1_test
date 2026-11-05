@@ -1,0 +1,951 @@
+============================================================
+1. APPLICATION CMAKE
+============================================================
+     1	# Copyright (C) Alif Semiconductor - All Rights Reserved.
+     2	# Use, distribution and modification of this code is permitted under the
+     3	# terms stated in the Alif Semiconductor Software License Agreement
+     4	#
+     5	# You should have received a copy of the Alif Semiconductor Software
+     6	# License Agreement with this file. If not, please write to:
+     7	# contact@alifsemi.com, or visit: https://alifsemi.com/license
+     8	
+     9	cmake_minimum_required(VERSION 3.20.0)
+    10	
+    11	if(NOT ospi-flash IN_LIST SNIPPET)
+    12	  set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+    13	endif()
+    14	
+    15	# Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+    16	# so the module is not auto-discovered and must be registered explicitly. Ask
+    17	# west for the module path instead of hardcoding the workspace layout.
+    18	execute_process(
+    19	    COMMAND west list --format "{abspath}" alif-mlek
+    20	    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    21	    OUTPUT_VARIABLE MLEK_ROOT
+    22	    OUTPUT_STRIP_TRAILING_WHITESPACE
+    23	    RESULT_VARIABLE MLEK_LIST_RESULT
+    24	    ERROR_QUIET
+    25	)
+    26	if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+    27	    message(FATAL_ERROR
+    28	        "alif-mlek module not found. Enable and fetch it first:\n"
+    29	        "  west config manifest.project-filter -- +alif-mlek\n"
+    30	        "  west update\n")
+    31	endif()
+    32	
+    33	# Register the MLEK Zephyr port as an extra Zephyr module
+    34	list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+    35	
+    36	# ---------------------------------------------------------------------------
+    37	# Ethos-U NPU selection
+    38	# ---------------------------------------------------------------------------
+    39	# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+    40	# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+    41	# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+    42	# the build and the Ethos-U driver targets the requested NPU. This overrides the
+    43	# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+    44	#
+    45	# The parsed value is also used to pick the correct Vela-compiled model below.
+    46	# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+    47	if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+    48	    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+    49	    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+    50	        set(_npu_arch "${CMAKE_MATCH_1}")
+    51	        set(_npu_macs "${CMAKE_MATCH_2}")
+    52	        if (_npu_arch STREQUAL "u55")
+    53	            set(_npu_prefix "H")
+    54	        elseif (_npu_arch STREQUAL "u65")
+    55	            set(_npu_prefix "Y")
+    56	        elseif (_npu_arch STREQUAL "u85")
+    57	            set(_npu_prefix "Z")
+    58	        else()
+    59	            message(FATAL_ERROR
+    60	                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+    61	                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+    62	        endif()
+    63	        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+    64	
+    65	        # Feed the matching Kconfig choice into the Zephyr configuration.
+    66	        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+    67	        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+    68	            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+    69	        message(STATUS
+    70	            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+    71	            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+    72	    else()
+    73	        message(FATAL_ERROR
+    74	            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+    75	            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+    76	    endif()
+    77	endif()
+    78	
+    79	find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+    80	
+    81	project(alif_asr)
+    82	
+    83	# Silence "changed in GCC 7.1" warnigns from C++ headers
+    84	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+    85	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+    86	
+    87	set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+    88	
+    89	set(ML_FRAMEWORK TensorFlowLiteMicro)
+    90	
+    91	# ---------------------------------------------------------------------------
+    92	# Build-time model and labels generation from MLEK resources
+    93	# ---------------------------------------------------------------------------
+    94	set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+    95	set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+    96	    "Path to MLEK resources (models compiled with Vela)")
+    97	setup_source_generator()
+    98	
+    99	# Source generation output directories
+   100	set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+   101	set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+   102	file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+   103	
+   104	message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+   105	message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+   106	
+   107	# Determine NPU config ID based on Zephyr Kconfig.
+   108	# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+   109	# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+   110	if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+   111	    if (CONFIG_ARM_ETHOS_U85_256)
+   112	        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+   113	    elseif (CONFIG_ARM_ETHOS_U55_256)
+   114	        set(ETHOS_U_NPU_CONFIG_ID "H256")
+   115	    else()
+   116	        set(ETHOS_U_NPU_CONFIG_ID "H128")
+   117	    endif()
+   118	endif()
+   119	
+   120	# Model file path
+   121	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+   122	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+   123	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+   124	set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+   125	    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+   126	
+   127	if (NOT EXISTS ${POLYU_MODEL_PATH})
+   128	    message(FATAL_ERROR
+   129	        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+   130	endif()
+   131	
+   132	set(EXTRA_MODEL_CODE
+   133		"/* Model parameters for ${use_case} */"
+   134		"extern const int   g_FrameLength    = 512"
+   135		"extern const int   g_FrameStride    = 160"
+   136		"extern const int   g_ctxLen         = 98"
+   137		"extern const float g_ScoreThreshold = 0.5"
+   138		)
+   139	
+   140	# Generate model file
+   141	generate_model_code(
+   142	    MODEL_PATH  ${POLYU_MODEL_PATH}
+   143	    DESTINATION ${SRC_GEN_DIR}
+   144	    EXPRESSIONS ${EXTRA_MODEL_CODE}
+   145	    NAMESPACE   "arm" "app" "asr")
+   146	
+   147	# Generate labels C++ code
+   148	set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+   149	
+   150	# Generate labels file
+   151	set(ASR_LABELS_CPP_FILE Labels)
+   152	generate_labels_code(
+   153	    INPUT           "${ASR_LABELS_FILE}"
+   154	    DESTINATION_SRC ${SRC_GEN_DIR}
+   155	    DESTINATION_HDR ${INC_GEN_DIR}
+   156	    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+   157	)
+   158	
+   159	# Collect the generated source files
+   160	file(GLOB ASR_GENERATED_SOURCES ${SRC_GEN_DIR}/*.cc)
+   161	
+   162	# Create static library
+   163	add_library(asr_iface INTERFACE)
+   164	
+   165	## Common include directories - public
+   166	target_include_directories(asr_iface
+   167	    INTERFACE
+   168		src/application/main/include)
+   169	
+   170	
+   171	target_include_directories(app PRIVATE
+   172	    src/application/main/include
+   173	    src/use_case/alif_asr/include
+   174		src/power
+   175		~/sdk-alif/alif/samples/modules/alif_common
+   176		~/sdk-alif/alif/samples/modules/alif_common/audio
+   177		~/sdk-alif/alif/samples/modules/alif_common/audio/include
+   178		 ${INC_GEN_DIR}
+   179	)
+   180	
+   181	target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+   182	
+   183	
+   184	if (CONFIG_USE_APP_MENU)
+   185	target_compile_definitions(app PRIVATE USE_APP_MENU)
+   186	endif()
+   187	
+   188	target_sources(app PRIVATE
+   189	    src/application/main/Main.cc
+   190	    src/use_case/alif_asr/src/MainLoop.cc
+   191		src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+   192	    src/use_case/alif_asr/src/reverse_v2.cc
+   193	    src/use_case/alif_asr/src/PolyUModel1.cc
+   194	    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+   195		src/power/power_mgr.c
+   196		~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+   197		${ASR_GENERATED_SOURCES}
+   198	)
+   199	
+   200	set(SRC_MAIN "src/application/main/Main.cc")
+   201	
+   202	list(APPEND SRC_MAIN_DEFS
+   203	    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+   204	    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+   205	    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+   206	
+   207	set_source_files_properties(${SRC_MAIN}
+   208	    PROPERTIES COMPILE_DEFINITIONS
+   209	    "${SRC_MAIN_DEFS}")
+   210	
+   211	target_link_libraries(app PRIVATE
+   212		asr_iface
+   213	    mlek::asr_impl
+   214	)
+
+============================================================
+2. CURRENT MAINLOOP
+============================================================
+     1	/* This file was ported to work on Alif Semiconductor devices. */
+     2	
+     3	/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+     4	 * Use, distribution and modification of this code is permitted under the
+     5	 * terms stated in the Alif Semiconductor Software License Agreement
+     6	 *
+     7	 * You should have received a copy of the Alif Semiconductor Software
+     8	 * License Agreement with this file. If not, please write to:
+     9	 * contact@alifsemi.com, or visit: https://alifsemi.com/license
+    10	 *
+    11	 */
+    12	
+    13	/*
+    14	 * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+    15	 * affiliates <open-source-office@arm.com>
+    16	 * SPDX-License-Identifier: Apache-2.0
+    17	 *
+    18	 * Licensed under the Apache License, Version 2.0 (the "License");
+    19	 * you may not use this file except in compliance with the License.
+    20	 * You may obtain a copy of the License at
+    21	 *
+    22	 *     http://www.apache.org/licenses/LICENSE-2.0
+    23	 *
+    24	 * Unless required by applicable law or agreed to in writing, software
+    25	 * distributed under the License is distributed on an "AS IS" BASIS,
+    26	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    27	 * See the License for the specific language governing permissions and
+    28	 * limitations under the License.
+    29	 */
+    30	#include "Labels.hpp"               /* For label strings. */
+    31	#include "UseCaseHandler.hpp"       /* Handlers for different user options. */
+    32	#include "BufAttributes.hpp"        /* Buffer attributes to be applied */
+    33	
+    34	/** Based on ML framework, set up the model namespace. */
+    35	#if defined(MLEK_FWK_TFLM)
+    36	//#include "mlek/fwk/tflm/Wav2LetterModel.hpp"    /* Model class for running inference. */
+    37	#include "PolyUModel1.hpp"
+    38	#include "mlek/use_case/asr/AsrClassifier.hpp"  /* Classifier. */
+    39	
+    40	using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+    41	#elif defined(MLEK_FWK_EXECUTORCH)
+    42	#include "ConformerModel.hpp"
+    43	
+    44	using AsrModel = arm::app::fwk::et::ConformerModel;
+    45	#endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+    46	
+    47	#include "power_mgr.h"             /* power management APIs */
+    48	#include <zephyr/logging/log.h>
+    49	#include <zephyr/kernel.h>
+    50	#include <zephyr/drivers/gpio.h>
+    51	
+    52	LOG_MODULE_REGISTER(MainLoop);
+    53	
+    54	#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+    55	#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+    56	
+    57	#if LPGPIO_WAKEUP_ENABLED
+    58	/* LPGPIO wake up source is used */
+    59	#define LPGPIO_EWIC_CFG EWIC_VBAT_GPIO
+    60	
+    61	#if CONFIG_LPGPIO_WAKEUP_SOURCE == 4
+    62	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO4
+    63	#elif CONFIG_LPGPIO_WAKEUP_SOURCE == 1
+    64	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO1
+    65	#else
+    66	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+    67	#endif
+    68	#else
+    69	#define LPGPIO_EWIC_CFG 0
+    70	#define LPGPIO_WAKEUP_EVENT 0
+    71	#endif
+    72	
+    73	namespace arm {
+    74	namespace app {
+    75	    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+    76	
+    77	    namespace asr {
+    78	        extern uint8_t* GetModelPointer();
+    79	        extern size_t GetModelLen();
+    80	    } /* namespace asr */
+    81	
+    82	} /* namespace app */
+    83	} /* namespace arm */
+    84	
+    85	
+    86	#if LPGPIO_WAKEUP_ENABLED
+    87	static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+    88		DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+    89	#endif
+    90	
+    91	
+    92	extern volatile uint8_t button_pressed;
+    93	static struct gpio_callback button_cb_data;
+    94	static bool por_boot;
+    95	static struct k_sem button_wait_sem;
+    96	
+    97	static void button_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+    98	{
+    99		ARG_UNUSED(dev);
+   100		ARG_UNUSED(cb);
+   101		ARG_UNUSED(pins);
+   102	
+   103		if (por_boot) {
+   104			/* Ignore button press event if it's from POR boot, as the button state may be unstable during POR. */
+   105			return;
+   106		}
+   107	
+   108		int val = gpio_pin_get_dt(&lpgpio_config);  // 1 = pressed, 0 = released
+   109	    if (val < 0) {
+   110	        LOG_ERR("Failed to read pin: %d", val);
+   111	        return;
+   112	    }
+   113	
+   114	    button_pressed = (val == 1);
+   115	    LOG_INF("Button %s", button_pressed ? "pressed" : "released");
+   116	
+   117		if (!k_sem_count_get(&button_wait_sem) && button_pressed) {
+   118			k_sem_give(&button_wait_sem);
+   119		}
+   120	}
+   121	
+   122	/**
+   123	 * Configure LPGPIO0 and LPGPIO1 as inputs with interrupts
+   124	 * With B1/E1C need to connect wire between SW5 (P5_7) and P15_0 to use button as Push-to-talk button.
+   125	 * With B1/E1C devkit you need to also remove resistor R64. */
+   126	static int configure_lpgpio(void)
+   127	{
+   128		int ret;
+   129		const struct gpio_dt_spec *spec = &lpgpio_config;
+   130	
+   131		if (!spec || !spec->port) {
+   132			/* Just ignore */
+   133			LOG_ERR("lpgpio invalid");
+   134			return -ENODEV;
+   135		}
+   136	
+   137		/* Configure LPGPIO0 for wakeup */
+   138		if (!gpio_is_ready_dt(spec)) {
+   139			LOG_ERR("LPGPIO0 device is not ready");
+   140			return -ENODEV;
+   141		}
+   142	
+   143		ret = gpio_pin_configure_dt(spec, GPIO_INPUT | spec->dt_flags);
+   144		if (ret != 0) {
+   145			LOG_ERR("Failed to configure LPGPIO as input: %d", ret);
+   146			return ret;
+   147		}
+   148	
+   149		ret = gpio_pin_interrupt_configure_dt(spec,
+   150						      GPIO_INT_EDGE_BOTH);
+   151		if (ret != 0) {
+   152			LOG_ERR("Failed to configure LPGPIO interrupt: %d", ret);
+   153			return ret;
+   154		}
+   155	
+   156		gpio_init_callback(&button_cb_data, button_callback, BIT(spec->pin));
+   157		ret = gpio_add_callback(spec->port, &button_cb_data);
+   158		if (ret != 0) {
+   159			LOG_ERR("Failed to add button callback: %d", ret);
+   160			return ret;
+   161		}
+   162	
+   163		LOG_INF("LPGPIO%d configured", spec->pin);
+   164	
+   165		return 0;
+   166	}
+   167	
+   168	/** @brief   Verify input and output tensor are of certain min dimensions. */
+   169	static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model);
+   170	
+   171	void MainLoop()
+   172	{
+   173		por_boot = true;
+   174		k_sem_init(&button_wait_sem, 0, 1);
+   175	
+   176		if (configure_lpgpio()) {
+   177			LOG_ERR("Failed to configure LPGPIO for button input");
+   178			return;
+   179		}
+   180	
+   181	    PolyUModel1 model; /* Model wrapper object. */
+   182	
+   183	    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+   184	                                                arm::app::asr::GetModelLen()};
+   185	    arm::app::fwk::iface::MemoryRegion computeMem{arm::app::activationBuf,
+   186	                                                  sizeof(arm::app::activationBuf)};
+   187		LOG_INF("=====================\n");
+   188		LOG_INF("Model Ptr: 0x%X", arm::app::asr::GetModelPointer());
+   189		LOG_INF("Model Size: %d", arm::app::asr::GetModelLen());
+   190		LOG_INF("Model data pointer: 0x%X", modelMem.data);
+   191		LOG_INF("Model Subgraph: %d", ::tflite::GetModel(modelMem.data)->subgraphs()->size());
+   192		const ::tflite::SubGraph* subgraph = ::tflite::GetModel(modelMem.data)->subgraphs()->Get(0);
+   193		uint32_t operators_size = ::tflite::NumSubgraphOperators(subgraph);
+   194		LOG_INF("Operators Size : %d", operators_size);
+   195		#include "tensorflow/lite/micro/micro_allocator.h"
+   196		LOG_INF("Node&Reg Size : %d (Total: %d)", sizeof(::tflite::NodeAndRegistration), sizeof(::tflite::NodeAndRegistration) * operators_size);
+   197		
+   198	    /* Load the model. */
+   199	    if (!model.Init(computeMem, modelMem)) {
+   200	        LOG_ERR("Failed to initialise model");
+   201	        return;
+   202	    }
+   203		LOG_INF("Init model: OK!");
+   204	
+   205	    if (!VerifyTensorDimensions(model)) {
+   206	        LOG_ERR("Model's input or output dimension verification failed");
+   207	        return;
+   208	    }
+   209	
+   210	    /* Instantiate application context. */
+   211	    arm::app::ApplicationContext caseContext;
+   212	    std::vector <std::string> labels;
+   213	    GetLabelsVector(labels);
+   214	
+   215	// #if defined(MLEK_FWK_TFLM)
+   216	//     arm::app::AsrClassifier classifier{
+   217	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputRowsIdx,
+   218	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputColsIdx,
+   219	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputRowsIdx,
+   220	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputColsIdx}; /* Classifier wrapper object. */
+   221	//     caseContext.Set<uint32_t>("frameLength", arm::app::asr::g_FrameLength);
+   222	//     caseContext.Set<uint32_t>("frameStride", arm::app::asr::g_FrameStride);
+   223	//     caseContext.Set<float>("scoreThreshold", arm::app::asr::g_ScoreThreshold);  /* Score threshold. */
+   224	//     caseContext.Set<uint32_t>("ctxLen", arm::app::asr::g_ctxLen);  /* Left and right context length (MFCC feat vectors). */
+   225	//     caseContext.Set<arm::app::AsrClassifier&>("classifier", classifier);
+   226	// #elif defined(MLEK_FWK_EXECUTORCH)
+   227	//     caseContext.Set<uint32_t>("melSpecWindowSize", arm::app::asr::g_melSpecWindowSize);
+   228	//     caseContext.Set<uint32_t>("melSpecHopSize", arm::app::asr::g_melSpecHopSize);
+   229	//     caseContext.Set<uint32_t>("chunkSize", arm::app::asr::g_chunkSize);
+   230	// #endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+   231	//     caseContext.Set<arm::app::fwk::iface::Model&>("model", model);
+   232	//     caseContext.Set<const std::vector <std::string>&>("labels", labels);
+   233	
+   234	// 	power_mgr_allow_sleep();
+   235	// 	por_boot = false;
+   236	
+   237	// 	while (1) {
+   238	// #if CONFIG_PUSH_TO_TALK
+   239	// 		LOG_INF("Push to talk start by going to STOP mode. Press button to start capturing audio.\n");
+   240	// 		LOG_INF("Release the button to stop capturing audio.\n");
+   241	// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+   242	// 		k_sem_reset(&button_wait_sem);
+   243	// 		k_sem_take(&button_wait_sem, K_FOREVER);
+   244	// #else
+   245	// 		LOG_INF("Press the button to start capturing audio...\n");
+   246	// 		LOG_INF("Release the button to stop capturing audio.\n");
+   247	// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+   248	// #endif
+   249	
+   250	// 		power_mgr_disable_sleep();
+   251	
+   252	// 		// Set button press to false to start capturing audio. In button callback, button_pressed will be set to true once the button is released.
+   253	// 		ClassifyAudioHandler(caseContext);
+   254	// #if CONFIG_PUSH_TO_TALK
+   255	// 		power_mgr_allow_sleep();
+   256	// 		/* In sleep.overlay, min-residency-us is 1s, so sleep for longer than,
+   257	// 		   that to ensure we enter the deepest sleep state. Which in Alif
+   258	// 		   chip is STOP mode. */
+   259	// #endif
+   260	// 	}
+   261	}
+   262	
+   263	static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model)
+   264	{
+   265	    /* Populate tensor related parameters. */
+   266	    auto inputTensor = model.GetInputTensor(0);
+   267		LOG_ERR("Input tensor size = %d\n", inputTensor->Shape().size());
+   268	    if (inputTensor->Shape().empty()) {
+   269	        LOG_ERR("Invalid input tensor dims\n");
+   270	        return false;
+   271	    }
+   272	    if (inputTensor->Shape().size() < 3) {
+   273	        LOG_ERR("Input tensor dimension should be >= 3\n");
+   274	        return false;
+   275	    }
+   276	
+   277	    auto outputTensor = model.GetOutputTensor(0);
+   278		LOG_ERR("Output tensor size = %d\n", outputTensor->Shape().size());
+   279	    if (outputTensor->Shape().empty()) {
+   280	        LOG_ERR("Invalid output tensor dims\n");
+   281	        return false;
+   282	    }
+   283	
+   284	    if (outputTensor->Shape().size() < 3) {
+   285	        LOG_ERR("Output tensor dimension should be >= 3\n");
+   286	        return false;
+   287	    }
+   288	
+   289	    return true;
+   290	}
+
+============================================================
+3. POLYU MODEL HEADER
+============================================================
+     1	#ifndef POLYU_MODEL1_HPP
+     2	#define POLYU_MODEL1_HPP
+     3	
+     4	#include "mlek/fwk/tflm/TflmModel.hpp"
+     5	
+     6	namespace arm::app::asr {
+     7	extern const int g_FrameLength;
+     8	extern const int g_FrameStride;
+     9	extern const float g_ScoreThreshold;
+    10	extern const int g_ctxLen;
+    11	} // namespace arm::app::asr
+    12	
+    13	namespace arm::app::fwk::tflm {
+    14	
+    15	class PolyUModel1 : public TflmModel {
+    16	
+    17	public:
+    18	    /* Indices for the expected model - based on input and output tensor shapes */
+    19	    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    20	    static constexpr uint32_t ms_inputColsIdx  = 2;
+    21	    static constexpr uint32_t ms_outputRowsIdx = 2;
+    22	    static constexpr uint32_t ms_outputColsIdx = 3;
+    23	
+    24	    /* Model specific constants. */
+    25	    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    26	    static constexpr uint32_t ms_numMfccFeatures = 13;
+    27	
+    28	protected:
+    29	    /** @brief   Gets the reference to op resolver interface class. */
+    30	    const tflite::MicroOpResolver& GetOpResolver() override;
+    31	
+    32	    /** @brief   Adds operations to the op resolver instance. */
+    33	    bool EnlistOperations() override;
+    34	
+    35	private:
+    36	    /* Maximum number of individual operations that can be enlisted. */
+    37	    static constexpr int ms_maxOpCnt = 24;
+    38	
+    39	    /* A mutable op resolver instance. */
+    40	    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+    41	};
+    42	
+    43	} /* namespace arm::app::fwk::tflm */
+    44	
+    45	#endif /* POLYU_MODEL1_HPP */
+
+============================================================
+4. POLYU MODEL IMPLEMENTATION
+============================================================
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#include "PolyUModel1.hpp"
+    18	#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+    19	
+    20	#include "mlek/log/log_macros.h"
+    21	#include "reverse_v2.h"
+    22	#include "heatstroke_bidirectional_lstm.h"
+    23	
+    24	const tflite::MicroOpResolver& arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    25	{
+    26	    return this->m_opResolver;
+    27	}
+    28	
+    29	TfLiteStatus ParseReverseV2(const tflite::Operator*, tflite::ErrorReporter*, tflite::BuiltinDataAllocator*,
+    30	                        void**) {
+    31	  return kTfLiteOk;
+    32	}
+    33	
+    34	TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+    35	    const tflite::Operator* op,
+    36	    tflite::ErrorReporter* error_reporter,
+    37	    tflite::BuiltinDataAllocator* allocator,
+    38	    void** builtin_data) {
+    39	    return tflite::ParseOpData(
+    40	        op,
+    41	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+    42	        error_reporter,
+    43	        allocator,
+    44	        builtin_data);
+    45	}
+    46	
+    47	
+    48	bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+    49	{
+    50	#ifndef ETHOS_U_NPU_ASSUMED
+    51	    
+    52	    this->m_opResolver.AddStridedSlice();
+    53	    this->m_opResolver.AddFullyConnected();
+    54	    this->m_opResolver.AddReshape();
+    55	    this->m_opResolver.AddAveragePool2D();
+    56	    this->m_opResolver.AddUnpack();
+    57	    this->m_opResolver.AddAdd();
+    58	    this->m_opResolver.AddSplit();
+    59	    this->m_opResolver.AddTanh();
+    60	    this->m_opResolver.AddLogistic();
+    61	    this->m_opResolver.AddMul();
+    62	    this->m_opResolver.AddPack();
+    63	    this->m_opResolver.AddConcatenation();
+    64	    this->m_opResolver.AddTranspose();
+    65	    this->m_opResolver.AddGather();
+    66	    this->m_opResolver.AddMean();
+    67	    this->m_opResolver.AddSquaredDifference();
+    68	    this->m_opResolver.AddRsqrt();
+    69	    this->m_opResolver.AddSub();
+    70	    this->m_opResolver.AddPad();
+    71	    this->m_opResolver.AddConv2D();
+    72	    this->m_opResolver.AddSoftmax();
+    73	    //this->m_opResolver.AddCustom("ReverseV2", tflite::Register_REVERSE_V2());
+    74	    const TFLMRegistration& registration = tflite::Register_REVERSE_V2();
+    75	    this->m_opResolver.AddBuiltin(tflite::BuiltinOperator_REVERSE_V2, registration,
+    76	                      ParseReverseV2);
+    77	
+    78	#endif
+    79	
+    80	    
+    81	    {
+    82	        const TFLMRegistration registration =
+    83	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+    84	
+    85	        if (this->m_opResolver.AddBuiltin(
+    86	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+    87	                registration, ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+    88	            return false;
+    89	        }
+    90	    }
+    91	
+    92	if (kTfLiteOk == this->m_opResolver.AddEthosU()) {
+    93	        info("Added %s support to op resolver\n", tflite::GetString_ETHOSU());
+    94	    } else {
+    95	        printf_err("Failed to add Arm NPU support to op resolver.");
+    96	        return false;
+    97	    }
+    98	    return true;
+    99	}
+
+============================================================
+5. MODEL GENERATION AND EMBEDDING REFERENCES
+============================================================
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:121:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:122:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:123:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:124:set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:127:if (NOT EXISTS ${POLYU_MODEL_PATH})
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:129:        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:142:    MODEL_PATH  ${POLYU_MODEL_PATH}
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:181:target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:75:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:78:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:79:        extern size_t GetModelLen();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:183:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:184:                                                arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:188:	LOG_INF("Model Ptr: 0x%X", arm::app::asr::GetModelPointer());
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:189:	LOG_INF("Model Size: %d", arm::app::asr::GetModelLen());
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/InferenceTestYoloFastest.cc:28:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/InferenceTestYoloFastest.cc:30:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/InferenceTestYoloFastest.cc:31:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/InferenceTestYoloFastest.cc:143:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::object_detection::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/InferenceTestYoloFastest.cc:144:                                                    arm::app::object_detection::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:30:        static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:32:            extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:33:            extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:43:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::object_detection::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:44:                                                arm::app::object_detection::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:69:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::object_detection::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:70:                                                arm::app::object_detection::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:95:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::object_detection::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/ObjectDetectionUCTest.cc:96:                                                arm::app::object_detection::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:27:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:29:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:30:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:92:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:93:                                                    arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:114:                arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:115:                                                            arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:29:        static uint8_t  tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:32:            extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:33:            extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:36:            extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:37:            extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:62:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:63:                                                    arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:97:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:98:                                                arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:25:        static uint8_t  tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:28:            extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:29:            extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:32:            extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:33:            extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:44:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:45:                                                    arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:52:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InitModels.cc:53:                                                    arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:27:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:29:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:30:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:71:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:72:                                                    arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:115:                arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:116:                                                            arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:31:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:33:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:34:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:45:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::img_class::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:46:                                                arm::app::img_class::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:70:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::img_class::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:71:                                                arm::app::img_class::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:106:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::img_class::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/ImgClassificationUCTest.cc:107:                                                arm::app::img_class::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:27:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:29:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:30:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:82:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::img_class::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:83:                                                    arm::app::img_class::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:99:            arm::app::fwk::iface::MemoryRegion modelMem{arm::app::img_class::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:100:                                                        arm::app::img_class::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/VisualWakeWordUCTests.cc:31:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/VisualWakeWordUCTests.cc:33:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/VisualWakeWordUCTests.cc:34:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/VisualWakeWordUCTests.cc:42:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::vww::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/VisualWakeWordUCTests.cc:43:                                                arm::app::vww::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/VisualWakeWordUCTests.cc:65:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::vww::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/VisualWakeWordUCTests.cc:66:                                                arm::app::vww::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/inference_runner/InferenceTestInferenceRunner.cc:26:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/inference_runner/InferenceTestInferenceRunner.cc:28:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/inference_runner/InferenceTestInferenceRunner.cc:29:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/inference_runner/InferenceTestInferenceRunner.cc:39:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::inference_runner::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/inference_runner/InferenceTestInferenceRunner.cc:40:                                                arm::app::inference_runner::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:28:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:30:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:31:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:49:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::rnn::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:50:                                                arm::app::rnn::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:121:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::rnn::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:122:                                                arm::app::rnn::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:27:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:29:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:30:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:74:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::rnn::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:75:                                                    arm::app::rnn::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:133:            arm::app::fwk::iface::MemoryRegion modelMem{arm::app::rnn::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:134:                                                        arm::app::rnn::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:27:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:29:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:30:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:76:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::rnn::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:77:                                                arm::app::rnn::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:111:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::rnn::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:112:                                                arm::app::rnn::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:135:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::rnn::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:136:                                                arm::app::rnn::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:33:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:35:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:36:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:98:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::ad::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:99:                                                arm::app::ad::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:122:            arm::app::fwk::iface::MemoryRegion modelMem{arm::app::ad::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:123:                                                        arm::app::ad::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/KWSHandlerTest.cc:31:        static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/KWSHandlerTest.cc:33:            extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/KWSHandlerTest.cc:34:            extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/KWSHandlerTest.cc:45:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/KWSHandlerTest.cc:46:                                                arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/KWSHandlerTest.cc:67:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/KWSHandlerTest.cc:68:                                                arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:27:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:29:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:30:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:92:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:93:                                                    arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:114:                arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:115:                                                            arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:29:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:32:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:33:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:36:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:37:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:62:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:63:                                                    arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:97:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:98:                                                arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:27:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:29:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:30:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:71:        arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:72:                                                    arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:115:                arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:116:                                                            arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/platforms/native/build_configuration.cmake:151:                "ACTIVATION_BUF_SZ=${${use_case}_ACTIVATION_BUF_SZ}"
+/home/user/sdk-alif/modules/alif-mlek/source/app/CMakeLists.txt:157:        "ACTIVATION_BUF_SZ=${${use_case}_ACTIVATION_BUF_SZ}")
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws/usecase.cmake:69:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws/src/MainLoop.cc:41:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws/src/MainLoop.cc:43:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws/src/MainLoop.cc:44:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws/src/MainLoop.cc:56:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws/src/MainLoop.cc:57:                                                arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/usecase.cmake:54:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/src/MainLoop.cc:27:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/src/MainLoop.cc:29:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/src/MainLoop.cc:30:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/src/MainLoop.cc:39:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::object_detection::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/src/MainLoop.cc:40:                                                arm::app::object_detection::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_vww/usecase.cmake:40:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_vww/src/MainLoop.cc:28:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_vww/src/MainLoop.cc:30:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_vww/src/MainLoop.cc:31:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_vww/src/MainLoop.cc:43:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::vww::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_vww/src/MainLoop.cc:44:                                                arm::app::vww::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/usecase.cmake:72:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:33:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:34:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:38:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:39:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:41:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:54:    arm::app::fwk::iface::MemoryRegion kwsModelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:55:                                                   arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:56:    arm::app::fwk::iface::MemoryRegion asrModelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:57:                                                   arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/usecase.cmake:56:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/MainLoop.cc:38:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/MainLoop.cc:40:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/MainLoop.cc:41:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/MainLoop.cc:52:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::object_detection::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/MainLoop.cc:53:                                                arm::app::object_detection::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/usecase.cmake:116:    USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/usecase.cmake:144:    USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/MainLoop.cc:50:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/MainLoop.cc:53:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/MainLoop.cc:54:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/MainLoop.cc:67:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/MainLoop.cc:68:                                                arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/usecase.cmake:42:    set(DEFAULT_ACTIVATION_BUF_SZ  0x00200000)
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/usecase.cmake:57:        set(DEFAULT_ACTIVATION_BUF_SZ   0x00200000)
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/usecase.cmake:60:        set(DEFAULT_ACTIVATION_BUF_SZ   0x00C00000)
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/usecase.cmake:83:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/usecase.cmake:84:        ${DEFAULT_ACTIVATION_BUF_SZ}
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/src/MainLoop.cc:44:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/src/MainLoop.cc:46:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/src/MainLoop.cc:47:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/src/MainLoop.cc:68:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::img_class::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/src/MainLoop.cc:69:                                                arm::app::img_class::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/usecase.cmake:39:    set(DEFAULT_ACTIVATION_BUF_SZ  0x00200000)
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/usecase.cmake:54:        set(DEFAULT_ACTIVATION_BUF_SZ   0x00200000)
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/usecase.cmake:57:        set(DEFAULT_ACTIVATION_BUF_SZ   0x00C00000)
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/usecase.cmake:80:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/usecase.cmake:81:        ${DEFAULT_ACTIVATION_BUF_SZ}
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/src/MainLoop.cc:33:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/src/MainLoop.cc:35:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/src/MainLoop.cc:36:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/src/MainLoop.cc:53:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::img_class::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/src/MainLoop.cc:54:                                                arm::app::img_class::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/vww/usecase.cmake:41:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/vww/src/MainLoop.cc:29:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/vww/src/MainLoop.cc:31:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/vww/src/MainLoop.cc:32:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/vww/src/MainLoop.cc:43:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::vww::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/vww/src/MainLoop.cc:44:                                                arm::app::vww::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/usecase.cmake:34:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/MainLoop.cc:27:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/MainLoop.cc:31:static uint8_t* GetModelPointer()
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/MainLoop.cc:37:static size_t GetModelLen()
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/MainLoop.cc:47:extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/MainLoop.cc:48:extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/MainLoop.cc:58:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::inference_runner::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/MainLoop.cc:59:                                                arm::app::inference_runner::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/usecase.cmake:31:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/MainLoop.cc:26:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/MainLoop.cc:28:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/MainLoop.cc:29:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/MainLoop.cc:37:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::rnn::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/MainLoop.cc:38:                                                arm::app::rnn::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws_with_power/usecase.cmake:69:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws_with_power/src/MainLoop.cc:45:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws_with_power/src/MainLoop.cc:47:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws_with_power/src/MainLoop.cc:48:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws_with_power/src/MainLoop.cc:83:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws_with_power/src/MainLoop.cc:84:                                                arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/ad/usecase.cmake:70:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/ad/src/MainLoop.cc:27:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/ad/src/MainLoop.cc:28:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/ad/src/MainLoop.cc:30:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/ad/src/MainLoop.cc:37:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::ad::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/ad/src/MainLoop.cc:38:                                                arm::app::ad::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_ad/usecase.cmake:50:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_ad/src/MainLoop.cc:26:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_ad/src/MainLoop.cc:27:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_ad/src/MainLoop.cc:29:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_ad/src/MainLoop.cc:38:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::ad::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_ad/src/MainLoop.cc:39:                                                arm::app::ad::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws/usecase.cmake:83:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws/src/MainLoop.cc:29:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws/src/MainLoop.cc:31:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws/src/MainLoop.cc:32:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws/src/MainLoop.cc:41:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::kws::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws/src/MainLoop.cc:42:                                                arm::app::kws::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/usecase.cmake:106:    USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/usecase.cmake:134:    USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/MainLoop.cc:38:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/MainLoop.cc:41:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/MainLoop.cc:42:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/MainLoop.cc:55:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/MainLoop.cc:56:                                                arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/usecase.cmake:56:USER_OPTION(${use_case}_ACTIVATION_BUF_SZ "Activation buffer size for the chosen model"
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/MainLoop.cc:44:    static uint8_t tensorArena[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/MainLoop.cc:46:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/MainLoop.cc:47:        extern size_t GetModelLen();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/MainLoop.cc:88:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::object_detection::GetModelPointer(),
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/MainLoop.cc:89:                                                arm::app::object_detection::GetModelLen()};
+/home/user/sdk-alif/modules/alif-mlek/source/app/main/include/BufAttributes.hpp:57:#ifndef ACTIVATION_BUF_SZ
+/home/user/sdk-alif/modules/alif-mlek/source/app/main/include/BufAttributes.hpp:58:    #warning  "ACTIVATION_BUF_SZ needs to be defined. Using default value"
+/home/user/sdk-alif/modules/alif-mlek/source/app/main/include/BufAttributes.hpp:59:    #define ACTIVATION_BUF_SZ       0x00200000
+/home/user/sdk-alif/modules/alif-mlek/source/app/main/include/BufAttributes.hpp:60:#endif  /* ACTIVATION_BUF_SZ */
+
+============================================================
+6. EXISTING BUILD CACHE MODEL SETTINGS
+============================================================
+398:POLYU_MODEL_PATH:FILEPATH=/home/user/sdk-alif/beeinventor/test_heatstroke/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+
+============================================================
+7. HEAT-STRESS TFLITE CANDIDATE
+============================================================
+-rw-rw-r-- 1 user user 12M Nov  4 22:44 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite
+4e2f12fe015d777ab3dff7a2d4d170369c8a6ec63fe76fdadd79bb57ae8c065a  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite
