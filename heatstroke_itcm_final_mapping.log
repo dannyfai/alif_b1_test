@@ -1,0 +1,526 @@
+============================================================
+1. NPU REGION CONFIGURATION MACROS
+============================================================
+
+============================================================
+2. HARDWARE FEATURE MACRO
+============================================================
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-550-    // Quick-and-dirty check that gives the right answer for valid addresses:
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-551-    return address & 0xA0000000 ? 2 : 0;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-552-#else
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-553-
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-554-    // U55s' M1 AXI ports in Ensemble B can't reach MRAM or OSPI. Catch that here.
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c:555:    if ((!SOC_FEAT_U55_M1_CAN_ACCESS_HIGHER_ADDRESS) && (address >= U55_M1_HIGHER_ADDRESS)) {
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-556-        return 0;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-557-    }
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-558-    // Otherwise use original define scheme
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-559-    switch (index) {
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-560-    case -1: return NPU_QCONFIG; break;
+
+============================================================
+3. LocalToGlobal IMPLEMENTATION
+============================================================
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-74- * @ingroup services-host-update
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-75- */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-76-uint32_t SERVICES_update_stoc(uint32_t services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-77-                              uint32_t image_address,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-78-                              uint32_t image_size,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-79-                              uint32_t *error_code)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-80-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-81-  update_stoc_svc_t * p_svc = (update_stoc_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-82-      SERVICES_prepare_packet_buffer(sizeof(update_stoc_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-83-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c:84:  p_svc->send_image_address = LocalToGlobal((void *)image_address);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-85-  p_svc->send_image_size = image_size;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-86-  uint32_t ret = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-87-                                       SERVICE_UPDATE_STOC,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-88-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-89-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-90-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-91-  return ret;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-92-}
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-59-uint32_t SERVICES_Boot_Net_Proc(uint32_t services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-60-                                net_proc_boot_args_t* boot_args,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-61-                                uint32_t *error_code)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-62-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-63-  net_proc_boot_svc_t *p_svc = (net_proc_boot_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-64-      SERVICES_prepare_packet_buffer(sizeof(net_proc_boot_svc_t)); /* packet */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-65-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-66-  /*
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-67-   * Assemble SERVICE packet
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-68-   */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c:69:  p_svc->send_nvds_src_addr = LocalToGlobal((void*)boot_args->nvds_src_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-70-  p_svc->send_nvds_dst_addr = boot_args->nvds_dst_addr;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-71-  p_svc->send_nvds_copy_len = boot_args->nvds_copy_len;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-72-  p_svc->send_trng_dst_addr = boot_args->trng_dst_addr;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-73-  p_svc->send_trng_len      = boot_args->trng_len;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-74-  p_svc->send_internal_clock_select = boot_args->es0_clock_select;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-75-  p_svc->send_configuration = boot_args->configuration;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-76-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-77-  uint32_t ret = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-78-                                       SERVICE_EXTSYS0_BOOT_SET_ARGS,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-79-                                       DEFAULT_TIMEOUT);
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-39- * @brief Function to initialize the services library
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-40- * @param init_params Initialization parameters
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-41- * @ingroup services-host-handler
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-42- * @fn void SERVICES_initialize(services_lib_t*)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-43- * @ingroup services-host-handler
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-44- */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-45-void SERVICES_initialize(services_lib_t *init_params)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-46-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-47-  s_services_host.packet_buffer_address = init_params->packet_buffer_address;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-48-  s_pkt_buffer_address_global =
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c:49:      LocalToGlobal((void *)s_services_host.packet_buffer_address);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-50-  s_services_host.fn_send_mhu_message = init_params->fn_send_mhu_message;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-51-  s_services_host.fn_wait_ms = init_params->fn_wait_ms;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-52-  s_services_host.wait_timeout = init_params->wait_timeout,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-53-  s_services_host.fn_print_msg = init_params->fn_print_msg;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-54-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-55-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-56-/**
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-57- * @brief  Function to synchronize with SE
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-58- * @param  services_handle Services library handle
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-59- * @return total number of retries
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-125-uint32_t SERVICES_cryptocell_mbedtls_hardware_poll(uint32_t services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-126-                                                   uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-127-                                                   uint32_t data,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-128-                                                   uint32_t output,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-129-                                                   uint32_t len,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-130-                                                   uint32_t olen)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-131-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-132-  mbedtls_trng_hardware_poll_svc_t * p_svc = (mbedtls_trng_hardware_poll_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-133-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_trng_hardware_poll_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-134-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:135:  p_svc->send_data_addr = LocalToGlobal((void *)data);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:136:  p_svc->send_output_addr = LocalToGlobal((void *)output);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-137-  p_svc->send_len = len;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:138:  p_svc->send_olen_addr = LocalToGlobal((void *)olen);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-139-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-140-  uint32_t err = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-141-                                       SERVICE_CRYPTOCELL_MBEDTLS_TRNG_HARDWARE_POLL,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-142-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-143-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-144-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-145-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-146-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-147-/**
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-148- * @brief
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-153- * @return
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-154- * @ingroup services-host-crypto
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-155- */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-156-uint32_t SERVICES_cryptocell_mbedtls_aes_init(uint32_t services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-157-                                              uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-158-                                              uint32_t ctx)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-159-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-160-  mbedtls_aes_init_svc_t * p_svc = (mbedtls_aes_init_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-161-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_aes_init_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-162-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:163:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-164-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-165-                                       SERVICE_CRYPTOCELL_MBEDTLS_AES_INIT,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-166-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-167-  *error_code = 0;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-168-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-169-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-170-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-171-/**
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-172- * @brief
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-173- *
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-183-uint32_t SERVICES_cryptocell_mbedtls_aes_set_key(uint32_t services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-184-                                                 uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-185-                                                 uint32_t ctx,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-186-                                                 uint32_t key,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-187-                                                 uint32_t keybits,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-188-                                                 uint32_t dir)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-189-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-190-  mbedtls_aes_set_key_svc_t * p_svc = (mbedtls_aes_set_key_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-191-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_aes_set_key_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-192-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:193:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:194:  p_svc->send_key_addr = LocalToGlobal((void *)key);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-195-  p_svc->send_key_bits = keybits;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-196-  p_svc->send_direction = dir;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-197-  
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-198-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-199-                                       SERVICE_CRYPTOCELL_MBEDTLS_AES_SET_KEY,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-200-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-201-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-202-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-203-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-204-
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-223-                                               uint32_t crypt_type, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-224-                                               uint32_t mode, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-225-                                               uint32_t length, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-226-                                               uint32_t iv, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-227-                                               uint32_t input, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-228-                                               uint32_t output)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-229-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-230-  mbedtls_aes_crypt_svc_t * p_svc = (mbedtls_aes_crypt_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-231-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_aes_crypt_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-232-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:233:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-234-  p_svc->send_crypt_type = crypt_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-235-  p_svc->send_mode = mode;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-236-  p_svc->send_length = length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:237:  p_svc->send_iv_addr = LocalToGlobal((void *)iv);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:238:  p_svc->send_input_addr = LocalToGlobal((void *)input);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:239:  p_svc->send_output_addr = LocalToGlobal((void *)output);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-240-  
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-241-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-242-                                       SERVICE_CRYPTOCELL_MBEDTLS_AES_CRYPT,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-243-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-244-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-245-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-246-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-247-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-248-/**
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-249- * @brief Single-part AES encryption/decryption
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-268-                           uint32_t direction,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-269-                           uint32_t crypt_type,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-270-                           uint32_t iv,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-271-                           uint32_t length,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-272-                           uint32_t input,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-273-                           uint32_t output)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-274-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-275-  mbedtls_aes_svc_t * p_svc = (mbedtls_aes_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-276-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_aes_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-277-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:278:  p_svc->send_key_addr = LocalToGlobal((void *)key);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-279-  p_svc->send_key_bits = keybits;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-280-  p_svc->send_direction = direction;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-281-  p_svc->send_crypt_type = crypt_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:282:  p_svc->send_iv_addr = LocalToGlobal((void *)iv);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-283-  p_svc->send_length = length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:284:  p_svc->send_input_addr = LocalToGlobal((void *)input);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:285:  p_svc->send_output_addr = LocalToGlobal((void *)output);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-286-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-287-  uint32_t err = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-288-                                       SERVICE_CRYPTOCELL_MBEDTLS_AES,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-289-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-290-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-291-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-292-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-293-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-294-/**
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-295- * @brief
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-302- * @ingroup services-host-crypto
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-303- */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-304-uint32_t SERVICES_cryptocell_mbedtls_sha_starts(uint32_t services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-305-                                                uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-306-                                                uint32_t ctx, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-307-                                                uint32_t sha_type)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-308-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-309-  mbedtls_sha_svc_t * p_svc = (mbedtls_sha_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-310-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_sha_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-311-  
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:312:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-313-  p_svc->send_sha_type = sha_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-314-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-315-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-316-                                       SERVICE_CRYPTOCELL_MBEDTLS_SHA_STARTS,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-317-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-318-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-319-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-320-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-321-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-322-/**
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-332- */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-333-uint32_t SERVICES_cryptocell_mbedtls_sha_process(uint32_t services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-334-                                                 uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-335-                                                 uint32_t ctx, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-336-                                                 uint32_t sha_type, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-337-                                                 uint32_t data)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-338-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-339-  mbedtls_sha_svc_t * p_svc = (mbedtls_sha_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-340-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_sha_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-341-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:342:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-343-  p_svc->send_sha_type = sha_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:344:  p_svc->send_data_addr = LocalToGlobal((void *)data);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-345-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-346-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-347-                                       SERVICE_CRYPTOCELL_MBEDTLS_SHA_PROCESS,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-348-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-349-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-350-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-351-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-352-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-353-/**
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-354- * @brief
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-365-uint32_t SERVICES_cryptocell_mbedtls_sha_update(uint32_t services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-366-                                                uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-367-                                                uint32_t ctx, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-368-                                                uint32_t sha_type, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-369-                                                uint32_t data, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-370-                                                uint32_t data_length)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-371-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-372-  mbedtls_sha_svc_t * p_svc = (mbedtls_sha_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-373-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_sha_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-374-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:375:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-376-  p_svc->send_sha_type = sha_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:377:  p_svc->send_data_addr = LocalToGlobal((void *)data);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-378-  p_svc->send_data_length = data_length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-379-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-380-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-381-                                       SERVICE_CRYPTOCELL_MBEDTLS_SHA_UPDATE,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-382-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-383-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-384-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-385-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-386-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-387-/**
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-397- */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-398-uint32_t SERVICES_cryptocell_mbedtls_sha_finish(uint32_t services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-399-                                                uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-400-                                                uint32_t ctx, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-401-                                                uint32_t sha_type, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-402-                                                uint32_t data)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-403-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-404-  mbedtls_sha_svc_t * p_svc = (mbedtls_sha_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-405-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_sha_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-406-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:407:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-408-  p_svc->send_sha_type = sha_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:409:  p_svc->send_data_addr = LocalToGlobal((void *)data);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-410-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-411-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-412-                                       SERVICE_CRYPTOCELL_MBEDTLS_SHA_FINISH,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-413-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-414-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-415-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-416-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-417-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-418-/**
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-419- * @brief Single-part SHA calculation
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-431-                                         uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-432-                                         uint32_t sha_type,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-433-                                         uint32_t data,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-434-                                         uint32_t data_length,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-435-                                         uint32_t sha_sum)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-436-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-437-  mbedtls_sha_single_svc_t * p_svc = (mbedtls_sha_single_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-438-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_sha_single_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-439-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-440-  p_svc->send_sha_type = sha_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:441:  p_svc->send_data_addr = LocalToGlobal((void *)data);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-442-  p_svc->send_data_length = data_length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:443:  p_svc->send_shasum_addr = LocalToGlobal((void *)sha_sum);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-444-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-445-  uint32_t err = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-446-                                       SERVICE_CRYPTOCELL_MBEDTLS_SHA,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-447-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-448-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-449-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-450-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-451-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-452-/**
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-453- * @brief
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-466-    uint32_t *error_code,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-467-    uint32_t context_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-468-    uint32_t key_type,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-469-    uint32_t cipher,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-470-    uint32_t key_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-471-    uint32_t key_bits)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-472-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-473-  mbedtls_ccm_gcm_set_key_svc_t * p_svc = (mbedtls_ccm_gcm_set_key_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-474-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_ccm_gcm_set_key_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-475-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:476:  p_svc->send_context_addr = LocalToGlobal((void *)context_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-477-  p_svc->send_key_type = key_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-478-  p_svc->send_cipher = cipher;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:479:  p_svc->send_key_addr = LocalToGlobal((void *)key_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-480-  p_svc->send_key_bits = key_bits;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-481-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-482-  uint32_t err = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-483-                                       SERVICE_CRYPTOCELL_MBEDTLS_CCM_GCM_SET_KEY,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-484-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-485-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-486-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-487-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-488-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-489-/**
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-515-    uint32_t add_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-516-    uint32_t add_length,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-517-    uint32_t input_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-518-    uint32_t output_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-519-    uint32_t tag_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-520-    uint32_t tag_length)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-521-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-522-  mbedtls_ccm_gcm_crypt_svc_t * p_svc = (mbedtls_ccm_gcm_crypt_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-523-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_ccm_gcm_crypt_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-524-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:525:  p_svc->send_context_addr = LocalToGlobal((void *)context_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-526-  p_svc->send_crypt_type = crypt_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-527-  p_svc->send_length = length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:528:  p_svc->send_iv_addr = LocalToGlobal((void *)iv_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-529-  p_svc->send_iv_length = iv_length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:530:  p_svc->send_add_addr = LocalToGlobal((void *)add_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-531-  p_svc->send_add_length = add_length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:532:  p_svc->send_input_addr = LocalToGlobal((void *)input_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:533:  p_svc->send_output_addr = LocalToGlobal((void *)output_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:534:  p_svc->send_tag_addr = LocalToGlobal((void *)tag_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-535-  p_svc->send_tag_length = tag_length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-536-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-537-  uint32_t err = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-538-                                       SERVICE_CRYPTOCELL_MBEDTLS_CCM_GCM_CRYPT,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-539-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-540-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-541-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-542-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-543-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-544-/**
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-573-    uint32_t add_length,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-574-    uint32_t input_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-575-    uint32_t output_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-576-    uint32_t tag_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-577-    uint32_t tag_length)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-578-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-579-  mbedtls_ccm_gcm_svc_t * p_svc = (mbedtls_ccm_gcm_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-580-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_ccm_gcm_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-581-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-582-  p_svc->send_crypt_type = crypt_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:583:  p_svc->send_key_addr = LocalToGlobal((void *)key_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-584-  p_svc->send_key_bits = key_bits;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-585-  p_svc->send_length = length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:586:  p_svc->send_iv_addr = LocalToGlobal((void *)iv_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-587-  p_svc->send_iv_length = iv_length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:588:  p_svc->send_add_addr = LocalToGlobal((void *)add_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-589-  p_svc->send_add_length = add_length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:590:  p_svc->send_input_addr = LocalToGlobal((void *)input_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:591:  p_svc->send_output_addr = LocalToGlobal((void *)output_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:592:  p_svc->send_tag_addr = LocalToGlobal((void *)tag_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-593-  p_svc->send_tag_length = tag_length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-594-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-595-  uint32_t err = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-596-                                       SERVICE_CRYPTOCELL_MBEDTLS_CCM_GCM,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-597-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-598-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-599-  *error_code = p_svc->resp_error_code;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-600-  return err;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-601-}
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-602-
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-619-    uint32_t key_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-620-    uint32_t nonce_addr,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-621-    uint32_t counter,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-622-    uint32_t data_len,
+
+============================================================
+4. ACTIVE BOARD AND CONFIGURATION
+============================================================
+15:CONFIG_SOC_RESET_HOOK=y
+197:CONFIG_ETHOSU_VERBOSE_LEVEL=1
+544:CONFIG_BOARD="alif_b1_dk"
+545:CONFIG_BOARD_REVISION=""
+546:CONFIG_BOARD_TARGET="alif_b1_dk/ab1c1f4m51820ph0/rtss_he"
+548:CONFIG_BOARD_ALIF_B1_DK=y
+549:CONFIG_BOARD_ALIF_B1_DK_AB1C1F4M51820PH0_RTSS_HE=y
+550:CONFIG_BOARD_QUALIFIERS="ab1c1f4m51820ph0/rtss_he"
+560:CONFIG_SOC="ab1c1f4m51820ph0"
+561:CONFIG_SOC_SERIES="b1"
+562:CONFIG_SOC_FAMILY="balletto"
+563:CONFIG_SYSTEM_HEAP_ZEPHYR_DEFAULT=y
+564:# CONFIG_SYSTEM_HEAP_SRAM0 is not set
+565:# CONFIG_SYSTEM_HEAP_SRAM1 is not set
+567:CONFIG_SOC_SERIES_B1=y
+568:CONFIG_SOC_AB1C1F4M51820PH0=y
+569:CONFIG_SOC_AB1C1F4M51820PH0_RTSS_HE=y
+572:# CONFIG_SOC_FAMILY_ENSEMBLE is not set
+574:CONFIG_SOC_SUPPORT_ARM_MHUV2=y
+579:CONFIG_SOC_FAMILY_BALLETTO=y
+584:# CONFIG_SOC_LOG_LEVEL_OFF is not set
+585:# CONFIG_SOC_LOG_LEVEL_ERR is not set
+586:# CONFIG_SOC_LOG_LEVEL_WRN is not set
+587:# CONFIG_SOC_LOG_LEVEL_INF is not set
+588:# CONFIG_SOC_LOG_LEVEL_DBG is not set
+589:CONFIG_SOC_LOG_LEVEL_DEFAULT=y
+590:CONFIG_SOC_LOG_LEVEL=3
+893:# CONFIG_SOC_PREP_HOOK is not set
+894:# CONFIG_SOC_EARLY_INIT_HOOK is not set
+895:# CONFIG_SOC_LATE_INIT_HOOK is not set
+896:# CONFIG_SOC_PER_CORE_INIT_HOOK is not set
+897:# CONFIG_BOARD_EARLY_INIT_HOOK is not set
+898:# CONFIG_BOARD_LATE_INIT_HOOK is not set
+1886:CONFIG_ACTIVATION_BUF_SECTION=".bss.activation_buf"
+1887:CONFIG_ACTIVATION_BUF_SZ=0x120000
+1889:# CONFIG_ETHOS_U_AXI0_ONLY is not set
+
+============================================================
+5. ACTIVATION BUFFER DECLARATION
+============================================================
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf-20-CONFIG_AUDIO_DMIC=y
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf-21-
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf-22-# enable if CONFIG_OUTPUT_TO_LINE_OUT is set as ASR uses I2S for audio output
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf-23-CONFIG_I2S=n
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf-24-
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf-25-# B1 has only ~1.5MB of on-chip RAM (DTCM), so the tensor arena cannot be 2MB
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf-26-# like on E8. Use a model compiled with Vela for a smaller arena
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf-27-# (--arena-cache-size 560000), see readme.
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf:28:#CONFIG_ACTIVATION_BUF_SZ=0xA0000
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf:29:#CONFIG_ACTIVATION_BUF_SZ=0x100000
+beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.conf:30:CONFIG_ACTIVATION_BUF_SZ=0x120000
+--
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-4-#
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-5-# You should have received a copy of the Alif Semiconductor Software
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-6-# License Agreement with this file. If not, please write to:
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-7-# contact@alifsemi.com, or visit: https: //alifsemi.com/license
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-8-#
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-9-
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-10-CONFIG_SYSTEM_HEAP_SRAM0=y
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-11-CONFIG_LPGPIO_WAKEUP_SOURCE=0
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf:12:CONFIG_ACTIVATION_BUF_SECTION="SRAM0.activation_buf"
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-13-CONFIG_I2S=y
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf:14:CONFIG_ACTIVATION_BUF_SZ=0x200000
+--
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-4-#
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-5-# You should have received a copy of the Alif Semiconductor Software
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-6-# License Agreement with this file. If not, please write to:
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-7-# contact@alifsemi.com, or visit: https://alifsemi.com/license
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-8-#
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-9-
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-10-CONFIG_SYSTEM_HEAP_SRAM0=y
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-11-CONFIG_LPGPIO_WAKEUP_SOURCE=0
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf:12:CONFIG_ACTIVATION_BUF_SECTION="SRAM0.activation_buf"
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-13-CONFIG_I2S=y
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-14-CONFIG_AUDIO_DMIC=y
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf:15:CONFIG_ACTIVATION_BUF_SZ=0x200000
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-16-
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-17-CONFIG_PM=n
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-18-
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-19-# Application-kit hardware uses MXIC MX66UW OSPI profile.
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-20-CONFIG_OSPI_FLASH_IS25WX=n
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-21-CONFIG_OSPI_FLASH_MX66UW=y
+--
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-67-#endif
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-68-#else
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-69-#define LPGPIO_EWIC_CFG 0
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-70-#define LPGPIO_WAKEUP_EVENT 0
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-71-#endif
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-72-
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-73-namespace arm {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-74-namespace app {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:75:    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-76-
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-77-    namespace asr {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-78-        extern uint8_t* GetModelPointer();
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-79-        extern size_t GetModelLen();
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-80-    } /* namespace asr */
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-81-
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-82-} /* namespace app */
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-83-} /* namespace arm */
