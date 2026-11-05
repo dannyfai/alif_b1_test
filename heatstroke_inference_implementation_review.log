@@ -1,0 +1,813 @@
+===== CURRENT MAINLOOP =====
+     1	/* This file was ported to work on Alif Semiconductor devices. */
+     2	
+     3	/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+     4	 * Use, distribution and modification of this code is permitted under the
+     5	 * terms stated in the Alif Semiconductor Software License Agreement
+     6	 *
+     7	 * You should have received a copy of the Alif Semiconductor Software
+     8	 * License Agreement with this file. If not, please write to:
+     9	 * contact@alifsemi.com, or visit: https://alifsemi.com/license
+    10	 *
+    11	 */
+    12	
+    13	/*
+    14	 * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+    15	 * affiliates <open-source-office@arm.com>
+    16	 * SPDX-License-Identifier: Apache-2.0
+    17	 *
+    18	 * Licensed under the Apache License, Version 2.0 (the "License");
+    19	 * you may not use this file except in compliance with the License.
+    20	 * You may obtain a copy of the License at
+    21	 *
+    22	 *     http://www.apache.org/licenses/LICENSE-2.0
+    23	 *
+    24	 * Unless required by applicable law or agreed to in writing, software
+    25	 * distributed under the License is distributed on an "AS IS" BASIS,
+    26	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    27	 * See the License for the specific language governing permissions and
+    28	 * limitations under the License.
+    29	 */
+    30	#include "Labels.hpp"               /* For label strings. */
+    31	#include "UseCaseHandler.hpp"       /* Handlers for different user options. */
+    32	#include "BufAttributes.hpp"        /* Buffer attributes to be applied */
+    33	
+    34	/** Based on ML framework, set up the model namespace. */
+    35	#if defined(MLEK_FWK_TFLM)
+    36	//#include "mlek/fwk/tflm/Wav2LetterModel.hpp"    /* Model class for running inference. */
+    37	#include "PolyUModel1.hpp"
+    38	#include "mlek/use_case/asr/AsrClassifier.hpp"  /* Classifier. */
+    39	
+    40	using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+    41	#elif defined(MLEK_FWK_EXECUTORCH)
+    42	#include "ConformerModel.hpp"
+    43	
+    44	using AsrModel = arm::app::fwk::et::ConformerModel;
+    45	#endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+    46	
+    47	#include "power_mgr.h"             /* power management APIs */
+    48	#include <zephyr/logging/log.h>
+    49	#include <zephyr/kernel.h>
+    50	#include <zephyr/drivers/gpio.h>
+    51	
+    52	LOG_MODULE_REGISTER(MainLoop);
+    53	
+    54	#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+    55	#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+    56	
+    57	#if LPGPIO_WAKEUP_ENABLED
+    58	/* LPGPIO wake up source is used */
+    59	#define LPGPIO_EWIC_CFG EWIC_VBAT_GPIO
+    60	
+    61	#if CONFIG_LPGPIO_WAKEUP_SOURCE == 4
+    62	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO4
+    63	#elif CONFIG_LPGPIO_WAKEUP_SOURCE == 1
+    64	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO1
+    65	#else
+    66	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+    67	#endif
+    68	#else
+    69	#define LPGPIO_EWIC_CFG 0
+    70	#define LPGPIO_WAKEUP_EVENT 0
+    71	#endif
+    72	
+    73	namespace arm {
+    74	namespace app {
+    75	    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+    76	
+    77	    namespace asr {
+    78	        extern uint8_t* GetModelPointer();
+    79	        extern size_t GetModelLen();
+    80	    } /* namespace asr */
+    81	
+    82	} /* namespace app */
+    83	} /* namespace arm */
+    84	
+    85	
+    86	#if LPGPIO_WAKEUP_ENABLED
+    87	static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+    88		DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+    89	#endif
+    90	
+    91	
+    92	extern volatile uint8_t button_pressed;
+    93	static struct gpio_callback button_cb_data;
+    94	static bool por_boot;
+    95	static struct k_sem button_wait_sem;
+    96	
+    97	static void button_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+    98	{
+    99		ARG_UNUSED(dev);
+   100		ARG_UNUSED(cb);
+   101		ARG_UNUSED(pins);
+   102	
+   103		if (por_boot) {
+   104			/* Ignore button press event if it's from POR boot, as the button state may be unstable during POR. */
+   105			return;
+   106		}
+   107	
+   108		int val = gpio_pin_get_dt(&lpgpio_config);  // 1 = pressed, 0 = released
+   109	    if (val < 0) {
+   110	        LOG_ERR("Failed to read pin: %d", val);
+   111	        return;
+   112	    }
+   113	
+   114	    button_pressed = (val == 1);
+   115	    LOG_INF("Button %s", button_pressed ? "pressed" : "released");
+   116	
+   117		if (!k_sem_count_get(&button_wait_sem) && button_pressed) {
+   118			k_sem_give(&button_wait_sem);
+   119		}
+   120	}
+   121	
+   122	/**
+   123	 * Configure LPGPIO0 and LPGPIO1 as inputs with interrupts
+   124	 * With B1/E1C need to connect wire between SW5 (P5_7) and P15_0 to use button as Push-to-talk button.
+   125	 * With B1/E1C devkit you need to also remove resistor R64. */
+   126	static int configure_lpgpio(void)
+   127	{
+   128		int ret;
+   129		const struct gpio_dt_spec *spec = &lpgpio_config;
+   130	
+   131		if (!spec || !spec->port) {
+   132			/* Just ignore */
+   133			LOG_ERR("lpgpio invalid");
+   134			return -ENODEV;
+   135		}
+   136	
+   137		/* Configure LPGPIO0 for wakeup */
+   138		if (!gpio_is_ready_dt(spec)) {
+   139			LOG_ERR("LPGPIO0 device is not ready");
+   140			return -ENODEV;
+   141		}
+   142	
+   143		ret = gpio_pin_configure_dt(spec, GPIO_INPUT | spec->dt_flags);
+   144		if (ret != 0) {
+   145			LOG_ERR("Failed to configure LPGPIO as input: %d", ret);
+   146			return ret;
+   147		}
+   148	
+   149		ret = gpio_pin_interrupt_configure_dt(spec,
+   150						      GPIO_INT_EDGE_BOTH);
+   151		if (ret != 0) {
+   152			LOG_ERR("Failed to configure LPGPIO interrupt: %d", ret);
+   153			return ret;
+   154		}
+   155	
+   156		gpio_init_callback(&button_cb_data, button_callback, BIT(spec->pin));
+   157		ret = gpio_add_callback(spec->port, &button_cb_data);
+   158		if (ret != 0) {
+   159			LOG_ERR("Failed to add button callback: %d", ret);
+   160			return ret;
+   161		}
+   162	
+   163		LOG_INF("LPGPIO%d configured", spec->pin);
+   164	
+   165		return 0;
+   166	}
+   167	
+   168	/** @brief   Verify input and output tensor are of certain min dimensions. */
+   169	static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model);
+   170	
+   171	void MainLoop()
+   172	{
+   173		por_boot = true;
+   174		k_sem_init(&button_wait_sem, 0, 1);
+   175	
+   176		if (configure_lpgpio()) {
+   177			LOG_ERR("Failed to configure LPGPIO for button input");
+   178			return;
+   179		}
+   180	
+   181	    PolyUModel1 model; /* Model wrapper object. */
+   182	
+   183	    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+   184	                                                arm::app::asr::GetModelLen()};
+   185	    arm::app::fwk::iface::MemoryRegion computeMem{arm::app::activationBuf,
+   186	                                                  sizeof(arm::app::activationBuf)};
+   187		LOG_INF("=====================\n");
+   188		LOG_INF("Model Ptr: 0x%X", arm::app::asr::GetModelPointer());
+   189		LOG_INF("Model Size: %d", arm::app::asr::GetModelLen());
+   190		LOG_INF("Model data pointer: 0x%X", modelMem.data);
+   191		LOG_INF("Model Subgraph: %d", ::tflite::GetModel(modelMem.data)->subgraphs()->size());
+   192		const ::tflite::SubGraph* subgraph = ::tflite::GetModel(modelMem.data)->subgraphs()->Get(0);
+   193		uint32_t operators_size = ::tflite::NumSubgraphOperators(subgraph);
+   194		LOG_INF("Operators Size : %d", operators_size);
+   195		#include "tensorflow/lite/micro/micro_allocator.h"
+   196		LOG_INF("Node&Reg Size : %d (Total: %d)", sizeof(::tflite::NodeAndRegistration), sizeof(::tflite::NodeAndRegistration) * operators_size);
+   197		
+   198	    /* Load the model. */
+   199	    if (!model.Init(computeMem, modelMem)) {
+   200	        LOG_ERR("Failed to initialise model");
+   201	        return;
+   202	    }
+   203		LOG_INF("Init model: OK!");
+   204	
+   205	    if (!VerifyTensorDimensions(model)) {
+   206	        LOG_ERR("Model's input or output dimension verification failed");
+   207	        return;
+   208	    }
+   209	
+   210	    /* Instantiate application context. */
+   211	    arm::app::ApplicationContext caseContext;
+   212	    std::vector <std::string> labels;
+   213	    GetLabelsVector(labels);
+   214	
+   215	// #if defined(MLEK_FWK_TFLM)
+   216	//     arm::app::AsrClassifier classifier{
+   217	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputRowsIdx,
+   218	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputColsIdx,
+   219	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputRowsIdx,
+   220	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputColsIdx}; /* Classifier wrapper object. */
+   221	//     caseContext.Set<uint32_t>("frameLength", arm::app::asr::g_FrameLength);
+   222	//     caseContext.Set<uint32_t>("frameStride", arm::app::asr::g_FrameStride);
+   223	//     caseContext.Set<float>("scoreThreshold", arm::app::asr::g_ScoreThreshold);  /* Score threshold. */
+   224	//     caseContext.Set<uint32_t>("ctxLen", arm::app::asr::g_ctxLen);  /* Left and right context length (MFCC feat vectors). */
+   225	//     caseContext.Set<arm::app::AsrClassifier&>("classifier", classifier);
+   226	// #elif defined(MLEK_FWK_EXECUTORCH)
+   227	//     caseContext.Set<uint32_t>("melSpecWindowSize", arm::app::asr::g_melSpecWindowSize);
+   228	//     caseContext.Set<uint32_t>("melSpecHopSize", arm::app::asr::g_melSpecHopSize);
+   229	//     caseContext.Set<uint32_t>("chunkSize", arm::app::asr::g_chunkSize);
+   230	// #endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+   231	//     caseContext.Set<arm::app::fwk::iface::Model&>("model", model);
+   232	//     caseContext.Set<const std::vector <std::string>&>("labels", labels);
+   233	
+   234	// 	power_mgr_allow_sleep();
+   235	// 	por_boot = false;
+   236	
+   237	// 	while (1) {
+   238	// #if CONFIG_PUSH_TO_TALK
+   239	// 		LOG_INF("Push to talk start by going to STOP mode. Press button to start capturing audio.\n");
+   240	// 		LOG_INF("Release the button to stop capturing audio.\n");
+   241	// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+   242	// 		k_sem_reset(&button_wait_sem);
+   243	// 		k_sem_take(&button_wait_sem, K_FOREVER);
+   244	// #else
+   245	// 		LOG_INF("Press the button to start capturing audio...\n");
+   246	// 		LOG_INF("Release the button to stop capturing audio.\n");
+   247	// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+   248	// #endif
+   249	
+   250	// 		power_mgr_disable_sleep();
+   251	
+   252	// 		// Set button press to false to start capturing audio. In button callback, button_pressed will be set to true once the button is released.
+   253	// 		ClassifyAudioHandler(caseContext);
+   254	// #if CONFIG_PUSH_TO_TALK
+   255	// 		power_mgr_allow_sleep();
+   256	// 		/* In sleep.overlay, min-residency-us is 1s, so sleep for longer than,
+   257	// 		   that to ensure we enter the deepest sleep state. Which in Alif
+   258	// 		   chip is STOP mode. */
+   259	// #endif
+   260	// 	}
+   261	}
+   262	
+   263	static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model)
+   264	{
+   265	    /* Populate tensor related parameters. */
+   266	    auto inputTensor = model.GetInputTensor(0);
+   267		LOG_ERR("Input tensor size = %d\n", inputTensor->Shape().size());
+   268	    if (inputTensor->Shape().empty()) {
+   269	        LOG_ERR("Invalid input tensor dims\n");
+   270	        return false;
+   271	    }
+   272	    if (inputTensor->Shape().size() < 3) {
+   273	        LOG_ERR("Input tensor dimension should be >= 3\n");
+   274	        return false;
+   275	    }
+   276	
+   277	    auto outputTensor = model.GetOutputTensor(0);
+   278		LOG_ERR("Output tensor size = %d\n", outputTensor->Shape().size());
+   279	    if (outputTensor->Shape().empty()) {
+   280	        LOG_ERR("Invalid output tensor dims\n");
+   281	        return false;
+   282	    }
+   283	
+   284	    if (outputTensor->Shape().size() < 3) {
+   285	        LOG_ERR("Output tensor dimension should be >= 3\n");
+   286	        return false;
+   287	    }
+   288	
+   289	    return true;
+   290	}
+
+===== TFLM TENSOR HEADER =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or
+     3	 * its affiliates <open-source-office@arm.com>
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 *
+     6	 * Licensed under the Apache License, Version 2.0 (the "License");
+     7	 * you may not use this file except in compliance with the License.
+     8	 * You may obtain a copy of the License at
+     9	 *
+    10	 *     http://www.apache.org/licenses/LICENSE-2.0
+    11	 *
+    12	 * Unless required by applicable law or agreed to in writing, software
+    13	 * distributed under the License is distributed on an "AS IS" BASIS,
+    14	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	 * See the License for the specific language governing permissions and
+    16	 * limitations under the License.
+    17	 */
+    18	
+    19	#ifndef MLEK_TFLM_TENSOR_HPP
+    20	#define MLEK_TFLM_TENSOR_HPP
+    21	
+    22	#include "mlek/fwk/iface/Tensor.hpp"
+    23	#include "mlek/fwk/tflm/TensorFlowLiteMicro.hpp"
+    24	#include <vector>
+    25	
+    26	namespace arm::app::fwk::tflm {
+    27	
+    28	class TflmTensor : public iface::TensorIface {
+    29	public:
+    30	    explicit TflmTensor(TfLiteTensor* tensor); /**< Constructor */
+    31	    ~TflmTensor() override = default;          /** Destructor */
+    32	    void* GetData() override;
+    33	    size_t Bytes() override;
+    34	    size_t GetNumElements() override;
+    35	    iface::TensorType Type() override;
+    36	    iface::TensorLayout Layout() override;
+    37	    std::vector<size_t> Shape() override;
+    38	    iface::QuantParams GetQuantParams() override;
+    39	
+    40	private:
+    41	    TfLiteTensor* m_tensor{nullptr};
+    42	};
+    43	
+    44	} // namespace arm::app::fwk::tflm
+    45	
+    46	#endif /* MLEK_TFLM_TENSOR_HPP */
+
+===== TFLM TENSOR IMPLEMENTATION =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or
+     3	 * its affiliates <open-source-office@arm.com>
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 *
+     6	 * Licensed under the Apache License, Version 2.0 (the "License");
+     7	 * you may not use this file except in compliance with the License.
+     8	 * You may obtain a copy of the License at
+     9	 *
+    10	 *     http://www.apache.org/licenses/LICENSE-2.0
+    11	 *
+    12	 * Unless required by applicable law or agreed to in writing, software
+    13	 * distributed under the License is distributed on an "AS IS" BASIS,
+    14	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	 * See the License for the specific language governing permissions and
+    16	 * limitations under the License.
+    17	 */
+    18	
+    19	#include "mlek/fwk/tflm/TflmTensor.hpp"
+    20	#include <cassert>
+    21	
+    22	namespace arm::app::fwk::tflm {
+    23	
+    24	TflmTensor::TflmTensor(TfLiteTensor* tensor) : m_tensor(tensor) {}
+    25	
+    26	void* TflmTensor::GetData()
+    27	{
+    28	    assert(this->m_tensor);
+    29	    return this->m_tensor->data.data;
+    30	}
+    31	
+    32	size_t TflmTensor::Bytes()
+    33	{
+    34	    assert(this->m_tensor);
+    35	    return this->m_tensor->bytes;
+    36	}
+    37	
+    38	size_t TflmTensor::GetNumElements()
+    39	{
+    40	    assert(this->m_tensor);
+    41	    const auto shape = this->Shape();
+    42	    size_t nElements = 1;
+    43	    for (auto& dim : shape) {
+    44	        nElements *= dim;
+    45	    }
+    46	    return nElements;
+    47	}
+    48	
+    49	std::vector<size_t> TflmTensor::Shape()
+    50	{
+    51	    assert(this->m_tensor);
+    52	    assert(this->m_tensor->dims);
+    53	    return std::vector<size_t>(this->m_tensor->dims->data,
+    54	                               this->m_tensor->dims->data + this->m_tensor->dims->size);
+    55	}
+    56	
+    57	iface::TensorType TflmTensor::Type()
+    58	{
+    59	    assert(this->m_tensor);
+    60	
+    61	    switch (this->m_tensor->type) {
+    62	    case kTfLiteUInt8:
+    63	        return iface::TensorType::UINT8;
+    64	    case kTfLiteInt8:
+    65	        return iface::TensorType::INT8;
+    66	    case kTfLiteInt16:
+    67	        return iface::TensorType::INT16;
+    68	    case kTfLiteInt32:
+    69	        return iface::TensorType::INT32;
+    70	    case kTfLiteFloat16:
+    71	        return iface::TensorType::FP16;
+    72	    case kTfLiteFloat32:
+    73	        return iface::TensorType::FP32;
+    74	    default:
+    75	        return iface::TensorType::INVALID;
+    76	    }
+    77	}
+    78	
+    79	iface::TensorLayout TflmTensor::Layout()
+    80	{
+    81	    return iface::TensorLayout::NHWC;
+    82	}
+    83	
+    84	iface::QuantParams TflmTensor::GetQuantParams()
+    85	{
+    86	    iface::QuantParams params{0.f, 0};
+    87	    assert(this->m_tensor);
+    88	    if (kTfLiteAffineQuantization == this->m_tensor->quantization.type) {
+    89	        auto* quantParams =
+    90	            reinterpret_cast<TfLiteAffineQuantization*>(this->m_tensor->quantization.params);
+    91	        if (quantParams && 0 == quantParams->quantized_dimension) {
+    92	            if (quantParams->scale->size) {
+    93	                params.scale = quantParams->scale->data[0];
+    94	            }
+    95	            if (quantParams->zero_point->size) {
+    96	                params.offset = quantParams->zero_point->data[0];
+    97	            }
+    98	        } else if (this->m_tensor->params.scale != 0.0) {
+    99	            /* Legacy tensorflow quantisation parameters */
+   100	            params.scale  = this->m_tensor->params.scale;
+   101	            params.offset = this->m_tensor->params.zero_point;
+   102	        }
+   103	    }
+   104	    return params;
+   105	}
+   106	
+   107	} // namespace arm::app::fwk::tflm
+
+===== GENERIC TENSOR INTERFACE =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or
+     3	 * its affiliates <open-source-office@arm.com>
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 *
+     6	 * Licensed under the Apache License, Version 2.0 (the "License");
+     7	 * you may not use this file except in compliance with the License.
+     8	 * You may obtain a copy of the License at
+     9	 *
+    10	 *     http://www.apache.org/licenses/LICENSE-2.0
+    11	 *
+    12	 * Unless required by applicable law or agreed to in writing, software
+    13	 * distributed under the License is distributed on an "AS IS" BASIS,
+    14	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	 * See the License for the specific language governing permissions and
+    16	 * limitations under the License.
+    17	 */
+    18	
+    19	#ifndef MLEK_TENSOR_HPP
+    20	#define MLEK_TENSOR_HPP
+    21	
+    22	#include <cstddef>
+    23	#include <vector>
+    24	
+    25	namespace arm::app::fwk::iface {
+    26	
+    27	/** Struct for quantization parameters. */
+    28	struct QuantParams {
+    29	    float scale{0.0};
+    30	    int offset{0};
+    31	};
+    32	
+    33	/** Enum representing tensor data types supported. */
+    34	enum class TensorType { INT8 = 0, UINT8 = 1, INT16 = 2, INT32 = 3, FP16 = 4, FP32 = 5, INVALID = 6 };
+    35	
+    36	/** Enum representing tensor layout. */
+    37	enum class TensorLayout { NHWC = 0, NCHW = 1, INVALID = 2 };
+    38	
+    39	/**
+    40	 * @brief       Gets the tensor data type name as character array.
+    41	 * @param[in]   type Tensor data type object.
+    42	 * @return      String represented as const char pointer.
+    43	 */
+    44	const inline char* GetTensorDataTypeName(const TensorType type)
+    45	{
+    46	    switch (type) {
+    47	    case TensorType::INT8:
+    48	        return "int8";
+    49	    case TensorType::UINT8:
+    50	        return "uint8";
+    51	    case TensorType::INT16:
+    52	        return "int16";
+    53	    case TensorType::INT32:
+    54	        return "int32";
+    55	    case TensorType::FP16:
+    56	        return "fp16";
+    57	    case TensorType::FP32:
+    58	        return "fp32";
+    59	    default:
+    60	        return "unknown";
+    61	    }
+    62	}
+    63	
+    64	/**
+    65	 * @brief       Gets the tensor data type name as character array.
+    66	 * @param[in]   type Tensor data type object.
+    67	 * @return      String represented as const char pointer.
+    68	 */
+    69	const inline char* GetTensorLayoutName(const TensorLayout layout)
+    70	{
+    71	    switch (layout) {
+    72	    case TensorLayout::NHWC:
+    73	        return "NHWC";
+    74	    case TensorLayout::NCHW:
+    75	        return "NCHW";
+    76	    default:
+    77	        return "unknown";
+    78	    }
+    79	}
+    80	
+    81	/**
+    82	 * @brief       Gets the tensor element size in bytes.
+    83	 * @param[in]   type Tensor data type object.
+    84	 * @return      Number of bytes as a signed integer.
+    85	 */
+    86	inline int GetTensorDataTypeSize(const TensorType type)
+    87	{
+    88	    switch (type) {
+    89	    case TensorType::INT8:
+    90	        [[fallthrough]];
+    91	    case TensorType::UINT8:
+    92	        return 1;
+    93	    case TensorType::INT16:
+    94	        [[fallthrough]];
+    95	    case TensorType::FP16:
+    96	        return 2;
+    97	    case TensorType::INT32:
+    98	        [[fallthrough]];
+    99	    case TensorType::FP32:
+   100	        return 4;
+   101	    default:
+   102	        return 0;
+   103	    }
+   104	}
+   105	
+   106	/**
+   107	 * @brief Tensor interface class.
+   108	 */
+   109	class TensorIface {
+   110	public:
+   111	    TensorIface()                        = default; /**< Constructor */
+   112	    virtual ~TensorIface()               = default; /** Destructor */
+   113	
+   114	    /** Gets pointer to actual tensor data. */
+   115	    virtual void* GetData()              = 0;
+   116	
+   117	    /** Gets number of bytes occupied by tensor data. */
+   118	    virtual size_t Bytes()               = 0;
+   119	
+   120	    /** Gets number of elements in the tensor (all dimensions combined). */
+   121	    virtual size_t GetNumElements()      = 0;
+   122	
+   123	    /** Gets the tensor data type. */
+   124	    virtual TensorType Type()            = 0;
+   125	
+   126	    /** Gets the tensor layout. */
+   127	    virtual TensorLayout Layout()        = 0;
+   128	
+   129	    /** Gets the tensor shape, expressed as a std::vector */
+   130	    virtual std::vector<size_t> Shape()  = 0;
+   131	
+   132	    /** Gets the quantization parameters for this tensor. */
+   133	    virtual QuantParams GetQuantParams() = 0;
+   134	
+   135	    /** Utility function to get the tensor data pointer in required pointer format. */
+   136	    template <typename T>
+   137	    T* GetData()
+   138	    {
+   139	        return reinterpret_cast<T*>(this->GetData());
+   140	    }
+   141	};
+   142	} // namespace arm::app::fwk::iface
+   143	
+   144	#endif /* MLEK_TENSOR_HPP */
+
+===== TFLM MODEL INITIALIZATION =====
+    65	        if (!op || op->opcode_index() != ethos_u_opcode) {
+    66	            continue;
+    67	        }
+    68	        const auto* inputs = op->inputs();
+    69	        if (!inputs || inputs->size() <= 3) {
+    70	            continue;
+    71	        }
+    72	
+    73	        /* Vela places tensor arena at index 2 and fast scratch buffer at index 3. */
+    74	        const int32_t arena_idx = inputs->Get(2);
+    75	        const int32_t scratch_idx = inputs->Get(3);
+    76	        if (arena_idx < 0 || scratch_idx < 0) {
+    77	            continue;
+    78	        }
+    79	
+    80	        const tflite::Tensor* arena = subgraph->tensors()->Get(arena_idx);
+    81	        const tflite::Tensor* scratch = subgraph->tensors()->Get(scratch_idx);
+    82	        if (!arena || !scratch) {
+    83	            continue;
+    84	        }
+    85	
+    86	        const auto arena_shape = arena->shape();
+    87	        const auto scratch_shape = scratch->shape();
+    88	        if (!arena_shape || !scratch_shape || arena_shape->size() < 1 ||
+    89	            scratch_shape->size() < 1 || arena_shape->Get(0) < 1) {
+    90	            continue;
+    91	        }
+    92	
+    93	        if (arena_shape->Get(0) == scratch_shape->Get(0)) {
+    94	            return "Sram_Only/Shared_Sram";
+    95	        }
+    96	        return "Dedicated_Sram";
+    97	    }
+    98	
+    99	    return {};
+   100	}
+   101	} /* anonymous namespace */
+   102	
+   103	TflmModel::TflmModel() {}
+   104	
+   105	/* Initialise the model */
+   106	bool TflmModel::Init(iface::MemoryRegion& computeBuffer,
+   107	                     iface::MemoryRegion& nnModel,
+   108	                     const void* backendData)
+   109	{
+   110	    /* Following tf lite micro example:
+   111	     * Map the model into a usable data structure. This doesn't involve any
+   112	     * copying or parsing, it's a very lightweight operation. */
+   113	    debug("loading model from @ 0x%p\n", nnModel.data);
+   114	    debug("model size: %" PRIu32 " bytes.\n", nnModel.size);
+   115	
+   116	    /* Enable logging before we start interacting with the framework. */
+   117	    EnableTFLMLog();
+   118	
+   119	    this->m_backendData.m_pModel = ::tflite::GetModel(nnModel.data);
+   120	
+   121	    if (this->m_backendData.m_pModel->version() != TFLITE_SCHEMA_VERSION) {
+   122	        printf_err("Model's schema version %" PRIu32 " is not equal "
+   123	                   "to supported version %d.",
+   124	                   this->m_backendData.m_pModel->version(),
+   125	                   TFLITE_SCHEMA_VERSION);
+   126	        return false;
+   127	    }
+   128	
+   129	    this->m_computeBuffer = computeBuffer;
+   130	    this->m_modelBuffer   = nnModel;
+   131	
+   132	    /* Pull in only the operation implementations we need.
+   133	     * This relies on a complete list of all the ops needed by this graph.
+   134	     * An easier approach is to just use the AllOpsResolver, but this will
+   135	     * incur some penalty in code space for op implementations that are not
+   136	     * needed by this graph.
+   137	     * static ::tflite::ops::micro::AllOpsResolver resolver; */
+   138	    /* NOLINTNEXTLINE(runtime-global-variables) */
+   139	    debug("loading op resolver\n");
+   140	
+   141	    this->EnlistOperations();
+   142	
+   143	    /** If backend data has been provided, re-use the allocator */
+   144	    if (backendData) {
+   145	        this->m_backendData.m_pAllocator =
+   146	            reinterpret_cast<const TflmBackendData*>(backendData)->m_pAllocator;
+   147	    }
+   148	
+   149	    /* Create allocator instance, if it doesn't exist */
+   150	    if (!this->m_backendData.m_pAllocator) {
+   151	        /* Create an allocator instance */
+   152	        info("Creating allocator using tensor arena at 0x%p\n", computeBuffer.data);
+   153	
+   154	        this->m_backendData.m_pAllocator =
+   155	            tflite::MicroAllocator::Create(computeBuffer.data, computeBuffer.size);
+   156	
+   157	        if (!this->m_backendData.m_pAllocator) {
+   158	            printf_err("Failed to create allocator\n");
+   159	            return false;
+   160	        }
+   161	        debug("Created new allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   162	    } else {
+   163	        debug("Using existing allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   164	    }
+   165	
+   166	    this->m_backendData.m_pInterpreter = std::make_unique<tflite::MicroInterpreter>(
+   167	        this->m_backendData.m_pModel, this->GetOpResolver(), this->m_backendData.m_pAllocator);
+   168	
+   169	    if (!this->m_backendData.m_pInterpreter) {
+   170	        printf_err("Failed to allocate interpreter\n");
+   171	        return false;
+   172	    }
+   173	
+   174	    /* Allocate memory from the tensor_arena for the model's tensors. */
+   175	    info("Allocating tensors\n");
+   176	    TfLiteStatus allocate_status = this->m_backendData.m_pInterpreter->AllocateTensors();
+   177	
+   178	    if (allocate_status != kTfLiteOk) {
+   179	        printf_err("tensor allocation failed!\n");
+   180	        return false;
+   181	    }
+   182	
+   183	    /* Get information about the memory area to use for the model's input. */
+   184	    this->m_input.resize(this->GetNumInputs());
+   185	    for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   186	        this->m_input[inIndex] =
+   187	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->input(inIndex));
+   188	    }
+   189	
+   190	    this->m_output.resize(this->GetNumOutputs());
+   191	    for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+   192	        this->m_output[outIndex] =
+   193	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->output(outIndex));
+   194	    }
+   195	
+   196	    if (this->m_input.empty() || this->m_output.empty()) {
+   197	        printf_err("failed to get tensors\n");
+   198	        return false;
+   199	    } else {
+   200	        this->m_type = this->m_input[0]->Type(); /* Input 0 should be the main input */
+   201	
+   202	        /* Clear the input & output tensors */
+   203	        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   204	            std::memset(this->m_input[inIndex]->GetData(), 0, this->m_input[inIndex]->Bytes());
+   205	        }
+   206	        for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+   207	            std::memset(this->m_output[outIndex]->GetData(), 0, this->m_output[outIndex]->Bytes());
+   208	        }
+   209	
+   210	        this->LogInterpreterInfo();
+   211	    }
+   212	
+   213	    this->m_inited = true;
+   214	    return true;
+   215	}
+   216	
+   217	std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+   218	{
+   219	    if (index < this->GetNumInputs()) {
+   220	        return this->m_input.at(index);
+   221	    }
+   222	    return {};
+   223	}
+   224	
+   225	std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+
+===== TFLM MODEL RUN INFERENCE =====
+   340	        const tflite::Operator* op         = subgraph->operators()->Get(i);
+   341	        const tflite::OperatorCode* opcode = opcodes->Get(op->opcode_index());
+   342	
+   343	        auto builtin_code = tflite::GetBuiltinCode(opcode);
+   344	        if ((builtin_code == tflite::BuiltinOperator_CUSTOM) &&
+   345	            (nullptr != opcode->custom_code()) &&
+   346	            ("ethos-u" == std::string(opcode->custom_code()->c_str()))) {
+   347	            return true;
+   348	        }
+   349	    }
+   350	    return false;
+   351	}
+   352	
+   353	bool TflmModel::RunInference()
+   354	{
+   355	    bool inference_state = false;
+   356	    if (this->m_backendData.m_pModel && this->m_backendData.m_pInterpreter) {
+   357	        if (kTfLiteOk != this->m_backendData.m_pInterpreter->Invoke()) {
+   358	            printf_err("Invoke failed.\n");
+   359	        } else {
+   360	            inference_state = true;
+   361	        }
+   362	    } else {
+   363	        printf_err("Error: No interpreter!\n");
+   364	    }
+   365	    return inference_state;
+   366	}
+   367	
+   368	size_t TflmModel::GetNumInputs() const
+   369	{
+   370	    if (this->m_backendData.m_pModel && this->m_backendData.m_pInterpreter) {
+   371	        return this->m_backendData.m_pInterpreter->inputs_size();
+   372	    }
+   373	    return 0;
+   374	}
+   375	
+
+===== CURRENT APPLICATION MODEL SOURCE FILES =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp.bak_before_heatstroke_bilstm
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/reverse.h.old
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/reverse_v2.h
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/UseCaseHandler.hpp
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc.bak_20261105_175526
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc.bak_20261105_201251
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_20261105_174212
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_before_heatstroke_bilstm
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/reverse.cc.old
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/reverse_v2.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
