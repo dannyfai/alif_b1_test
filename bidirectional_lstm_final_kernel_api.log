@@ -1,0 +1,864 @@
+===== LSTM EVAL HEADER: TYPES AND HELPERS =====
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	// Functions to perform integer evaulation for standard LSTM (e.g., defined in
+    17	// the keras lstm layer, no peephole etc.). Currently used by the 16 bits
+    18	// activation case only
+    19	
+    20	#ifndef TENSORFLOW_LITE_MICRO_KERNELS_LSTM_EVAL_GENERAL_H_
+    21	#define TENSORFLOW_LITE_MICRO_KERNELS_LSTM_EVAL_GENERAL_H_
+    22	#include <algorithm>
+    23	#include <cstdint>
+    24	
+    25	#include "tensorflow/lite/c/builtin_op_data.h"
+    26	#include "tensorflow/lite/c/common.h"
+    27	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    28	#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+    29	#include "tensorflow/lite/micro/micro_log.h"
+    30	
+    31	namespace tflite {
+    32	
+    33	// Interface to access all the TempTfLiteTensors of the LSTM kernel during the
+    34	// preparation phase. Can only be constructed through the constructor to avoid
+    35	// memory leakage. All TempTfLiteTensors will be deallocated through the
+    36	// destructor.
+    37	class LstmTensors {
+    38	 public:
+    39	  LstmTensors(const LstmTensors& other) = delete;
+    40	  LstmTensors& operator=(const LstmTensors& other) = delete;
+    41	
+    42	  LstmTensors(TfLiteContext* context, TfLiteNode* node);
+    43	  ~LstmTensors();
+    44	
+    45	  // Verify the LSTM internal tensor properties (e.g., type checks)
+    46	  // Input/output/states/fc weights tensors are required for kernel evaulation.
+    47	  // The state tensors should be variables. Variants of the standard LSTM
+    48	  // are not supported here, therefore their corresponding tensors should be
+    49	  // invalid
+    50	  TfLiteStatus ValidateTensorStatus(TfLiteContext* context) const;
+    51	
+    52	  // Internal tensors. see lstm_shared.h for tensor names
+    53	  const TfLiteTensor* GetInternalTensor(const int tensor_index) const {
+    54	    return internal_tensors_[tensor_index];
+    55	  }
+    56	
+    57	  const TfLiteTensor* HiddenStateTensor() const {
+    58	    return internal_tensors_[kLstmOutputStateTensor];
+    59	  }
+    60	  const TfLiteTensor* CellStateTensor() const {
+    61	    return internal_tensors_[kLstmCellStateTensor];
+    62	  }
+    63	  const TfLiteTensor* OutputTensor() const { return output_tensor_; }
+    64	
+    65	 private:
+    66	  // see lstm_shared.h for tensor names
+    67	  MicroContext* micro_context_;
+    68	  TfLiteTensor* internal_tensors_[24];
+    69	  TfLiteTensor* output_tensor_;
+    70	};
+    71	
+    72	// Deduce the size information (Batch (B), Time Steps (T), Input dimension (I),
+    73	// State dimension (S)) that defines the LSTM using the input and hidden state
+    74	// tensor
+    75	LstmSizeInfo CreateLstmSizeInfo(
+    76	    const bool time_major, const TfLiteIntArray* input_tensor_shape,
+    77	    const TfLiteIntArray* hidden_state_tensor_shape);
+    78	
+    79	TfLiteStatus ValidateWeightTensorSize(TfLiteContext* context,
+    80	                                      const TfLiteTensor* tensor, int dim1_size,
+    81	                                      int dim2_size);
+    82	
+    83	TfLiteStatus ValidateBiasTensorSize(TfLiteContext* context,
+    84	                                    const TfLiteTensor* tensor, int size);
+    85	
+    86	// Go through every tensors and make sure their shape match the kernel
+    87	// configuration
+    88	TfLiteStatus ValidateTensorSize(TfLiteContext* context,
+    89	                                const LstmTensors& tensors,
+    90	                                const LstmSizeInfo& size_info);
+    91	
+    92	// Wrapper function to create gate parameters for the four internal LSTM gates
+    93	TfLiteStatus CreateGateParams(
+    94	    TfLiteContext* context,
+    95	    /*Input tensors*/
+    96	    const TfLiteTensor* input, const TfLiteTensor* input_weight,
+    97	    const TfLiteTensor* input_bias,
+    98	    /*Hidden state tensors*/
+    99	    const TfLiteTensor* hidden_state, const TfLiteTensor* hidden_state_weight,
+   100	    const TfLiteTensor* hidden_state_bias,
+   101	    /*Scale of the fc output (input to non-linear activation)*/
+   102	    const float nonlinear_activation_input_scale, const TfLiteType cell_type,
+   103	    const tflite::GateParameters& gate_params);
+   104	
+   105	// Create parameters for element wise multiplication that happens in a) cell
+   106	// state update ; b) hidden state update
+   107	// Note that all the output of gates are symmetrically quantized so only scales
+   108	// are required for input. However, during the hidden state update phase, the
+   109	// output is the updated hidden state, which is asymmetrically quantized. Thus
+   110	// output may require zero point
+   111	tflite::ArithmeticParams CreateInterGateMulParams(const float input1_scale,
+   112	                                                  const float input2_scale,
+   113	                                                  const float output_scale,
+   114	                                                  const TfLiteType output_type,
+   115	                                                  const int output_zp = 0);
+   116	
+   117	// Create the additional information about the cell state, which include:
+   118	// cell_state_scale_power: used in integer nonlinear function (e.g., tanh)
+   119	// quantized_cell_clip: quantized cell clip range
+   120	CellStateInfo CreateLstmCellStateInfo(const float cell_state_scale,
+   121	                                      const float cell_clip);
+   122	
+   123	CellStateInfo CreateLstmCellStateInfoFloat(const float cell_clip);
+   124	tflite::FullyConnectedParams CreateFCParamsFloat();
+   125	
+   126	tflite::GateParameters CreateGateParamsFloat();
+   127	
+   128	tflite::ArithmeticParams CreateInterGateMulParamsFloat();
+   129	
+   130	TfLiteStatus PrepareGateParametersFloat(TfLiteContext* context,
+   131	                                        const LstmTensors& lstm_tensors,
+   132	                                        OpDataLSTM* op_data_lstm);
+   133	
+   134	TfLiteStatus PrepareGateParametersInteger(TfLiteContext* context,
+   135	                                          const LstmTensors& lstm_tensors,
+   136	                                          OpDataLSTM* op_data_lstm);
+   137	
+   138	LSTMKernelContents CreateLSTMKernelContent(TfLiteContext* context,
+   139	                                           TfLiteNode* node);
+   140	
+   141	template <typename CellType>
+   142	LSTMBuffers<CellType> CreateLSTMBuffers(TfLiteContext* context,
+   143	                                        const int* buffer_indices) {
+   144	  LSTMBuffers<CellType> buffers;
+   145	  buffers.buffer0 = reinterpret_cast<CellType*>(
+   146	      context->GetScratchBuffer(context, buffer_indices[0]));
+   147	  buffers.buffer1 = reinterpret_cast<CellType*>(
+   148	      context->GetScratchBuffer(context, buffer_indices[1]));
+   149	  buffers.buffer2 = reinterpret_cast<CellType*>(
+   150	      context->GetScratchBuffer(context, buffer_indices[2]));
+   151	  buffers.buffer3 = reinterpret_cast<CellType*>(
+   152	      context->GetScratchBuffer(context, buffer_indices[3]));
+   153	  return buffers;
+   154	}
+   155	
+   156	// Since LSTM includes multiple intermediate stages, introducing the internal
+   157	// namespace to expose them for testing
+   158	namespace lstm_internal {
+   159	
+   160	void Sigmoid(const RuntimeShape& data_shape, int16_t* data);
+   161	
+   162	void Sigmoid(const RuntimeShape& data_shape, float* data);
+   163	
+   164	void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+   165	          int16_t* input_data, const RuntimeShape& output_data_shape,
+   166	          int16_t* output_data);
+   167	
+   168	void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+   169	          float* input_data, const RuntimeShape& output_data_shape,
+   170	          float* output_data);
+   171	
+   172	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   173	         const int16_t* input1_data, const int16_t* input2_data,
+   174	         int8_t* output_data);
+   175	
+   176	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   177	         const int16_t* input1_data, const int16_t* input2_data,
+   178	         int16_t* output_data);
+   179	
+   180	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   181	         const float* input1_data, const float* input2_data,
+   182	         float* output_data);
+   183	
+   184	void FullyConnected(const FullyConnectedParams& params,
+   185	                    const RuntimeShape& input_shape, const int8_t* input_data,
+   186	                    const RuntimeShape& filter_shape, const int8_t* filter_data,
+   187	                    const RuntimeShape& bias_shape, const int32_t* bias_data,
+   188	                    const RuntimeShape& output_shape, int16_t* output_data);
+   189	
+   190	void FullyConnected(const FullyConnectedParams& params,
+   191	                    const RuntimeShape& input_shape, const int16_t* input_data,
+   192	                    const RuntimeShape& filter_shape, const int8_t* filter_data,
+   193	                    const RuntimeShape& bias_shape, const int64_t* bias_data,
+   194	                    const RuntimeShape& output_shape, int16_t* output_data);
+   195	
+   196	void FullyConnected(const FullyConnectedParams& params,
+   197	                    const RuntimeShape& input_shape, const float* input_data,
+   198	                    const RuntimeShape& filter_shape, const float* filter_data,
+   199	                    const RuntimeShape& bias_shape, const float* bias_data,
+   200	                    const RuntimeShape& output_shape, float* output_data);
+   201	
+   202	void AddElementWise(const int16_t* input_1, const int16_t* input_2, int n_batch,
+   203	                    int n_input, int16_t* output);
+   204	
+   205	void AddElementWise(const float* input_1, const float* input_2, int n_batch,
+   206	                    int n_input, float* output);
+   207	
+   208	void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+   209	              int16_t* vector);
+   210	
+   211	void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+   212	              float* vector);
+   213	
+   214	// Manages the slice position (offset), slice length (sliced tensor shape),
+   215	// and update rules for input/output/hidden state/cell state tensors at each
+   216	// time step.
+   217	class LstmStepManager {
+   218	 public:
+   219	  LstmStepManager() = delete;
+   220	  // Does not take any ownership, and all pointers must refer to valid objects
+   221	  // that outlive the one constructed.
+   222	  explicit LstmStepManager(const LstmSizeInfo* size_info)
+   223	      : size_info_(*size_info) {}
+   224	
+   225	  void UpdateTime();
+   226	  void UpdateBatch();
+   227	
+   228	  void ResetTime() { current_time_ = 0; }
+   229	  RuntimeShape InputShape() const;
+   230	  RuntimeShape StateShape() const;
+   231	
+   232	  int InputOffset() const { return input_offset_; }
+   233	  int OutputOffset() const { return output_offset_; }
+   234	  int HiddenStateOffset() const { return hidden_state_offset_; }
+   235	  int CellStateOffset() const { return cell_state_offset_; }
+   236	
+   237	 private:
+   238	  int current_time_ = 0;
+   239	  int current_batch_ = 0;
+   240	  int input_offset_ = 0;
+
+===== LSTM EVAL COMMON: HELPER IMPLEMENTATIONS =====
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	#include "tensorflow/lite/kernels/internal/quantization_util.h"
+    17	#include "tensorflow/lite/kernels/kernel_util.h"
+    18	#include "tensorflow/lite/micro/kernels/fully_connected.h"
+    19	#include "tensorflow/lite/micro/kernels/lstm_eval.h"
+    20	
+    21	namespace tflite {
+    22	
+    23	// Deduce the size information (Batch (B), Time Steps (T), Input dimension (I),
+    24	// State dimension (S)) that defines the LSTM using the input and hidden state
+    25	// tensor
+    26	LstmSizeInfo CreateLstmSizeInfo(
+    27	    const bool time_major, const TfLiteIntArray* input_tensor_shape,
+    28	    const TfLiteIntArray* hidden_state_tensor_shape) {
+    29	  LstmSizeInfo size_info;
+    30	  size_info.time_major = time_major;
+    31	  size_info.batch_size =
+    32	      time_major ? input_tensor_shape->data[1] : input_tensor_shape->data[0];
+    33	  size_info.time_steps =
+    34	      time_major ? input_tensor_shape->data[0] : input_tensor_shape->data[1];
+    35	  size_info.input_dimension = input_tensor_shape->data[2];
+    36	  size_info.state_dimension = hidden_state_tensor_shape->data[1];
+    37	  return size_info;
+    38	}
+    39	
+    40	TfLiteStatus ValidateWeightTensorSize(TfLiteContext* context,
+    41	                                      const TfLiteTensor* tensor, int dim1_size,
+    42	                                      int dim2_size) {
+    43	  TF_LITE_ENSURE_EQ(context, tensor->dims->size, 2);
+    44	  TF_LITE_ENSURE_EQ(context, tensor->dims->data[0], dim1_size);
+    45	  TF_LITE_ENSURE_EQ(context, tensor->dims->data[1], dim2_size);
+    46	  return kTfLiteOk;
+    47	}
+    48	
+    49	TfLiteStatus ValidateBiasTensorSize(TfLiteContext* context,
+    50	                                    const TfLiteTensor* tensor, int size) {
+    51	  TF_LITE_ENSURE_EQ(context, tensor->dims->size, 1);
+    52	  TF_LITE_ENSURE_EQ(context, tensor->dims->data[0], size);
+    53	  return kTfLiteOk;
+    54	}
+    55	
+    56	// Go through every tensors and make sure their shape match the kernel
+    57	// configuration
+    58	TfLiteStatus ValidateTensorSize(TfLiteContext* context,
+    59	                                const LstmTensors& tensors,
+    60	                                const LstmSizeInfo& size_info) {
+    61	  // Input FC weights
+    62	  for (size_t i = 1; i < 5; i++) {
+    63	    TF_LITE_ENSURE_OK(
+    64	        context, ValidateWeightTensorSize(context, tensors.GetInternalTensor(i),
+    65	                                          size_info.state_dimension,
+    66	                                          size_info.input_dimension));
+    67	  }
+    68	  // Recurrent FC weights
+    69	  for (size_t i = 5; i < 9; i++) {
+    70	    TF_LITE_ENSURE_OK(
+    71	        context, ValidateWeightTensorSize(context, tensors.GetInternalTensor(i),
+    72	                                          size_info.state_dimension,
+    73	                                          size_info.state_dimension));
+    74	  }
+    75	  // Biases
+    76	  for (size_t i = 12; i < 16; i++) {
+    77	    TF_LITE_ENSURE_OK(
+    78	        context, ValidateBiasTensorSize(context, tensors.GetInternalTensor(i),
+    79	                                        size_info.state_dimension));
+    80	  }
+    81	
+    82	  // Check the shape of input state tensors.
+    83	  // These tensor may be 1D or 2D. It's fine as long as the total size is
+    84	  // correct.
+    85	  TF_LITE_ENSURE_EQ(context, NumElements(tensors.HiddenStateTensor()),
+    86	                    size_info.batch_size * size_info.state_dimension);
+    87	  TF_LITE_ENSURE_EQ(context, NumElements(tensors.CellStateTensor()),
+    88	                    size_info.batch_size * size_info.state_dimension);
+    89	
+    90	  // Check the shape of output tensor against that of input tensor
+    91	  TF_LITE_ENSURE_EQ(context, tensors.OutputTensor()->dims->size, 3);
+    92	  TF_LITE_ENSURE_EQ(context,
+    93	                    tensors.GetInternalTensor(kLstmInputTensor)->dims->data[0],
+    94	                    tensors.OutputTensor()->dims->data[0]);
+    95	  TF_LITE_ENSURE_EQ(context,
+    96	                    tensors.GetInternalTensor(kLstmInputTensor)->dims->data[1],
+    97	                    tensors.OutputTensor()->dims->data[1]);
+    98	  TF_LITE_ENSURE_EQ(context, tensors.OutputTensor()->dims->data[2],
+    99	                    size_info.state_dimension);
+   100	  return kTfLiteOk;
+   101	}
+   102	
+   103	// Wrapper function to create gate parameters for the four internal LSTM gates
+   104	TfLiteStatus CreateGateParams(
+   105	    TfLiteContext* context,
+   106	    /*Input tensors*/
+   107	    const TfLiteTensor* input, const TfLiteTensor* input_weight,
+   108	    const TfLiteTensor* input_bias,
+   109	    /*Hidden state tensors*/
+   110	    const TfLiteTensor* hidden_state, const TfLiteTensor* hidden_state_weight,
+   111	    const TfLiteTensor* hidden_state_bias,
+   112	    /*Scale of the fc output (input to non-linear activation)*/
+   113	    const float nonlinear_activation_input_scale, const TfLiteType cell_type,
+   114	    tflite::GateParameters& gate_params) {
+   115	  // A temp tflite tensor to represent the output of fc operation. Only the data
+   116	  // type and quantization parameters are set since it is only used for
+   117	  // parameter calculations
+   118	  TfLiteTensor fc_output_temp;
+   119	  fc_output_temp.type = cell_type;
+   120	  fc_output_temp.params.scale = nonlinear_activation_input_scale;
+   121	  fc_output_temp.params.zero_point = 0;  // symmetrical quantized
+   122	
+   123	  // A temp fc opdata to reuse the helper function on creating fc parameters
+   124	  tflite::OpDataFullyConnected fc_data_temp;
+   125	  // TODO(b/265853320): due to the lack of precision for the float scale,
+   126	  // scale_diff / output_scale <= 0.02 (potentially requires 1e-8 precision) can
+   127	  // not be satisified for the bias. Here we rely on the correctiveness of the
+   128	  // conversion process (set input_bias=nullptr to avoid checking) for
+   129	  // tensor scales
+   130	  TF_LITE_ENSURE_STATUS(CalculateOpDataFullyConnected(
+   131	      context, kTfLiteActNone, input->type, input, input_weight,
+   132	      /*input_bias=*/nullptr, &fc_output_temp, &fc_data_temp));
+   133	  gate_params.input_fc_params = FullyConnectedParamsQuantized(fc_data_temp);
+   134	  double real_multiplier = 0.0;
+   135	  GetQuantizedConvolutionMultipler(context, input, input_weight, nullptr,
+   136	                                   &fc_output_temp, &real_multiplier);
+   137	
+   138	  TF_LITE_ENSURE_STATUS(CalculateOpDataFullyConnected(
+   139	      context, kTfLiteActNone, hidden_state->type, hidden_state,
+   140	      hidden_state_weight, hidden_state_bias, &fc_output_temp, &fc_data_temp));
+   141	  gate_params.recurrent_fc_params = FullyConnectedParamsQuantized(fc_data_temp);
+   142	  return kTfLiteOk;
+   143	}
+   144	
+   145	// Create parameters for element wise multiplication that happens in a) cell
+   146	// state update ; b) hidden state update
+   147	// Note that all the output of gates are symmetrically quantized so only scales
+   148	// are required for input. However, during the hidden state update phase, the
+   149	// output is the updated hidden state, which is asymmetrically quantized. Thus
+   150	// output may require zero point
+   151	tflite::ArithmeticParams CreateInterGateMulParams(const float input1_scale,
+   152	                                                  const float input2_scale,
+   153	                                                  const float output_scale,
+   154	                                                  const TfLiteType output_type,
+   155	                                                  const int output_zp) {
+   156	  tflite::ArithmeticParams op_params = {};
+   157	  if (output_type == kTfLiteInt16) {
+   158	    op_params.quantized_activation_min = std::numeric_limits<int16_t>::min();
+   159	    op_params.quantized_activation_max = std::numeric_limits<int16_t>::max();
+   160	  } else if (output_type == kTfLiteInt8) {
+   161	    op_params.quantized_activation_min = std::numeric_limits<int8_t>::min();
+   162	    op_params.quantized_activation_max = std::numeric_limits<int8_t>::max();
+   163	  }
+   164	
+   165	  op_params.input1_offset = 0;  // symmetric
+   166	  op_params.input2_offset = 0;  // symmetric
+   167	  op_params.output_offset = output_zp;
+   168	
+   169	  const double input_product_scale =
+   170	      static_cast<double>(input1_scale) * static_cast<double>(input2_scale);
+   171	  double effective_scale =
+   172	      input_product_scale / static_cast<double>(output_scale);
+   173	
+   174	  QuantizeMultiplier(effective_scale, &op_params.output_multiplier,
+   175	                     &op_params.output_shift);
+   176	  return op_params;
+   177	}
+   178	
+   179	// Create the additional information about the cell state, which include:
+   180	// cell_state_scale_power: used in integer nonlinear function (e.g., tanh)
+   181	// quantized_cell_clip: quantized cell clip range
+   182	CellStateInfo CreateLstmCellStateInfo(const float cell_state_scale,
+   183	                                      const float cell_clip) {
+   184	  CellStateInfo cell_state_info;
+   185	  // cell_state_scale_power: 2^-cell_state_scale_power = cell state scale
+   186	  int buffer;
+   187	  tflite::CheckedLog2(cell_state_scale, &buffer);
+   188	  cell_state_info.cell_state_scale_power = buffer;
+   189	  // Cell state specifics
+   190	  cell_state_info.cell_clip = cell_clip;
+   191	  cell_state_info.quantized_cell_clip = static_cast<int16_t>(
+   192	      std::min(std::max(static_cast<double>(cell_clip) /
+   193	                            static_cast<double>(cell_state_scale),
+   194	                        -32768.0),
+   195	               32767.0));
+   196	
+   197	  return cell_state_info;
+   198	}
+   199	
+   200	CellStateInfo CreateLstmCellStateInfoFloat(const float cell_clip) {
+   201	  CellStateInfo cell_state_info;
+   202	  cell_state_info.cell_clip = cell_clip;
+   203	  cell_state_info.cell_state_scale_power = 0;  // no quantization
+   204	  cell_state_info.quantized_cell_clip = 0;     // no quantization
+   205	  return cell_state_info;
+   206	}
+   207	
+   208	tflite::FullyConnectedParams CreateFCParamsFloat() {
+   209	  FullyConnectedParams op_params;
+   210	  CalculateActivationRange(kTfLiteActNone, &op_params.float_activation_min,
+   211	                           &op_params.float_activation_max);
+   212	  return op_params;
+   213	}
+   214	
+   215	tflite::GateParameters CreateGateParamsFloat() {
+   216	  tflite::GateParameters gate_params = {};
+   217	  gate_params.input_fc_params = CreateFCParamsFloat();
+   218	  gate_params.recurrent_fc_params = CreateFCParamsFloat();
+   219	  return gate_params;
+   220	}
+   221	
+   222	tflite::ArithmeticParams CreateInterGateMulParamsFloat() {
+   223	  tflite::ArithmeticParams op_params = {};
+   224	  CalculateActivationRange(kTfLiteActNone, &op_params.float_activation_min,
+   225	                           &op_params.float_activation_max);
+   226	  return op_params;
+   227	}
+   228	
+   229	TfLiteStatus PrepareGateParametersFloat(TfLiteContext* context,
+   230	                                        const LstmTensors& lstm_tensors,
+   231	                                        OpDataLSTM* op_data_lstm) {
+   232	  // Gate Parameters
+   233	  op_data_lstm->forget_gate_parameters = CreateGateParamsFloat();
+   234	  op_data_lstm->input_gate_parameters = CreateGateParamsFloat();
+   235	  op_data_lstm->cell_gate_parameters = CreateGateParamsFloat();
+   236	  op_data_lstm->output_gate_parameters = CreateGateParamsFloat();
+   237	  // Inter gate multiplication parameters
+   238	  op_data_lstm->inter_gate_parameters.forget_cell_mul_params =
+   239	      CreateInterGateMulParamsFloat();
+   240	  op_data_lstm->inter_gate_parameters.input_mul_params =
+   241	      CreateInterGateMulParamsFloat();
+   242	  op_data_lstm->inter_gate_parameters.output_mul_params =
+   243	      CreateInterGateMulParamsFloat();
+   244	  return kTfLiteOk;
+   245	}
+   246	
+   247	TfLiteStatus PrepareGateParametersInteger(TfLiteContext* context,
+   248	                                          const LstmTensors& lstm_tensors,
+   249	                                          OpDataLSTM* op_data_lstm) {
+   250	  float nonlinear_input_scale = 0.000244140625;  // 2^-12 Q3.12 -> Q0.15
+   251	  TF_LITE_ENSURE_OK(
+   252	      context,
+   253	      CreateGateParams(
+   254	          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+   255	          lstm_tensors.GetInternalTensor(kLstmInputToForgetWeightsTensor),
+   256	          lstm_tensors.GetInternalTensor(kLstmForgetGateBiasTensor),
+   257	          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+   258	          lstm_tensors.GetInternalTensor(kLstmRecurrentToForgetWeightsTensor),
+   259	          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+   260	          op_data_lstm->forget_gate_parameters));
+   261	  TF_LITE_ENSURE_OK(
+   262	      context,
+   263	      CreateGateParams(
+   264	          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+   265	          lstm_tensors.GetInternalTensor(kLstmInputToInputWeightsTensor),
+   266	          lstm_tensors.GetInternalTensor(kLstmInputGateBiasTensor),
+   267	          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+   268	          lstm_tensors.GetInternalTensor(kLstmRecurrentToInputWeightsTensor),
+   269	          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+   270	          op_data_lstm->input_gate_parameters));
+   271	  TF_LITE_ENSURE_OK(
+   272	      context,
+   273	      CreateGateParams(
+   274	          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+   275	          lstm_tensors.GetInternalTensor(kLstmInputToCellWeightsTensor),
+   276	          lstm_tensors.GetInternalTensor(kLstmCellGateBiasTensor),
+   277	          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+   278	          lstm_tensors.GetInternalTensor(kLstmRecurrentToCellWeightsTensor),
+   279	          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+   280	          op_data_lstm->cell_gate_parameters));
+   281	  TF_LITE_ENSURE_OK(
+   282	      context,
+   283	      CreateGateParams(
+   284	          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+   285	          lstm_tensors.GetInternalTensor(kLstmInputToOutputWeightsTensor),
+   286	          lstm_tensors.GetInternalTensor(kLstmOutputGateBiasTensor),
+   287	          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+   288	          lstm_tensors.GetInternalTensor(kLstmRecurrentToOutputWeightsTensor),
+   289	          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+   290	          op_data_lstm->output_gate_parameters));
+   291	
+   292	  // Inter gate multiplication parameters
+   293	  float nonlinear_output_scale = 0.000030517578125;  // 2^-15 Q3.12 -> Q0.15
+   294	  float cell_state_scale = lstm_tensors.CellStateTensor()->params.scale;
+   295	  // forget gate output (nonlinear output) x cell state -> cell state
+   296	  op_data_lstm->inter_gate_parameters.forget_cell_mul_params =
+   297	      CreateInterGateMulParams(nonlinear_output_scale, cell_state_scale,
+   298	                               cell_state_scale, kTfLiteInt16);
+   299	  // input gate output x cell gate output -> cell state
+   300	  op_data_lstm->inter_gate_parameters.input_mul_params =
+   301	      CreateInterGateMulParams(nonlinear_output_scale, nonlinear_output_scale,
+   302	                               cell_state_scale, kTfLiteInt16);
+   303	  // tanh output x output gate output -> hidden state (potentially asymmetric)
+   304	  op_data_lstm->inter_gate_parameters.output_mul_params =
+   305	      CreateInterGateMulParams(
+   306	          nonlinear_output_scale, nonlinear_output_scale,
+   307	          lstm_tensors.HiddenStateTensor()->params.scale,
+   308	          lstm_tensors.HiddenStateTensor()->type,
+   309	          lstm_tensors.HiddenStateTensor()->params.zero_point);
+   310	  return kTfLiteOk;
+   311	}
+   312	
+   313	LSTMKernelContents CreateLSTMKernelContent(TfLiteContext* context,
+   314	                                           TfLiteNode* node) {
+   315	  LSTMKernelContents kernel_content;
+   316	  // Point to correct tensors
+   317	  for (size_t i = 0; i < 24; i++) {
+   318	    kernel_content.internal_tensors[i] =
+   319	        tflite::micro::GetMutableEvalInput(context, node, i);
+   320	  }
+   321	  // Output tensor
+   322	  kernel_content.output_tensor = tflite::micro::GetEvalOutput(context, node, 0);
+   323	  return kernel_content;
+   324	}
+   325	
+   326	}  // namespace tflite
+
+===== UNIDIRECTIONAL LSTM: INIT AND PREPARE =====
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	// Integer version of unidirectional sequence lstm. Only the standard LSTM
+    17	// (defined in the keras LSTM layer, e.g., no peephole etc.) is supported here.
+    18	// Currently used by the 16 bits activation case only
+    19	
+    20	#include <algorithm>
+    21	#include <limits>
+    22	
+    23	#include "tensorflow/lite/kernels/internal/quantization_util.h"
+    24	#include "tensorflow/lite/kernels/kernel_util.h"
+    25	#include "tensorflow/lite/micro/kernels/fully_connected.h"
+    26	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    27	#include "tensorflow/lite/micro/kernels/lstm_eval.h"
+    28	#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+    29	
+    30	namespace tflite {
+    31	
+    32	namespace {
+    33	/*Helper Functions*/
+    34	
+    35	/*Kernel functions*/
+    36	
+    37	void* UnidirectionalSequenceLstmInit(TfLiteContext* context, const char* buffer,
+    38	                                     size_t length) {
+    39	  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+    40	  return context->AllocatePersistentBuffer(context, sizeof(OpDataLSTM));
+    41	}
+    42	
+    43	TfLiteStatus UnidirectionalSequenceLstmPrepare(TfLiteContext* context,
+    44	                                               TfLiteNode* node) {
+    45	  TF_LITE_ENSURE_EQ(context, node->outputs->size, 1);
+    46	  TF_LITE_ENSURE_EQ(context, node->inputs->size, 24);
+    47	
+    48	  TFLITE_DCHECK(node->builtin_data != nullptr);
+    49	  TFLITE_DCHECK(node->user_data != nullptr);
+    50	
+    51	  OpDataLSTM* op_data = reinterpret_cast<OpDataLSTM*>(node->user_data);
+    52	  const auto* builtin_data =
+    53	      static_cast<TfLiteUnidirectionalSequenceLSTMParams*>(node->builtin_data);
+    54	  // All TempTfLiteTensors will be deallocated through the destructor.
+    55	  LstmTensors lstm_tensors(context, node);
+    56	  TF_LITE_ENSURE_OK(context, lstm_tensors.ValidateTensorStatus(context));
+    57	
+    58	  op_data->cell_gate_nonlinear_type = builtin_data->activation;
+    59	  op_data->size_info =
+    60	      CreateLstmSizeInfo(builtin_data->time_major,
+    61	                         lstm_tensors.GetInternalTensor(kLstmInputTensor)->dims,
+    62	                         lstm_tensors.HiddenStateTensor()->dims);
+    63	  TF_LITE_ENSURE_OK(
+    64	      context, ValidateTensorSize(context, lstm_tensors, op_data->size_info));
+    65	
+    66	  // Create cell state information and gate parameters (Fully Connected and Mul)
+    67	  auto cell_state_type =
+    68	      lstm_tensors.GetInternalTensor(kLstmCellStateTensor)->type;
+    69	  if (cell_state_type == kTfLiteFloat32) {
+    70	    op_data->cell_state_info =
+    71	        CreateLstmCellStateInfoFloat(builtin_data->cell_clip);
+    72	    TF_LITE_ENSURE_OK(
+    73	        context, PrepareGateParametersFloat(context, lstm_tensors, op_data));
+    74	  } else if (cell_state_type == kTfLiteInt16) {
+    75	    op_data->cell_state_info = CreateLstmCellStateInfo(
+    76	        lstm_tensors.CellStateTensor()->params.scale, builtin_data->cell_clip);
+    77	    TF_LITE_ENSURE_OK(
+    78	        context, PrepareGateParametersInteger(context, lstm_tensors, op_data));
+    79	  } else {
+    80	    MicroPrintf(
+    81	        "Cell state type %s (%d) not supported. The quantized Unidirectional "
+    82	        "Sequence LSTM Op only support int16 cell state",
+    83	        TfLiteTypeGetName(cell_state_type), cell_state_type);
+    84	    return kTfLiteError;
+    85	  }
+    86	  // request buffers (four buffers)
+    87	  for (size_t i = 0; i < 4; i++) {
+    88	    TF_LITE_ENSURE_OK(context, context->RequestScratchBufferInArena(
+    89	                                   context,
+    90	                                   op_data->size_info.batch_size *
+    91	                                       op_data->size_info.state_dimension *
+    92	                                       TfLiteTypeGetSize(cell_state_type),
+    93	                                   &(op_data->buffer_indices[i])));
+    94	  }
+    95	  return kTfLiteOk;
+    96	}
+    97	
+    98	TfLiteStatus UnidirectionalSequenceLstmEval(TfLiteContext* context,
+    99	                                            TfLiteNode* node) {
+   100	  TFLITE_DCHECK(node->user_data != nullptr);
+   101	  const OpDataLSTM& op_data = *reinterpret_cast<OpDataLSTM*>(node->user_data);
+   102	  auto kernel_content = CreateLSTMKernelContent(context, node);
+   103	
+   104	  const auto activation_type =
+   105	      kernel_content.internal_tensors[kLstmInputTensor]->type;
+
+===== LSTM SHARED TENSOR SLOT DEFINITIONS =====
+     1	/* Copyright 2019 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	#ifndef TENSORFLOW_LITE_MICRO_KERNELS_LSTM_SHARED_H_
+    16	#define TENSORFLOW_LITE_MICRO_KERNELS_LSTM_SHARED_H_
+    17	
+    18	#include "tensorflow/lite/c/builtin_op_data.h"
+    19	#include "tensorflow/lite/kernels/internal/types.h"
+    20	
+    21	namespace tflite {
+    22	
+    23	// Input Tensors of size {n_batch, n_input}
+    24	constexpr int kLstmInputTensor = 0;
+    25	
+    26	// Input weight tensors of size: {n_cell, n_input}
+    27	constexpr int kLstmInputToInputWeightsTensor = 1;  // Optional
+    28	constexpr int kLstmInputToForgetWeightsTensor = 2;
+    29	constexpr int kLstmInputToCellWeightsTensor = 3;
+    30	constexpr int kLstmInputToOutputWeightsTensor = 4;
+    31	
+    32	// Recurrent weight tensors of size {n_cell, n_output}
+    33	constexpr int kLstmRecurrentToInputWeightsTensor = 5;  // Optional
+    34	constexpr int kLstmRecurrentToForgetWeightsTensor = 6;
+    35	constexpr int kLstmRecurrentToCellWeightsTensor = 7;
+    36	constexpr int kLstmRecurrentToOutputWeightsTensor = 8;
+    37	
+    38	// Peephole weights tensors of size {n_cell}, representing a diagonal matrix.
+    39	constexpr int kLstmCellToInputWeightsTensor = 9;    // Optional
+    40	constexpr int kLstmCellToForgetWeightsTensor = 10;  // Optional
+    41	constexpr int kLstmCellToOutputWeightsTensor = 11;  // Optional
+    42	
+    43	// Gates bias tensors of size {n_cell}
+    44	constexpr int kLstmInputGateBiasTensor = 12;  // Optional
+    45	constexpr int kLstmForgetGateBiasTensor = 13;
+    46	constexpr int kLstmCellGateBiasTensor = 14;
+    47	constexpr int kLstmOutputGateBiasTensor = 15;
+    48	
+    49	// Projection weight tensor of size {n_output, n_cell}
+    50	constexpr int kLstmProjectionWeightsTensor = 16;  // Optional
+    51	// Projection bias tensor of size {n_output}
+    52	constexpr int kLstmProjectionBiasTensor = 17;  // Optional
+    53	
+    54	// These state tensors are defined as variable tensors, and will be modified by
+    55	// this op.
+    56	constexpr int kLstmOutputStateTensor = 18;
+    57	constexpr int kLstmCellStateTensor = 19;
+    58	
+    59	// Layer norm coefficient tensors of size {n_cell}, representing a diagonal
+    60	// matrix.
+    61	constexpr int kLstmInputLayerNormCoefficientsTensor = 20;   // Optional
+    62	constexpr int kLstmForgetLayerNormCoefficientsTensor = 21;  // Optional
+    63	constexpr int kLstmCellLayerNormCoefficientsTensor = 22;    // Optional
+    64	constexpr int kLstmOutputLayerNormCoefficientsTensor = 23;  // Optional
+    65	
+    66	// Output tensors.
+    67	constexpr int kLstmOutputTensor = 0;
+    68	
+    69	// Parameters for the two fully conncted computation inside each gate
+    70	struct GateParameters {
+    71	  FullyConnectedParams input_fc_params;
+    72	  FullyConnectedParams recurrent_fc_params;
+    73	};
+    74	
+    75	// Paramaters for the element wise multiplications between gate outputs
+    76	struct InterGateParameters {
+    77	  ArithmeticParams forget_cell_mul_params;
+    78	  ArithmeticParams input_mul_params;
+    79	  ArithmeticParams output_mul_params;
+    80	};
+    81	
+    82	// Size information about the LSTM kernel, which is deduced from tensors stored
+    83	// in the flat buffer file.
+    84	struct LstmSizeInfo {
+    85	  bool time_major;
+    86	  int batch_size;
+    87	  int time_steps;
+    88	  int input_dimension;
+    89	  int state_dimension;
+    90	};
+    91	
+    92	// Contains information about the cell state tensor
+    93	struct CellStateInfo {
+    94	  float cell_clip;
+    95	  // clipping range for cell state only 16 bits cell is supported (could be
+    96	  // generalized through templatation)
+    97	  int16_t quantized_cell_clip;
+    98	  // 2^-cell_state_scale_power = cell state scale, required by integer tanh
+    99	  // computation
+   100	  int32_t cell_state_scale_power;
+   101	};
+   102	
+   103	// Contains required computation information for LSTM kernel evaluation.
+   104	// Specifically, it includes shape and quantization settings for the LSTM
+   105	// internal operations. Formatted to support operations defined in the
+   106	// tensorflow/lite/kernels/internal/reference/integer_ops
+   107	// Should be constructed during the preparation phase
+   108	struct OpDataLSTM {
+   109	  LstmSizeInfo size_info;
+   110	  CellStateInfo cell_state_info;
+   111	  TfLiteFusedActivation cell_gate_nonlinear_type;
+   112	  GateParameters forget_gate_parameters;
+   113	  GateParameters input_gate_parameters;
+   114	  GateParameters cell_gate_parameters;
+   115	  GateParameters output_gate_parameters;
+   116	  InterGateParameters inter_gate_parameters;
+   117	  int buffer_indices[4];  // TFLM only
+   118	};
+   119	
+   120	// Provide an interface to access the internal tensors and buffers used for LSTM
+   121	// invocation. Constructed during the invocation phase
+   122	struct LSTMKernelContents {
+   123	 public:
+   124	  // Internal tensors, fixed (const). see lstm_shared.h for tensor names
+   125	  const TfLiteEvalTensor* GetInternalTensor(const int tensor_index) const {
+   126	    return internal_tensors[tensor_index];
+   127	  }
+   128	  // Variable tensors (will be changed, can not be const)
+   129	  TfLiteEvalTensor* HiddenStateTensor() {
+   130	    return internal_tensors[kLstmOutputStateTensor];
+   131	  }
+   132	  TfLiteEvalTensor* CellStateTensor() {
+   133	    return internal_tensors[kLstmCellStateTensor];
+   134	  }
+   135	  // Node internal tensors with indexes defined at the beginning of the file
+   136	  TfLiteEvalTensor* internal_tensors[24];
+   137	  TfLiteEvalTensor* output_tensor;
+   138	};
+   139	
+   140	template <typename CellType>
+   141	struct LSTMBuffers {
+   142	  // TFLM buffers requires buffer index from LstmOpData.
+   143	  CellType* buffer0;
+   144	  CellType* buffer1;
+   145	  CellType* buffer2;
+   146	  CellType* buffer3;
+   147	};
+   148	
+   149	}  // namespace tflite
+   150	#endif  // TENSORFLOW_LITE_MICRO_KERNELS_LSTM_SHARED_H_
+
+===== APP CMAKE SOURCE REGISTRATION =====
+180-
+181-target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+182-
+183-
+184-if (CONFIG_USE_APP_MENU)
+185-target_compile_definitions(app PRIVATE USE_APP_MENU)
+186-endif()
+187-
+188:target_sources(app PRIVATE
+189-    src/application/main/Main.cc
+190-    src/use_case/alif_asr/src/MainLoop.cc
+191-	src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+192-    src/use_case/alif_asr/src/reverse_v2.cc
+193-    src/use_case/alif_asr/src/PolyUModel1.cc
+194-	src/power/power_mgr.c
+195-	~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+196-	${ASR_GENERATED_SOURCES}
+197-)
+198-
+199-set(SRC_MAIN "src/application/main/Main.cc")
+200-
+201-list(APPEND SRC_MAIN_DEFS
+202-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+203-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+204-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+205-
+206-set_source_files_properties(${SRC_MAIN}
+207-    PROPERTIES COMPILE_DEFINITIONS
+208-    "${SRC_MAIN_DEFS}")
+209-
+210-target_link_libraries(app PRIVATE
+211-	asr_iface
+212-    mlek::asr_impl
+213-)
