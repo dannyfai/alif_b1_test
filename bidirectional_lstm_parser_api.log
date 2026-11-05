@@ -1,657 +1,267 @@
-===== BUILTIN LSTM PARAMETER STRUCTURES =====
+===== FLATBUFFER CONVERSION HEADER =====
+   370	                                    BuiltinDataAllocator* allocator,
+   371	                                    void** builtin_data);
+   372	
+   373	TfLiteStatus ParseStridedSlice(const Operator* op,
+   374	                               ErrorReporter* error_reporter,
+   375	                               BuiltinDataAllocator* allocator,
+   376	                               void** builtin_data);
+   377	
+   378	TfLiteStatus ParseSub(const Operator* op, ErrorReporter* error_reporter,
+   379	                      BuiltinDataAllocator* allocator, void** builtin_data);
+   380	
+   381	TfLiteStatus ParseSvdf(const Operator* op, ErrorReporter* error_reporter,
+   382	                       BuiltinDataAllocator* allocator, void** builtin_data);
+   383	
+   384	TfLiteStatus ParseTanh(const Operator* op, ErrorReporter* error_reporter,
+   385	                       BuiltinDataAllocator* allocator, void** builtin_data);
+   386	
+   387	TfLiteStatus ParseTranspose(const Operator* op, ErrorReporter* error_reporter,
+   388	                            BuiltinDataAllocator* allocator,
+   389	                            void** builtin_data);
+   390	
+   391	TfLiteStatus ParseTransposeConv(const Operator* op,
+   392	                                ErrorReporter* error_reporter,
+   393	                                BuiltinDataAllocator* allocator,
+   394	                                void** builtin_data);
+   395	
+   396	TfLiteStatus ParseUnpack(const Operator* op, ErrorReporter* error_reporter,
+   397	                         BuiltinDataAllocator* allocator, void** builtin_data);
+   398	
+   399	TfLiteStatus ParseUnidirectionalSequenceLSTM(const Operator* op,
+   400	                                             ErrorReporter* error_reporter,
+   401	                                             BuiltinDataAllocator* allocator,
+   402	                                             void** builtin_data);
+   403	
+   404	TfLiteStatus ParseVarHandle(const Operator* op, ErrorReporter* error_reporter,
+   405	                            BuiltinDataAllocator* allocator,
+   406	                            void** builtin_data);
+   407	
+   408	TfLiteStatus ParseWhile(const Operator* op, ErrorReporter* error_reporter,
+   409	                        BuiltinDataAllocator* allocator, void** builtin_data);
+   410	
+   411	TfLiteStatus ParseZerosLike(const Operator* op, ErrorReporter* error_reporter,
+   412	                            BuiltinDataAllocator* allocator,
+   413	                            void** builtin_data);
+   414	
+   415	TfLiteStatus ParseBitwiseXor(const Operator* op, ErrorReporter* error_reporter,
+   416	                             BuiltinDataAllocator* allocator,
+   417	                             void** builtin_data);
+   418	
+   419	TfLiteStatus ParseRightShift(const Operator* op, ErrorReporter* error_reporter,
+   420	                             BuiltinDataAllocator* allocator,
 
-===== BUILTIN PARSER FUNCTION TYPE =====
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-21-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-22-namespace tflite {
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-23-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-24-// Forward declaration of the ErrorReporter class to hide it from the TFLM code.
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-25-class ErrorReporter;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-26-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-27-using TfLiteBridgeBuiltinDataAllocator = BuiltinDataAllocator;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-28-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h:29:using TfLiteBridgeBuiltinParseFunction =
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-30-    TfLiteStatus (*)(const Operator* op, ErrorReporter* error_reporter,
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-31-                     BuiltinDataAllocator* allocator, void** builtin_data);
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-32-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-33-// Converts the tensor data type used in the flatbuffer to the representation
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-34-// used by the runtime.
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-35-TfLiteStatus ConvertTensorType(TensorType tensor_type, TfLiteType* type);
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-36-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h:37:// CallBuiltinParseFunction is a wrapper function to wrap the parser function
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-38-// calls to Call parser(op, allocator, builtin_data)
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h:39:TfLiteStatus CallBuiltinParseFunction(TfLiteBridgeBuiltinParseFunction parser,
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-40-                                      const Operator* op,
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-41-                                      BuiltinDataAllocator* allocator,
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-42-                                      void** builtin_data);
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-43-}  // namespace tflite
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-44-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h-45-#endif  // TENSORFLOW_LITE_MICRO_TFLITE_BRIDGE_FLATBUFFER_CONVERSIONS_BRIDGE_H_
---
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-39-  virtual const TFLMRegistration* FindOp(BuiltinOperator op) const = 0;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-40-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-41-  // Returns the Op registration struct corresponding to the custom operator by
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-42-  // name.
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-43-  virtual const TFLMRegistration* FindOp(const char* op) const = 0;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-44-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-45-  // Returns the operator specific parsing function for the OpData for a
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-46-  // BuiltinOperator (if registered), else nullptr.
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h:47:  virtual TfLiteBridgeBuiltinParseFunction GetOpDataParser(
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-48-      BuiltinOperator op) const = 0;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-49-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-50-  virtual ~MicroOpResolver() {}
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-51-};
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-52-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-53-// Handles the logic for converting between an OperatorCode structure extracted
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-54-// from a flatbuffer and information about a registered operator
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-55-// implementation.
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-56-TfLiteStatus GetRegistrationFromOpCode(const OperatorCode* opcode,
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-57-                                       const MicroOpResolver& op_resolver,
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-58-                                       const TFLMRegistration** registration);
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.h-59-
---
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-82-      if ((registration.builtin_code == BuiltinOperator_CUSTOM) &&
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-83-          (strcmp(registration.custom_name, op) == 0)) {
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-84-        return &registration;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-85-      }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-86-    }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-87-    return nullptr;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-88-  }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-89-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:90:  TfLiteBridgeBuiltinParseFunction GetOpDataParser(
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-91-      BuiltinOperator op) const override {
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-92-    TFLITE_DCHECK(num_buitin_ops_ <= tOpCount);
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-93-    for (unsigned int i = 0; i < num_buitin_ops_; ++i) {
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-94-      if (builtin_codes_[i] == op) return builtin_parsers_[i];
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-95-    }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-96-    return nullptr;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-97-  }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-98-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-99-  // Registers a Custom Operator with the MicroOpResolver.
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-100-  //
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-101-  // Only the first call for a given name will be successful. i.e. if this
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-102-  // function is called again for a previously added Custom Operator, the
---
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-682-                      ParseZerosLike);
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-683-  }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-684-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-685-  unsigned int GetRegistrationLength() { return registrations_len_; }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-686-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-687- public:
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-688-  TfLiteStatus AddBuiltin(tflite::BuiltinOperator op,
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-689-                          const TFLMRegistration& registration,
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:690:                          TfLiteBridgeBuiltinParseFunction parser) {
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-691-    if (op == BuiltinOperator_CUSTOM) {
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-692-      MicroPrintf("Invalid parameter BuiltinOperator_CUSTOM to the ");
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-693-      MicroPrintf("AddBuiltin function.");
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-694-      return kTfLiteError;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-695-    }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-696-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-697-    if (FindOp(op) != nullptr) {
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-698-      MicroPrintf("Calling AddBuiltin with the same op more than ");
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-699-      MicroPrintf("once is not supported (Op: #%d).", op);
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-700-      return kTfLiteError;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-701-    }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-702-
---
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-720-  }
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-721-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-722-  TFLMRegistration registrations_[tOpCount];
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-723-  unsigned int registrations_len_ = 0;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-724-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-725-  // Arrays (and counter) to store the builtin codes and their corresponding
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-726-  // parse functions as these are registered with the Op Resolver.
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-727-  BuiltinOperator builtin_codes_[tOpCount];
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:728:  TfLiteBridgeBuiltinParseFunction builtin_parsers_[tOpCount];
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-729-  unsigned int num_buitin_ops_ = 0;
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-730-};
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-731-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-732-};  // namespace tflite
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-733-
-/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-734-#endif  // TENSORFLOW_LITE_MICRO_MICRO_MUTABLE_OP_RESOLVER_H_
+===== BIDIRECTIONAL PARSER IMPLEMENTATION =====
+   630	      auto params =
+   631	          safe_allocator.Allocate<TfLiteEmbeddingLookupSparseParams>();
+   632	      TF_LITE_ENSURE(error_reporter, params != nullptr);
+   633	      if (const auto* embedding_params =
+   634	              op->builtin_options_as_EmbeddingLookupSparseOptions()) {
+   635	        params->combiner = parseCombinerType(embedding_params->combiner());
+   636	      }
+   637	      *builtin_data = params.release();
+   638	      return kTfLiteOk;
+   639	    }
+   640	
+   641	    case BuiltinOperator_HASHTABLE_LOOKUP:
+   642	      // no-op.
+   643	      return kTfLiteOk;
+   644	
+   645	    case BuiltinOperator_LOCAL_RESPONSE_NORMALIZATION: {
+   646	      auto params = safe_allocator.Allocate<TfLiteLocalResponseNormParams>();
+   647	      TF_LITE_ENSURE(error_reporter, params != nullptr);
+   648	      if (const auto* schema_params =
+   649	              op->builtin_options_as_LocalResponseNormalizationOptions()) {
+   650	        params->radius = schema_params->radius();
+   651	        params->bias = schema_params->bias();
+   652	        params->alpha = schema_params->alpha();
+   653	        params->beta = schema_params->beta();
+   654	      }
+   655	      *builtin_data = params.release();
+   656	      return kTfLiteOk;
+   657	    }
+   658	    case BuiltinOperator_UNIDIRECTIONAL_SEQUENCE_LSTM: {
+   659	      return ParseUnidirectionalSequenceLSTM(op, error_reporter, allocator,
+   660	                                             builtin_data);
+   661	    }
+   662	    case BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM: {
+   663	      auto params =
+   664	          safe_allocator.Allocate<TfLiteBidirectionalSequenceLSTMParams>();
+   665	      TF_LITE_ENSURE(error_reporter, params != nullptr);
+   666	      if (const auto* bidi_lstm_params =
+   667	              op->builtin_options_as_BidirectionalSequenceLSTMOptions()) {
+   668	        params->activation =
+   669	            ConvertActivation(bidi_lstm_params->fused_activation_function());
+   670	        params->cell_clip = bidi_lstm_params->cell_clip();
+   671	        params->proj_clip = bidi_lstm_params->proj_clip();
+   672	        params->merge_outputs = bidi_lstm_params->merge_outputs();
+   673	        params->time_major = bidi_lstm_params->time_major();
+   674	        params->asymmetric_quantize_inputs =
+   675	            bidi_lstm_params->asymmetric_quantize_inputs();
+   676	      }
+   677	      *builtin_data = params.release();
+   678	      return kTfLiteOk;
+   679	    }
+   680	    case BuiltinOperator_SKIP_GRAM: {
+   681	      auto params = safe_allocator.Allocate<TfLiteSkipGramParams>();
+   682	      TF_LITE_ENSURE(error_reporter, params != nullptr);
+   683	      if (const auto* skip_gram_params =
+   684	              op->builtin_options_as_SkipGramOptions()) {
+   685	        params->ngram_size = skip_gram_params->ngram_size();
 
-===== EXISTING APP PARSER EXAMPLE =====
-grep: /home/user/sdk-alif/beeinventor/test_heatstroke/PolyUModel1.cc: No such file or directory
-grep: /home/user/sdk-alif/beeinventor/test_heatstroke/PolyUModel1.hpp: No such file or directory
+===== RESOLVER UNIDIRECTIONAL LSTM REGISTRATION =====
+   640	  TfLiteStatus AddTanh() {
+   641	    return AddBuiltin(BuiltinOperator_TANH, Register_TANH(), ParseTanh);
+   642	  }
+   643	
+   644	  TfLiteStatus AddTransposeConv(
+   645	      const TFLMRegistration& registration = Register_TRANSPOSE_CONV()) {
+   646	    return AddBuiltin(BuiltinOperator_TRANSPOSE_CONV, registration,
+   647	                      ParseTransposeConv);
+   648	  }
+   649	
+   650	  TfLiteStatus AddTranspose() {
+   651	    return AddBuiltin(BuiltinOperator_TRANSPOSE, Register_TRANSPOSE(),
+   652	                      ParseTranspose);
+   653	  }
+   654	
+   655	  TfLiteStatus AddUnpack() {
+   656	    return AddBuiltin(BuiltinOperator_UNPACK, Register_UNPACK(), ParseUnpack);
+   657	  }
+   658	
+   659	  TfLiteStatus AddUnidirectionalSequenceLSTM(
+   660	      const TFLMRegistration& registration =
+   661	          Register_UNIDIRECTIONAL_SEQUENCE_LSTM()) {
+   662	    return AddBuiltin(BuiltinOperator_UNIDIRECTIONAL_SEQUENCE_LSTM,
+   663	                      registration, ParseUnidirectionalSequenceLSTM);
+   664	  }
+   665	
+   666	  TfLiteStatus AddVarHandle() {
+   667	    return AddBuiltin(BuiltinOperator_VAR_HANDLE, Register_VAR_HANDLE(),
+   668	                      ParseVarHandle);
+   669	  }
+   670	
+   671	  TfLiteStatus AddWhile() {
+   672	    return AddBuiltin(BuiltinOperator_WHILE, Register_WHILE(), ParseWhile);
+   673	  }
+   674	
+   675	  TfLiteStatus AddWindow() {
 
-===== BIDIRECTIONAL OPTIONS ACCESSORS =====
-7963-  int32_t stride_h() const {
-7964-    return GetField<int32_t>(VT_STRIDE_H, 0);
-7965-  }
-7966:  tflite::ActivationFunctionType fused_activation_function() const {
-7967-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-7968-  }
-7969-  int32_t dilation_w_factor() const {
-7970-    return GetField<int32_t>(VT_DILATION_W_FACTOR, 1);
-7971-  }
-7972-  int32_t dilation_h_factor() const {
-7973-    return GetField<int32_t>(VT_DILATION_H_FACTOR, 1);
-7974-  }
---
-8086-  int32_t stride_h() const {
-8087-    return GetField<int32_t>(VT_STRIDE_H, 0);
-8088-  }
-8089:  tflite::ActivationFunctionType fused_activation_function() const {
-8090-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-8091-  }
-8092-  int32_t dilation_d_factor() const {
-8093-    return GetField<int32_t>(VT_DILATION_D_FACTOR, 1);
-8094-  }
-8095-  int32_t dilation_w_factor() const {
-8096-    return GetField<int32_t>(VT_DILATION_W_FACTOR, 1);
-8097-  }
---
-8214-  int32_t filter_height() const {
-8215-    return GetField<int32_t>(VT_FILTER_HEIGHT, 0);
-8216-  }
-8217:  tflite::ActivationFunctionType fused_activation_function() const {
-8218-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-8219-  }
-8220-  bool Verify(::flatbuffers::Verifier &verifier) const {
-8221-    return VerifyTableStart(verifier) &&
-8222-           VerifyField<int8_t>(verifier, VT_PADDING, 1) &&
-8223-           VerifyField<int32_t>(verifier, VT_STRIDE_W, 4) &&
-8224-           VerifyField<int32_t>(verifier, VT_STRIDE_H, 4) &&
-8225-           VerifyField<int32_t>(verifier, VT_FILTER_WIDTH, 4) &&
---
-8320-  int32_t depth_multiplier() const {
-8321-    return GetField<int32_t>(VT_DEPTH_MULTIPLIER, 0);
-8322-  }
-8323:  tflite::ActivationFunctionType fused_activation_function() const {
-8324-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-8325-  }
-8326-  int32_t dilation_w_factor() const {
-8327-    return GetField<int32_t>(VT_DILATION_W_FACTOR, 1);
-8328-  }
-8329-  int32_t dilation_h_factor() const {
-8330-    return GetField<int32_t>(VT_DILATION_H_FACTOR, 1);
-8331-  }
---
-8563-  int32_t rank() const {
-8564-    return GetField<int32_t>(VT_RANK, 0);
-8565-  }
-8566:  tflite::ActivationFunctionType fused_activation_function() const {
-8567-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-8568-  }
-8569-  bool asymmetric_quantize_inputs() const {
-8570-    return GetField<uint8_t>(VT_ASYMMETRIC_QUANTIZE_INPUTS, 0) != 0;
-8571-  }
-8572-  bool Verify(::flatbuffers::Verifier &verifier) const {
-8573-    return VerifyTableStart(verifier) &&
-8574-           VerifyField<int32_t>(verifier, VT_RANK, 4) &&
---
-8632-    VT_FUSED_ACTIVATION_FUNCTION = 4,
-8633-    VT_ASYMMETRIC_QUANTIZE_INPUTS = 6
-8634-  };
-8635:  tflite::ActivationFunctionType fused_activation_function() const {
-8636-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-8637-  }
-8638-  bool asymmetric_quantize_inputs() const {
-8639-    return GetField<uint8_t>(VT_ASYMMETRIC_QUANTIZE_INPUTS, 0) != 0;
-8640-  }
-8641-  bool Verify(::flatbuffers::Verifier &verifier) const {
-8642-    return VerifyTableStart(verifier) &&
-8643-           VerifyField<int8_t>(verifier, VT_FUSED_ACTIVATION_FUNCTION, 1) &&
---
-8697-    VT_FUSED_ACTIVATION_FUNCTION = 6,
-8698-    VT_ASYMMETRIC_QUANTIZE_INPUTS = 8
-8699-  };
-8700:  bool time_major() const {
-8701-    return GetField<uint8_t>(VT_TIME_MAJOR, 0) != 0;
-8702-  }
-8703:  tflite::ActivationFunctionType fused_activation_function() const {
-8704-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-8705-  }
-8706-  bool asymmetric_quantize_inputs() const {
-8707-    return GetField<uint8_t>(VT_ASYMMETRIC_QUANTIZE_INPUTS, 0) != 0;
-8708-  }
-8709-  bool Verify(::flatbuffers::Verifier &verifier) const {
-8710-    return VerifyTableStart(verifier) &&
-8711-           VerifyField<uint8_t>(verifier, VT_TIME_MAJOR, 1) &&
---
-8773-    VT_MERGE_OUTPUTS = 8,
-8774-    VT_ASYMMETRIC_QUANTIZE_INPUTS = 10
-8775-  };
-8776:  bool time_major() const {
-8777-    return GetField<uint8_t>(VT_TIME_MAJOR, 0) != 0;
-8778-  }
-8779:  tflite::ActivationFunctionType fused_activation_function() const {
-8780-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-8781-  }
-8782:  bool merge_outputs() const {
-8783-    return GetField<uint8_t>(VT_MERGE_OUTPUTS, 0) != 0;
-8784-  }
-8785-  bool asymmetric_quantize_inputs() const {
-8786-    return GetField<uint8_t>(VT_ASYMMETRIC_QUANTIZE_INPUTS, 0) != 0;
-8787-  }
-8788-  bool Verify(::flatbuffers::Verifier &verifier) const {
-8789-    return VerifyTableStart(verifier) &&
-8790-           VerifyField<uint8_t>(verifier, VT_TIME_MAJOR, 1) &&
---
-8860-    VT_ASYMMETRIC_QUANTIZE_INPUTS = 10,
-8861-    VT_QUANTIZED_BIAS_TYPE = 12
-8862-  };
-8863:  tflite::ActivationFunctionType fused_activation_function() const {
-8864-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-8865-  }
-8866-  tflite::FullyConnectedOptionsWeightsFormat weights_format() const {
-8867-    return static_cast<tflite::FullyConnectedOptionsWeightsFormat>(GetField<int8_t>(VT_WEIGHTS_FORMAT, 0));
-8868-  }
-8869-  bool keep_num_dims() const {
-8870-    return GetField<uint8_t>(VT_KEEP_NUM_DIMS, 0) != 0;
-8871-  }
---
-9005-  int32_t axis() const {
-9006-    return GetField<int32_t>(VT_AXIS, 0);
-9007-  }
-9008:  tflite::ActivationFunctionType fused_activation_function() const {
-9009-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-9010-  }
-9011-  bool Verify(::flatbuffers::Verifier &verifier) const {
-9012-    return VerifyTableStart(verifier) &&
-9013-           VerifyField<int32_t>(verifier, VT_AXIS, 4) &&
-9014-           VerifyField<int8_t>(verifier, VT_FUSED_ACTIVATION_FUNCTION, 1) &&
-9015-           verifier.EndTable();
-9016-  }
---
-9065-    VT_FUSED_ACTIVATION_FUNCTION = 4,
-9066-    VT_POT_SCALE_INT16 = 6
-9067-  };
-9068:  tflite::ActivationFunctionType fused_activation_function() const {
-9069-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-9070-  }
-9071-  bool pot_scale_int16() const {
-9072-    return GetField<uint8_t>(VT_POT_SCALE_INT16, 1) != 0;
-9073-  }
-9074-  bool Verify(::flatbuffers::Verifier &verifier) const {
-9075-    return VerifyTableStart(verifier) &&
-9076-           VerifyField<int8_t>(verifier, VT_FUSED_ACTIVATION_FUNCTION, 1) &&
---
-9126-  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
-9127-    VT_FUSED_ACTIVATION_FUNCTION = 4
-9128-  };
-9129:  tflite::ActivationFunctionType fused_activation_function() const {
-9130-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-9131-  }
-9132-  bool Verify(::flatbuffers::Verifier &verifier) const {
-9133-    return VerifyTableStart(verifier) &&
-9134-           VerifyField<int8_t>(verifier, VT_FUSED_ACTIVATION_FUNCTION, 1) &&
-9135-           verifier.EndTable();
-9136-  }
-9137-  MulOptionsT *UnPack(const ::flatbuffers::resolver_function_t *_resolver = nullptr) const;
---
-9178-  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
-9179-    VT_FUSED_ACTIVATION_FUNCTION = 4
-9180-  };
-9181:  tflite::ActivationFunctionType fused_activation_function() const {
-9182-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-9183-  }
-9184-  bool Verify(::flatbuffers::Verifier &verifier) const {
-9185-    return VerifyTableStart(verifier) &&
-9186-           VerifyField<int8_t>(verifier, VT_FUSED_ACTIVATION_FUNCTION, 1) &&
-9187-           verifier.EndTable();
-9188-  }
-9189-  L2NormOptionsT *UnPack(const ::flatbuffers::resolver_function_t *_resolver = nullptr) const;
---
-9323-    VT_KERNEL_TYPE = 10,
-9324-    VT_ASYMMETRIC_QUANTIZE_INPUTS = 12
-9325-  };
-9326:  tflite::ActivationFunctionType fused_activation_function() const {
-9327-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-9328-  }
-9329:  float cell_clip() const {
-9330-    return GetField<float>(VT_CELL_CLIP, 0.0f);
-9331-  }
-9332:  float proj_clip() const {
-9333-    return GetField<float>(VT_PROJ_CLIP, 0.0f);
-9334-  }
-9335-  tflite::LSTMKernelType kernel_type() const {
-9336-    return static_cast<tflite::LSTMKernelType>(GetField<int8_t>(VT_KERNEL_TYPE, 0));
-9337-  }
-9338-  bool asymmetric_quantize_inputs() const {
-9339-    return GetField<uint8_t>(VT_ASYMMETRIC_QUANTIZE_INPUTS, 0) != 0;
-9340-  }
---
-9421-    VT_ASYMMETRIC_QUANTIZE_INPUTS = 12,
-9422-    VT_DIAGONAL_RECURRENT_TENSORS = 14
-9423-  };
-9424:  tflite::ActivationFunctionType fused_activation_function() const {
-9425-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-9426-  }
-9427:  float cell_clip() const {
-9428-    return GetField<float>(VT_CELL_CLIP, 0.0f);
-9429-  }
-9430:  float proj_clip() const {
-9431-    return GetField<float>(VT_PROJ_CLIP, 0.0f);
-9432-  }
-9433:  bool time_major() const {
-9434-    return GetField<uint8_t>(VT_TIME_MAJOR, 0) != 0;
-9435-  }
-9436-  bool asymmetric_quantize_inputs() const {
-9437-    return GetField<uint8_t>(VT_ASYMMETRIC_QUANTIZE_INPUTS, 0) != 0;
-9438-  }
-9439-  bool diagonal_recurrent_tensors() const {
-9440-    return GetField<uint8_t>(VT_DIAGONAL_RECURRENT_TENSORS, 0) != 0;
-9441-  }
---
-9528-    VT_TIME_MAJOR = 12,
-9529-    VT_ASYMMETRIC_QUANTIZE_INPUTS = 14
-9530-  };
-9531:  tflite::ActivationFunctionType fused_activation_function() const {
-9532-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-9533-  }
-9534:  float cell_clip() const {
-9535-    return GetField<float>(VT_CELL_CLIP, 0.0f);
-9536-  }
-9537:  float proj_clip() const {
-9538-    return GetField<float>(VT_PROJ_CLIP, 0.0f);
-9539-  }
-9540:  bool merge_outputs() const {
-9541-    return GetField<uint8_t>(VT_MERGE_OUTPUTS, 0) != 0;
-9542-  }
-9543:  bool time_major() const {
-9544-    return GetField<uint8_t>(VT_TIME_MAJOR, 1) != 0;
-9545-  }
-9546-  bool asymmetric_quantize_inputs() const {
-9547-    return GetField<uint8_t>(VT_ASYMMETRIC_QUANTIZE_INPUTS, 0) != 0;
-9548-  }
-9549-  bool Verify(::flatbuffers::Verifier &verifier) const {
-9550-    return VerifyTableStart(verifier) &&
-9551-           VerifyField<int8_t>(verifier, VT_FUSED_ACTIVATION_FUNCTION, 1) &&
---
-10201-    VT_FUSED_ACTIVATION_FUNCTION = 4,
-10202-    VT_POT_SCALE_INT16 = 6
-10203-  };
-10204:  tflite::ActivationFunctionType fused_activation_function() const {
-10205-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-10206-  }
-10207-  bool pot_scale_int16() const {
-10208-    return GetField<uint8_t>(VT_POT_SCALE_INT16, 1) != 0;
-10209-  }
-10210-  bool Verify(::flatbuffers::Verifier &verifier) const {
-10211-    return VerifyTableStart(verifier) &&
-10212-           VerifyField<int8_t>(verifier, VT_FUSED_ACTIVATION_FUNCTION, 1) &&
---
-10262-  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
-10263-    VT_FUSED_ACTIVATION_FUNCTION = 4
-10264-  };
-10265:  tflite::ActivationFunctionType fused_activation_function() const {
-10266-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-10267-  }
-10268-  bool Verify(::flatbuffers::Verifier &verifier) const {
-10269-    return VerifyTableStart(verifier) &&
-10270-           VerifyField<int8_t>(verifier, VT_FUSED_ACTIVATION_FUNCTION, 1) &&
-10271-           verifier.EndTable();
-10272-  }
-10273-  DivOptionsT *UnPack(const ::flatbuffers::resolver_function_t *_resolver = nullptr) const;
---
-11523-  int32_t stride_h() const {
-11524-    return GetField<int32_t>(VT_STRIDE_H, 0);
-11525-  }
-11526:  tflite::ActivationFunctionType fused_activation_function() const {
-11527-    return static_cast<tflite::ActivationFunctionType>(GetField<int8_t>(VT_FUSED_ACTIVATION_FUNCTION, 0));
-11528-  }
-11529-  tflite::TensorType quantized_bias_type() const {
-11530-    return static_cast<tflite::TensorType>(GetField<int8_t>(VT_QUANTIZED_BIAS_TYPE, 0));
-11531-  }
-11532-  bool Verify(::flatbuffers::Verifier &verifier) const {
-11533-    return VerifyTableStart(verifier) &&
-11534-           VerifyField<int8_t>(verifier, VT_PADDING, 1) &&
---
-17988-  { auto _e = padding(); _o->padding = _e; }
-17989-  { auto _e = stride_w(); _o->stride_w = _e; }
-17990-  { auto _e = stride_h(); _o->stride_h = _e; }
-17991:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-17992-  { auto _e = dilation_w_factor(); _o->dilation_w_factor = _e; }
-17993-  { auto _e = dilation_h_factor(); _o->dilation_h_factor = _e; }
-17994-  { auto _e = quantized_bias_type(); _o->quantized_bias_type = _e; }
-17995-}
-17996-
-17997-inline ::flatbuffers::Offset<Conv2DOptions> Conv2DOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const Conv2DOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-17998-  return CreateConv2DOptions(_fbb, _o, _rehasher);
-17999-}
---
-18033-  { auto _e = stride_d(); _o->stride_d = _e; }
-18034-  { auto _e = stride_w(); _o->stride_w = _e; }
-18035-  { auto _e = stride_h(); _o->stride_h = _e; }
-18036:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18037-  { auto _e = dilation_d_factor(); _o->dilation_d_factor = _e; }
-18038-  { auto _e = dilation_w_factor(); _o->dilation_w_factor = _e; }
-18039-  { auto _e = dilation_h_factor(); _o->dilation_h_factor = _e; }
-18040-}
-18041-
-18042-inline ::flatbuffers::Offset<Conv3DOptions> Conv3DOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const Conv3DOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18043-  return CreateConv3DOptions(_fbb, _o, _rehasher);
-18044-}
---
-18081-  { auto _e = stride_h(); _o->stride_h = _e; }
-18082-  { auto _e = filter_width(); _o->filter_width = _e; }
-18083-  { auto _e = filter_height(); _o->filter_height = _e; }
-18084:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18085-}
-18086-
-18087-inline ::flatbuffers::Offset<Pool2DOptions> Pool2DOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const Pool2DOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18088-  return CreatePool2DOptions(_fbb, _o, _rehasher);
-18089-}
-18090-
-18091-inline ::flatbuffers::Offset<Pool2DOptions> CreatePool2DOptions(::flatbuffers::FlatBufferBuilder &_fbb, const Pool2DOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18092-  (void)_rehasher;
---
-18121-  { auto _e = stride_w(); _o->stride_w = _e; }
-18122-  { auto _e = stride_h(); _o->stride_h = _e; }
-18123-  { auto _e = depth_multiplier(); _o->depth_multiplier = _e; }
-18124:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18125-  { auto _e = dilation_w_factor(); _o->dilation_w_factor = _e; }
-18126-  { auto _e = dilation_h_factor(); _o->dilation_h_factor = _e; }
-18127-}
-18128-
-18129-inline ::flatbuffers::Offset<DepthwiseConv2DOptions> DepthwiseConv2DOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const DepthwiseConv2DOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18130-  return CreateDepthwiseConv2DOptions(_fbb, _o, _rehasher);
-18131-}
-18132-
---
-18220-  (void)_o;
-18221-  (void)_resolver;
-18222-  { auto _e = rank(); _o->rank = _e; }
-18223:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18224-  { auto _e = asymmetric_quantize_inputs(); _o->asymmetric_quantize_inputs = _e; }
-18225-}
-18226-
-18227-inline ::flatbuffers::Offset<SVDFOptions> SVDFOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const SVDFOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18228-  return CreateSVDFOptions(_fbb, _o, _rehasher);
-18229-}
-18230-
-18231-inline ::flatbuffers::Offset<SVDFOptions> CreateSVDFOptions(::flatbuffers::FlatBufferBuilder &_fbb, const SVDFOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
---
-18251-inline void RNNOptions::UnPackTo(RNNOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18252-  (void)_o;
-18253-  (void)_resolver;
-18254:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18255-  { auto _e = asymmetric_quantize_inputs(); _o->asymmetric_quantize_inputs = _e; }
-18256-}
-18257-
-18258-inline ::flatbuffers::Offset<RNNOptions> RNNOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const RNNOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18259-  return CreateRNNOptions(_fbb, _o, _rehasher);
-18260-}
-18261-
-18262-inline ::flatbuffers::Offset<RNNOptions> CreateRNNOptions(::flatbuffers::FlatBufferBuilder &_fbb, const RNNOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
---
-18280-inline void SequenceRNNOptions::UnPackTo(SequenceRNNOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18281-  (void)_o;
-18282-  (void)_resolver;
-18283:  { auto _e = time_major(); _o->time_major = _e; }
-18284:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18285-  { auto _e = asymmetric_quantize_inputs(); _o->asymmetric_quantize_inputs = _e; }
-18286-}
-18287-
-18288-inline ::flatbuffers::Offset<SequenceRNNOptions> SequenceRNNOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const SequenceRNNOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18289-  return CreateSequenceRNNOptions(_fbb, _o, _rehasher);
-18290-}
-18291-
-18292-inline ::flatbuffers::Offset<SequenceRNNOptions> CreateSequenceRNNOptions(::flatbuffers::FlatBufferBuilder &_fbb, const SequenceRNNOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
---
-18312-inline void BidirectionalSequenceRNNOptions::UnPackTo(BidirectionalSequenceRNNOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18313-  (void)_o;
-18314-  (void)_resolver;
-18315:  { auto _e = time_major(); _o->time_major = _e; }
-18316:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18317:  { auto _e = merge_outputs(); _o->merge_outputs = _e; }
-18318-  { auto _e = asymmetric_quantize_inputs(); _o->asymmetric_quantize_inputs = _e; }
-18319-}
-18320-
-18321-inline ::flatbuffers::Offset<BidirectionalSequenceRNNOptions> BidirectionalSequenceRNNOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const BidirectionalSequenceRNNOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18322-  return CreateBidirectionalSequenceRNNOptions(_fbb, _o, _rehasher);
-18323-}
-18324-
-18325-inline ::flatbuffers::Offset<BidirectionalSequenceRNNOptions> CreateBidirectionalSequenceRNNOptions(::flatbuffers::FlatBufferBuilder &_fbb, const BidirectionalSequenceRNNOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
---
-18347-inline void FullyConnectedOptions::UnPackTo(FullyConnectedOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18348-  (void)_o;
-18349-  (void)_resolver;
-18350:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18351-  { auto _e = weights_format(); _o->weights_format = _e; }
-18352-  { auto _e = keep_num_dims(); _o->keep_num_dims = _e; }
-18353-  { auto _e = asymmetric_quantize_inputs(); _o->asymmetric_quantize_inputs = _e; }
-18354-  { auto _e = quantized_bias_type(); _o->quantized_bias_type = _e; }
-18355-}
-18356-
-18357-inline ::flatbuffers::Offset<FullyConnectedOptions> FullyConnectedOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const FullyConnectedOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18358-  return CreateFullyConnectedOptions(_fbb, _o, _rehasher);
---
-18412-  (void)_o;
-18413-  (void)_resolver;
-18414-  { auto _e = axis(); _o->axis = _e; }
-18415:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18416-}
-18417-
-18418-inline ::flatbuffers::Offset<ConcatenationOptions> ConcatenationOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const ConcatenationOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18419-  return CreateConcatenationOptions(_fbb, _o, _rehasher);
-18420-}
-18421-
-18422-inline ::flatbuffers::Offset<ConcatenationOptions> CreateConcatenationOptions(::flatbuffers::FlatBufferBuilder &_fbb, const ConcatenationOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18423-  (void)_rehasher;
---
-18440-inline void AddOptions::UnPackTo(AddOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18441-  (void)_o;
-18442-  (void)_resolver;
-18443:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18444-  { auto _e = pot_scale_int16(); _o->pot_scale_int16 = _e; }
-18445-}
-18446-
-18447-inline ::flatbuffers::Offset<AddOptions> AddOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const AddOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18448-  return CreateAddOptions(_fbb, _o, _rehasher);
-18449-}
-18450-
-18451-inline ::flatbuffers::Offset<AddOptions> CreateAddOptions(::flatbuffers::FlatBufferBuilder &_fbb, const AddOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
---
-18469-inline void MulOptions::UnPackTo(MulOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18470-  (void)_o;
-18471-  (void)_resolver;
-18472:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18473-}
-18474-
-18475-inline ::flatbuffers::Offset<MulOptions> MulOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const MulOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18476-  return CreateMulOptions(_fbb, _o, _rehasher);
-18477-}
-18478-
-18479-inline ::flatbuffers::Offset<MulOptions> CreateMulOptions(::flatbuffers::FlatBufferBuilder &_fbb, const MulOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18480-  (void)_rehasher;
---
-18495-inline void L2NormOptions::UnPackTo(L2NormOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18496-  (void)_o;
-18497-  (void)_resolver;
-18498:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18499-}
-18500-
-18501-inline ::flatbuffers::Offset<L2NormOptions> L2NormOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const L2NormOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18502-  return CreateL2NormOptions(_fbb, _o, _rehasher);
-18503-}
-18504-
-18505-inline ::flatbuffers::Offset<L2NormOptions> CreateL2NormOptions(::flatbuffers::FlatBufferBuilder &_fbb, const L2NormOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18506-  (void)_rehasher;
---
-18556-inline void LSTMOptions::UnPackTo(LSTMOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18557-  (void)_o;
-18558-  (void)_resolver;
-18559:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18560:  { auto _e = cell_clip(); _o->cell_clip = _e; }
-18561:  { auto _e = proj_clip(); _o->proj_clip = _e; }
-18562-  { auto _e = kernel_type(); _o->kernel_type = _e; }
-18563-  { auto _e = asymmetric_quantize_inputs(); _o->asymmetric_quantize_inputs = _e; }
-18564-}
-18565-
-18566-inline ::flatbuffers::Offset<LSTMOptions> LSTMOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const LSTMOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18567-  return CreateLSTMOptions(_fbb, _o, _rehasher);
-18568-}
-18569-
---
-18594-inline void UnidirectionalSequenceLSTMOptions::UnPackTo(UnidirectionalSequenceLSTMOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18595-  (void)_o;
-18596-  (void)_resolver;
-18597:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18598:  { auto _e = cell_clip(); _o->cell_clip = _e; }
-18599:  { auto _e = proj_clip(); _o->proj_clip = _e; }
-18600:  { auto _e = time_major(); _o->time_major = _e; }
-18601-  { auto _e = asymmetric_quantize_inputs(); _o->asymmetric_quantize_inputs = _e; }
-18602-  { auto _e = diagonal_recurrent_tensors(); _o->diagonal_recurrent_tensors = _e; }
-18603-}
-18604-
-18605-inline ::flatbuffers::Offset<UnidirectionalSequenceLSTMOptions> UnidirectionalSequenceLSTMOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const UnidirectionalSequenceLSTMOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18606-  return CreateUnidirectionalSequenceLSTMOptions(_fbb, _o, _rehasher);
-18607-}
-18608-
---
-18635-inline void BidirectionalSequenceLSTMOptions::UnPackTo(BidirectionalSequenceLSTMOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18636-  (void)_o;
-18637-  (void)_resolver;
-18638:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18639:  { auto _e = cell_clip(); _o->cell_clip = _e; }
-18640:  { auto _e = proj_clip(); _o->proj_clip = _e; }
-18641:  { auto _e = merge_outputs(); _o->merge_outputs = _e; }
-18642:  { auto _e = time_major(); _o->time_major = _e; }
-18643-  { auto _e = asymmetric_quantize_inputs(); _o->asymmetric_quantize_inputs = _e; }
-18644-}
-18645-
-18646-inline ::flatbuffers::Offset<BidirectionalSequenceLSTMOptions> BidirectionalSequenceLSTMOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const BidirectionalSequenceLSTMOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18647-  return CreateBidirectionalSequenceLSTMOptions(_fbb, _o, _rehasher);
-18648-}
-18649-
-18650-inline ::flatbuffers::Offset<BidirectionalSequenceLSTMOptions> CreateBidirectionalSequenceLSTMOptions(::flatbuffers::FlatBufferBuilder &_fbb, const BidirectionalSequenceLSTMOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
---
-18962-inline void SubOptions::UnPackTo(SubOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18963-  (void)_o;
-18964-  (void)_resolver;
-18965:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18966-  { auto _e = pot_scale_int16(); _o->pot_scale_int16 = _e; }
-18967-}
-18968-
-18969-inline ::flatbuffers::Offset<SubOptions> SubOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const SubOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18970-  return CreateSubOptions(_fbb, _o, _rehasher);
-18971-}
-18972-
-18973-inline ::flatbuffers::Offset<SubOptions> CreateSubOptions(::flatbuffers::FlatBufferBuilder &_fbb, const SubOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
---
-18991-inline void DivOptions::UnPackTo(DivOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver) const {
-18992-  (void)_o;
-18993-  (void)_resolver;
-18994:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-18995-}
-18996-
-18997-inline ::flatbuffers::Offset<DivOptions> DivOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const DivOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-18998-  return CreateDivOptions(_fbb, _o, _rehasher);
-18999-}
-19000-
-19001-inline ::flatbuffers::Offset<DivOptions> CreateDivOptions(::flatbuffers::FlatBufferBuilder &_fbb, const DivOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-19002-  (void)_rehasher;
---
-19646-  { auto _e = padding(); _o->padding = _e; }
-19647-  { auto _e = stride_w(); _o->stride_w = _e; }
-19648-  { auto _e = stride_h(); _o->stride_h = _e; }
-19649:  { auto _e = fused_activation_function(); _o->fused_activation_function = _e; }
-19650-  { auto _e = quantized_bias_type(); _o->quantized_bias_type = _e; }
-19651-}
-19652-
-19653-inline ::flatbuffers::Offset<TransposeConvOptions> TransposeConvOptions::Pack(::flatbuffers::FlatBufferBuilder &_fbb, const TransposeConvOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher) {
-19654-  return CreateTransposeConvOptions(_fbb, _o, _rehasher);
-19655-}
-19656-
-19657-inline ::flatbuffers::Offset<TransposeConvOptions> CreateTransposeConvOptions(::flatbuffers::FlatBufferBuilder &_fbb, const TransposeConvOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher) {
+===== CURRENT PolyUModel1.cc =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#include "PolyUModel1.hpp"
+    18	
+    19	#include "mlek/log/log_macros.h"
+    20	#include "reverse_v2.h"
+    21	#include "heatstroke_bidirectional_lstm.h"
+    22	
+    23	const tflite::MicroOpResolver& arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    24	{
+    25	    return this->m_opResolver;
+    26	}
+    27	
+    28	TfLiteStatus ParseReverseV2(const tflite::Operator*, tflite::ErrorReporter*, tflite::BuiltinDataAllocator*,
+    29	                        void**) {
+    30	  return kTfLiteOk;
+    31	}
+    32	
+    33	bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+    34	{
+    35	#ifndef ETHOS_U_NPU_ASSUMED
+    36	    
+    37	    this->m_opResolver.AddStridedSlice();
+    38	    this->m_opResolver.AddFullyConnected();
+    39	    this->m_opResolver.AddReshape();
+    40	    this->m_opResolver.AddAveragePool2D();
+    41	    this->m_opResolver.AddUnpack();
+    42	    this->m_opResolver.AddAdd();
+    43	    this->m_opResolver.AddSplit();
+    44	    this->m_opResolver.AddTanh();
+    45	    this->m_opResolver.AddLogistic();
+    46	    this->m_opResolver.AddMul();
+    47	    this->m_opResolver.AddPack();
+    48	    this->m_opResolver.AddConcatenation();
+    49	    this->m_opResolver.AddTranspose();
+    50	    this->m_opResolver.AddGather();
+    51	    this->m_opResolver.AddMean();
+    52	    this->m_opResolver.AddSquaredDifference();
+    53	    this->m_opResolver.AddRsqrt();
+    54	    this->m_opResolver.AddSub();
+    55	    this->m_opResolver.AddPad();
+    56	    this->m_opResolver.AddConv2D();
+    57	    this->m_opResolver.AddSoftmax();
+    58	    //this->m_opResolver.AddCustom("ReverseV2", tflite::Register_REVERSE_V2());
+    59	    const TFLMRegistration& registration = tflite::Register_REVERSE_V2();
+    60	    this->m_opResolver.AddBuiltin(tflite::BuiltinOperator_REVERSE_V2, registration,
+    61	                      ParseReverseV2);
+    62	
+    63	#endif
+    64	
+    65	    
+    66	    {
+    67	        const TFLMRegistration registration =
+    68	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+    69	
+    70	        if (this->m_opResolver.AddBuiltin(
+    71	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+    72	                registration, nullptr) != kTfLiteOk) {
+    73	            return false;
+    74	        }
+    75	    }
+    76	
+    77	if (kTfLiteOk == this->m_opResolver.AddEthosU()) {
+    78	        info("Added %s support to op resolver\n", tflite::GetString_ETHOSU());
+    79	    } else {
+    80	        printf_err("Failed to add Arm NPU support to op resolver.");
+    81	        return false;
+    82	    }
+    83	    return true;
+    84	}
+
+===== CURRENT CMAKE SOURCE LIST =====
+   180	
+   181	target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+   182	
+   183	
+   184	if (CONFIG_USE_APP_MENU)
+   185	target_compile_definitions(app PRIVATE USE_APP_MENU)
+   186	endif()
+   187	
+   188	target_sources(app PRIVATE
+   189	    src/application/main/Main.cc
+   190	    src/use_case/alif_asr/src/MainLoop.cc
+   191		src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+   192	    src/use_case/alif_asr/src/reverse_v2.cc
+   193	    src/use_case/alif_asr/src/PolyUModel1.cc
+   194		src/power/power_mgr.c
+   195		~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+   196		${ASR_GENERATED_SOURCES}
+   197	)
+   198	
+   199	set(SRC_MAIN "src/application/main/Main.cc")
+   200	
+   201	list(APPEND SRC_MAIN_DEFS
+   202	    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+   203	    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+   204	    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+   205	
+   206	set_source_files_properties(${SRC_MAIN}
+   207	    PROPERTIES COMPILE_DEFINITIONS
+   208	    "${SRC_MAIN_DEFS}")
+   209	
+   210	target_link_libraries(app PRIVATE
