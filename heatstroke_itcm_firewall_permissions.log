@@ -1,0 +1,969 @@
+============================================================
+1. LOCAL TO GLOBAL MACROS AND IMPLEMENTATIONS
+============================================================
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1420-        if self.epilogue_creator is not None:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1421-            epilogue_creators.append(self.epilogue_creator)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1422-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1423-        # When the GEMM output buffer is localized but it has users other than the epilogue nodes,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1424-        # we need to copy the value in the GEMM output local buffer to a global buffer.
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1425:        def need_copy_from_local_to_global_buffer_epilogue(
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1426-            use_local_acc, template_buffer_has_other_users, epilogue_creators
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1427-        ):
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1428-            # The GEMM output buffer is a global buffer, thus copy is not needed.
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1429-            if not use_local_acc:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1430-                return False
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1431-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1432-            # The possible value of template_buffer_has_other_users is (None, False, True)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1433-            # It is None when generating the gemm template during autotune and it will have value during scheduler codegen.
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1434:            # extra copy_from_local_to_global_buffer_epilogue is not needed in either of the below two cases:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1435-            #   1. template_buffer_has_other_users is None (i.e. when doing the codegen during autotune)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1436-            #   2. template_buffer_has_other_users is False, which means it's safe to keep the value in the
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1437-            #       GEMM output buffer in local buffer only (no users outside of the epilogues will use its value).
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1438-            if not template_buffer_has_other_users:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1439-                return False
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1445-            if epilogue_creators:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1446-                return False
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1447-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1448-            return True
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1449-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1450:        if need_copy_from_local_to_global_buffer_epilogue(
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1451-            use_local_acc, template_buffer_has_other_users, epilogue_creators
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1452-        ):
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1453-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1454:            def copy_from_local_to_global_buffer_epilogue(input_buffer: ir.Buffer):
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1455-                dtype = self.layout.dtype
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1456-                input_loader = input_buffer.make_loader()
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1457-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1458-                def copy_inner(index):
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1459-                    input = input_loader(index)
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1465-                    dtype=self.layout.dtype,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1466-                    inner_fn=copy_inner,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1467-                    ranges=input_buffer.get_size(),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1468-                )
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1469-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1470:            epilogue_creators.append(copy_from_local_to_global_buffer_epilogue)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1471-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1472-        # NOTE [How CPP GEMM template epilogues are organized]
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1473-        #   gemm_output_buffer
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1474-        #     --> zero or more in-template epilogues (created by `epilogue_creators`) -->
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1475-        #   template_buffer
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5108-                call_ranges = tuple(group) + tuple(reduction_group)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5109-                return call_ranges
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5110-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5111-            local_buffers: list[ir.Buffer] = []
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5112-            # Map local buffer name to a list of global buffers
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5113:            local_to_global_buffers: dict[str, list[ir.Buffer]] = {}
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5114-            if all(
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5115-                len(get_call_ranges(_node)) == node.outer_loop_fusion_depth + 1
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5116-                for _node in node.get_outer_nodes()
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5117-            ):
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5118-                # Ref to the typical case of local buffer in
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5196-                                        user.node.get_name() in visited_scheduler_nodes
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5197-                                        for user in V.graph.scheduler.name_to_buf[
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5198-                                            global_buffer.name
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5199-                                        ].users
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5200-                                    )
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5201:                                    for global_buffer in local_to_global_buffers[
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5202-                                        local_buf.name
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5203-                                    ]
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5204-                                    if global_buffer.name is not None
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5205-                                ):
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5206-                                    return local_buf
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5216-                            local_buffer_used = ir.Buffer(
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5217-                                name=f"{local_buf_prefix}_{len(local_buffers)}",
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5218-                                layout=local_buffer_layout,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5219-                            )
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5220-                            local_buffers.append(local_buffer_used)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5221:                            local_to_global_buffers[local_buffer_used.name] = []  # type: ignore[index]
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5222-                        # pyrefly: ignore [index-error]
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5223:                        local_to_global_buffers[local_buffer_used.name].append(
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5224-                            global_buffer,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5225-                        )
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5226-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5227-            with LocalBufferContext(kernel_group.args) as scope:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5228-                if len(local_buffers) > 0:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5229-                    for local_buffer in local_buffers:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5230-                        assert local_buffer.name is not None
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5231-                        scope.add_local_buffer(
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5232:                            local_buffer, local_to_global_buffers[local_buffer.name]
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5233-                        )
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5234-                for _node in node.get_outer_nodes():
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5235-                    assert isinstance(_node, (FusedSchedulerNode, SchedulerNode))
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5236-                    cpp_kernel_proxy = self.kernel_proxy_cls(kernel_group)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5237-                    cpp_kernel_proxy.codegen_nodes(_node.get_nodes())  # type: ignore[arg-type]
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-94-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-95-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-96-@builtin
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-97-def async_copy_shared_to_global(tensor_desc, coord, src, _semantic=None):
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-98-    coord = _semantic._convert_to_ir_values(coord, require_i64=False)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py:99:    _semantic.builder.create_async_tma_copy_local_to_global(tensor_desc.handle, coord, src.handle)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-100-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-101-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-102-@builtin
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-103-def store_wait(pendings, _semantic=None):
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-104-    pendings = _unwrap_if_constexpr(pendings)
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-155-        dest (tensor_descriptor): the destination tensor descriptor.
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-156-        offsets (List[int]): the offsets from the base pointer in the tensor descriptor.
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-157-        src (shared_memory_descriptor): the shared memory source to load the data.
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-158-    """
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-159-    offset_handles = _semantic._convert_to_ir_values(offsets, require_i64=False)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py:160:    _semantic.builder.create_async_tdm_copy_local_to_global(dest.handle, offset_handles, src.handle)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-161-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-162-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-163-@builtin
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-164-def async_wait(num_outstanding=0, _semantic=None) -> None:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-165-    """Wait for the outstanding asynchronous tensor operations to complete.
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1420-        if self.epilogue_creator is not None:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1421-            epilogue_creators.append(self.epilogue_creator)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1422-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1423-        # When the GEMM output buffer is localized but it has users other than the epilogue nodes,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1424-        # we need to copy the value in the GEMM output local buffer to a global buffer.
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1425:        def need_copy_from_local_to_global_buffer_epilogue(
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1426-            use_local_acc, template_buffer_has_other_users, epilogue_creators
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1427-        ):
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1428-            # The GEMM output buffer is a global buffer, thus copy is not needed.
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1429-            if not use_local_acc:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1430-                return False
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1431-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1432-            # The possible value of template_buffer_has_other_users is (None, False, True)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1433-            # It is None when generating the gemm template during autotune and it will have value during scheduler codegen.
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1434:            # extra copy_from_local_to_global_buffer_epilogue is not needed in either of the below two cases:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1435-            #   1. template_buffer_has_other_users is None (i.e. when doing the codegen during autotune)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1436-            #   2. template_buffer_has_other_users is False, which means it's safe to keep the value in the
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1437-            #       GEMM output buffer in local buffer only (no users outside of the epilogues will use its value).
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1438-            if not template_buffer_has_other_users:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1439-                return False
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1445-            if epilogue_creators:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1446-                return False
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1447-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1448-            return True
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1449-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1450:        if need_copy_from_local_to_global_buffer_epilogue(
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1451-            use_local_acc, template_buffer_has_other_users, epilogue_creators
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1452-        ):
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1453-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1454:            def copy_from_local_to_global_buffer_epilogue(input_buffer: ir.Buffer):
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1455-                dtype = self.layout.dtype
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1456-                input_loader = input_buffer.make_loader()
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1457-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1458-                def copy_inner(index):
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1459-                    input = input_loader(index)
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1465-                    dtype=self.layout.dtype,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1466-                    inner_fn=copy_inner,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1467-                    ranges=input_buffer.get_size(),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1468-                )
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1469-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py:1470:            epilogue_creators.append(copy_from_local_to_global_buffer_epilogue)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1471-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1472-        # NOTE [How CPP GEMM template epilogues are organized]
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1473-        #   gemm_output_buffer
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1474-        #     --> zero or more in-template epilogues (created by `epilogue_creators`) -->
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp_gemm_template.py-1475-        #   template_buffer
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5108-                call_ranges = tuple(group) + tuple(reduction_group)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5109-                return call_ranges
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5110-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5111-            local_buffers: list[ir.Buffer] = []
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5112-            # Map local buffer name to a list of global buffers
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5113:            local_to_global_buffers: dict[str, list[ir.Buffer]] = {}
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5114-            if all(
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5115-                len(get_call_ranges(_node)) == node.outer_loop_fusion_depth + 1
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5116-                for _node in node.get_outer_nodes()
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5117-            ):
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5118-                # Ref to the typical case of local buffer in
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5196-                                        user.node.get_name() in visited_scheduler_nodes
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5197-                                        for user in V.graph.scheduler.name_to_buf[
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5198-                                            global_buffer.name
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5199-                                        ].users
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5200-                                    )
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5201:                                    for global_buffer in local_to_global_buffers[
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5202-                                        local_buf.name
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5203-                                    ]
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5204-                                    if global_buffer.name is not None
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5205-                                ):
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5206-                                    return local_buf
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5216-                            local_buffer_used = ir.Buffer(
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5217-                                name=f"{local_buf_prefix}_{len(local_buffers)}",
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5218-                                layout=local_buffer_layout,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5219-                            )
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5220-                            local_buffers.append(local_buffer_used)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5221:                            local_to_global_buffers[local_buffer_used.name] = []  # type: ignore[index]
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5222-                        # pyrefly: ignore [index-error]
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5223:                        local_to_global_buffers[local_buffer_used.name].append(
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5224-                            global_buffer,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5225-                        )
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5226-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5227-            with LocalBufferContext(kernel_group.args) as scope:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5228-                if len(local_buffers) > 0:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5229-                    for local_buffer in local_buffers:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5230-                        assert local_buffer.name is not None
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5231-                        scope.add_local_buffer(
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py:5232:                            local_buffer, local_to_global_buffers[local_buffer.name]
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5233-                        )
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5234-                for _node in node.get_outer_nodes():
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5235-                    assert isinstance(_node, (FusedSchedulerNode, SchedulerNode))
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5236-                    cpp_kernel_proxy = self.kernel_proxy_cls(kernel_group)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/cpp.py-5237-                    cpp_kernel_proxy.codegen_nodes(_node.get_nodes())  # type: ignore[arg-type]
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-94-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-95-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-96-@builtin
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-97-def async_copy_shared_to_global(tensor_desc, coord, src, _semantic=None):
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-98-    coord = _semantic._convert_to_ir_values(coord, require_i64=False)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py:99:    _semantic.builder.create_async_tma_copy_local_to_global(tensor_desc.handle, coord, src.handle)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-100-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-101-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-102-@builtin
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-103-def store_wait(pendings, _semantic=None):
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/nvidia/hopper/tma.py-104-    pendings = _unwrap_if_constexpr(pendings)
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-155-        dest (tensor_descriptor): the destination tensor descriptor.
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-156-        offsets (List[int]): the offsets from the base pointer in the tensor descriptor.
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-157-        src (shared_memory_descriptor): the shared memory source to load the data.
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-158-    """
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-159-    offset_handles = _semantic._convert_to_ir_values(offsets, require_i64=False)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py:160:    _semantic.builder.create_async_tdm_copy_local_to_global(dest.handle, offset_handles, src.handle)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-161-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-162-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-163-@builtin
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-164-def async_wait(num_outstanding=0, _semantic=None) -> None:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/experimental/gluon/language/amd/gfx1250/tdm.py-165-    """Wait for the outstanding asynchronous tensor operations to complete.
+--
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-110-        if (classification.m_label == "go" || classification.m_label == "stop") {
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-111-            info("******************* send_msg_if_needed, FOUND \"%s\", copy data end send! ******************\n", classification.m_label.c_str());
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-112-            strcpy(mhu_data.msg, classification.m_label.c_str());
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-113-            __DMB();
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-114-#if defined(M55_HE) || defined(RTSS_HE)
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc:115:            SERVICES_send_msg(hp_comms_handle, LocalToGlobal(&mhu_data));
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-116-#else
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc:117:            SERVICES_send_msg(he_comms_handle, LocalToGlobal(&mhu_data));
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-118-#endif
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-119-        }
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-120-        last_label = classification.m_label;
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-121-    }
+modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc-122-}
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-79-                              uint32_t *error_code)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-80-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-81-  update_stoc_svc_t * p_svc = (update_stoc_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-82-      SERVICES_prepare_packet_buffer(sizeof(update_stoc_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-83-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c:84:  p_svc->send_image_address = LocalToGlobal((void *)image_address);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-85-  p_svc->send_image_size = image_size;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-86-  uint32_t ret = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-87-                                       SERVICE_UPDATE_STOC,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-88-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_update.c-89-
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-64-      SERVICES_prepare_packet_buffer(sizeof(net_proc_boot_svc_t)); /* packet */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-65-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-66-  /*
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-67-   * Assemble SERVICE packet
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-68-   */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c:69:  p_svc->send_nvds_src_addr = LocalToGlobal((void*)boot_args->nvds_src_addr);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-70-  p_svc->send_nvds_dst_addr = boot_args->nvds_dst_addr;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-71-  p_svc->send_nvds_copy_len = boot_args->nvds_copy_len;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-72-  p_svc->send_trng_dst_addr = boot_args->trng_dst_addr;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-73-  p_svc->send_trng_len      = boot_args->trng_len;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_extsys0.c-74-  p_svc->send_internal_clock_select = boot_args->es0_clock_select;
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-44- */
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-45-void SERVICES_initialize(services_lib_t *init_params)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-46-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-47-  s_services_host.packet_buffer_address = init_params->packet_buffer_address;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-48-  s_pkt_buffer_address_global =
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c:49:      LocalToGlobal((void *)s_services_host.packet_buffer_address);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-50-  s_services_host.fn_send_mhu_message = init_params->fn_send_mhu_message;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-51-  s_services_host.fn_wait_ms = init_params->fn_wait_ms;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-52-  s_services_host.wait_timeout = init_params->wait_timeout,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-53-  s_services_host.fn_print_msg = init_params->fn_print_msg;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_handler.c-54-}
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-130-                                                   uint32_t olen)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-131-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-132-  mbedtls_trng_hardware_poll_svc_t * p_svc = (mbedtls_trng_hardware_poll_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-133-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_trng_hardware_poll_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-134-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:135:  p_svc->send_data_addr = LocalToGlobal((void *)data);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:136:  p_svc->send_output_addr = LocalToGlobal((void *)output);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-137-  p_svc->send_len = len;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:138:  p_svc->send_olen_addr = LocalToGlobal((void *)olen);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-139-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-140-  uint32_t err = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-141-                                       SERVICE_CRYPTOCELL_MBEDTLS_TRNG_HARDWARE_POLL,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-142-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-143-  *error_code = p_svc->resp_error_code;
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-158-                                              uint32_t ctx)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-159-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-160-  mbedtls_aes_init_svc_t * p_svc = (mbedtls_aes_init_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-161-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_aes_init_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-162-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:163:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-164-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-165-                                       SERVICE_CRYPTOCELL_MBEDTLS_AES_INIT,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-166-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-167-  *error_code = 0;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-168-  return err;
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-188-                                                 uint32_t dir)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-189-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-190-  mbedtls_aes_set_key_svc_t * p_svc = (mbedtls_aes_set_key_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-191-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_aes_set_key_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-192-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:193:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:194:  p_svc->send_key_addr = LocalToGlobal((void *)key);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-195-  p_svc->send_key_bits = keybits;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-196-  p_svc->send_direction = dir;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-197-  
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-198-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-199-                                       SERVICE_CRYPTOCELL_MBEDTLS_AES_SET_KEY,
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-228-                                               uint32_t output)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-229-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-230-  mbedtls_aes_crypt_svc_t * p_svc = (mbedtls_aes_crypt_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-231-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_aes_crypt_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-232-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:233:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-234-  p_svc->send_crypt_type = crypt_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-235-  p_svc->send_mode = mode;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-236-  p_svc->send_length = length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:237:  p_svc->send_iv_addr = LocalToGlobal((void *)iv);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:238:  p_svc->send_input_addr = LocalToGlobal((void *)input);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:239:  p_svc->send_output_addr = LocalToGlobal((void *)output);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-240-  
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-241-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-242-                                       SERVICE_CRYPTOCELL_MBEDTLS_AES_CRYPT,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-243-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-244-  *error_code = p_svc->resp_error_code;
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-273-                           uint32_t output)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-274-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-275-  mbedtls_aes_svc_t * p_svc = (mbedtls_aes_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-276-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_aes_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-277-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:278:  p_svc->send_key_addr = LocalToGlobal((void *)key);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-279-  p_svc->send_key_bits = keybits;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-280-  p_svc->send_direction = direction;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-281-  p_svc->send_crypt_type = crypt_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:282:  p_svc->send_iv_addr = LocalToGlobal((void *)iv);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-283-  p_svc->send_length = length;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:284:  p_svc->send_input_addr = LocalToGlobal((void *)input);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:285:  p_svc->send_output_addr = LocalToGlobal((void *)output);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-286-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-287-  uint32_t err = SERVICES_send_request(services_handle,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-288-                                       SERVICE_CRYPTOCELL_MBEDTLS_AES,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-289-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-290-  *error_code = p_svc->resp_error_code;
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-307-                                                uint32_t sha_type)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-308-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-309-  mbedtls_sha_svc_t * p_svc = (mbedtls_sha_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-310-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_sha_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-311-  
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:312:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-313-  p_svc->send_sha_type = sha_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-314-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-315-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-316-                                       SERVICE_CRYPTOCELL_MBEDTLS_SHA_STARTS,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-317-                                       DEFAULT_TIMEOUT);
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-337-                                                 uint32_t data)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-338-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-339-  mbedtls_sha_svc_t * p_svc = (mbedtls_sha_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-340-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_sha_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-341-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:342:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-343-  p_svc->send_sha_type = sha_type;
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:344:  p_svc->send_data_addr = LocalToGlobal((void *)data);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-345-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-346-  uint32_t err = SERVICES_send_request(services_handle, 
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-347-                                       SERVICE_CRYPTOCELL_MBEDTLS_SHA_PROCESS,
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-348-                                       DEFAULT_TIMEOUT);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-349-  *error_code = p_svc->resp_error_code;
+--
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-370-                                                uint32_t data_length)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-371-{
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-372-  mbedtls_sha_svc_t * p_svc = (mbedtls_sha_svc_t *)
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-373-    SERVICES_prepare_packet_buffer(sizeof(mbedtls_sha_svc_t));
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-374-
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c:375:  p_svc->send_context_addr = LocalToGlobal((void *)ctx);
+modules/alif-mlek/source/hal/source/platform/alif/services_lib/services_lib/services_host_cryptocell.c-376-  p_svc->send_sha_type = sha_type;
+
+============================================================
+2. B1 SRAM4 / ITCM FIREWALL DEFINITIONS
+============================================================
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-20-__HEAP_SIZE  = 0x000C0000;
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-21-
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-22-/* System memory brief */
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-23-MEMORY
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-24-{
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld:25:  ITCM  (rx)  : ORIGIN = 0x00000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld:26:  DTCM  (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-27-  BRAM  (rwx) : ORIGIN = 0x11000000, LENGTH = 0x00100000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-28-  SRAM  (rwx) : ORIGIN = 0x31000000, LENGTH = 0x00200000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-29-  DDR   (rwx) : ORIGIN = 0x70000000, LENGTH = 0x02000000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-30-
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.gnu.ld-31-  /* Dynamic load regions declared for use by FVP only
+--
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-25-;       only be placed in those regions.
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-26-;
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-27-;---------------------------------------------------------
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-28-; First load region (ITCM)
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-29-;---------------------------------------------------------
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct:30:LOAD_REGION_0       0x00000000                  0x00080000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-31-{
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-32-    ;-----------------------------------------------------
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-33-    ; First part of code mem - 512kiB
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-34-    ;-----------------------------------------------------
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct:35:    itcm.bin        0x00000000                  0x00080000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-36-    {
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-37-        *.o (RESET, +First)
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-38-        * (InRoot$$Sections)
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-39-
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.armclang.sct-40-        ; Essentially only RO-CODE, RO-DATA is in a
+--
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-19-__STACK_SIZE = 0x00008000;
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-20-__HEAP_SIZE  = 0x000C0000;
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-21-
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-22-MEMORY
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-23-{
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld:24:    ITCM  (rx)  : ORIGIN = 0x00000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld:25:    DTCM  (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-26-    BRAM  (rwx) : ORIGIN = 0x11000000, LENGTH = 0x00100000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-27-    SRAM  (rwx) : ORIGIN = 0x31000000, LENGTH = 0x00200000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-28-    DDR   (rwx) : ORIGIN = 0x70000000, LENGTH = 0x02000000
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-29-
+modules/alif-mlek/scripts/cmake/platforms/mps3/sse-300/mps3-sse-300.llvm.ld-30-    /* Dynamic load regions declared for use by FVP only
+--
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-20-#define SRAM1_BASE                0x08000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-21-#define SRAM1_SIZE                0x00280000		/* 2.5M */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-22-#define SRAM6_BASE                0x62000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-23-#define SRAM6_SIZE                0x00200000		/* 2M */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-24-#define SRAM7_BASE                0x63000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct:25:#define SRAM7_SIZE                0x00080000		/* 512K */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-26-#define SRAM8_BASE                0x63100000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-27-#define SRAM8_SIZE                0x00200000		/* 2M */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-28-#define SRAM9_BASE                0x64000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-29-#define SRAM9_SIZE                0x000C0000		/* 768K */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_he/RTSS-HE-SRAM.sct-30-/* On Chip NVM */
+--
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-20-#define SRAM1_BASE                0x08000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-21-#define SRAM1_SIZE                0x00280000		/* 2.5M */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-22-#define SRAM6_BASE                0x62000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-23-#define SRAM6_SIZE                0x00200000		/* 2M */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-24-#define SRAM7_BASE                0x63000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct:25:#define SRAM7_SIZE                0x00080000		/* 512K */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-26-#define SRAM8_BASE                0x63100000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-27-#define SRAM8_SIZE                0x00200000		/* 2M */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-28-#define SRAM9_BASE                0x64000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-29-#define SRAM9_SIZE                0x000C0000		/* 768K */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE722F80F55D5/rtss_hp/RTSS-HP-SRAM.sct-30-/* On Chip NVM */
+--
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-23-#endif
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-24-
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-25-/*--------------------- ITCM Configuration ----------------------------------*/
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-26-/* SRAM4 is mapped as ITCM */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-27-#define ITCM_BASE                 0x01000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct:28:#define ITCM_SIZE                 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-29-
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-30-/*--------------------- DTCM Configuration ---------------------------*/
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-31-/* SRAM5 is mapped as DTCM */
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-32-#define DTCM_BASE                 0x20000000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.sct-33-#define DTCM_SIZE                 0x00180000
+--
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-40-__OSPI_FLASH_SIZE = BOARD_OSPI_FLASH_SIZE;
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-41-#endif
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-42-
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-43-MEMORY
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-44-{
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld:45:  ITCM  (rwx) : ORIGIN = 0x01000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-46-  DTCM  (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00180000
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-47-  MRAM  (rx)  : ORIGIN = __ROM_BASE, LENGTH = __ROM_SIZE
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-48-
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-49-#ifdef BOARD_OSPI_FLASH_BASE
+modules/alif-mlek/scripts/cmake/platforms/alif/AE1C1F4051920/rtss_he/RTSS-HE-TCM.ld-50-  OSPI_FLASH (rx) : ORIGIN = __OSPI_FLASH_BASE, LENGTH = __OSPI_FLASH_SIZE
+--
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-20-__HEAP_SIZE  = 0x000C0000;
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-21-
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-22-/* System memory brief */
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-23-MEMORY
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-24-{
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld:25:  ITCM  (rx)  : ORIGIN = 0x00000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld:26:  DTCM  (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-27-  BRAM  (rwx) : ORIGIN = 0x11000000, LENGTH = 0x00100000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-28-  SRAM  (rwx) : ORIGIN = 0x31000000, LENGTH = 0x00200000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-29-  DDR   (rwx) : ORIGIN = 0x70000000, LENGTH = 0x02000000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-30-}
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.gnu.ld-31-
+--
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-24-;       only be placed in those regions.
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-25-;
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-26-;---------------------------------------------------------
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-27-; First load region (ITCM)
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-28-;---------------------------------------------------------
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct:29:LOAD_REGION_0       0x00000000                  0x00080000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-30-{
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-31-    ;-----------------------------------------------------
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-32-    ; First part of code mem - 512kiB
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-33-    ;-----------------------------------------------------
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct:34:    itcm.bin        0x00000000                  0x00080000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-35-    {
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-36-        *.o (RESET, +First)
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-37-        * (InRoot$$Sections)
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-38-
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.armclang.sct-39-        ; Essentially only RO-CODE, RO-DATA is in a
+--
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-19-__STACK_SIZE = 0x00008000;
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-20-__HEAP_SIZE  = 0x000C0000;
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-21-
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-22-MEMORY
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-23-{
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld:24:    ITCM  (rx)  : ORIGIN = 0x00000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld:25:    DTCM  (rwx) : ORIGIN = 0x20000000, LENGTH = 0x00080000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-26-    BRAM  (rwx) : ORIGIN = 0x11000000, LENGTH = 0x00100000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-27-    SRAM  (rwx) : ORIGIN = 0x31000000, LENGTH = 0x00200000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-28-    DDR   (rwx) : ORIGIN = 0x70000000, LENGTH = 0x02000000
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-29-
+modules/alif-mlek/scripts/cmake/platforms/simple_platform/simple_platform.llvm.ld-30-    /* Dynamic load regions declared for use by FVP only
+--
+modules/alif-mlek/docs/sections/memory_considerations.md-232-
+modules/alif-mlek/docs/sections/memory_considerations.md-233-```log
+modules/alif-mlek/docs/sections/memory_considerations.md-234-;---------------------------------------------------------
+modules/alif-mlek/docs/sections/memory_considerations.md-235-; First load region (ITCM)
+modules/alif-mlek/docs/sections/memory_considerations.md-236-;---------------------------------------------------------
+modules/alif-mlek/docs/sections/memory_considerations.md:237:LOAD_REGION_0       0x00000000                  0x00080000
+modules/alif-mlek/docs/sections/memory_considerations.md-238-{
+modules/alif-mlek/docs/sections/memory_considerations.md-239-
+modules/alif-mlek/docs/sections/memory_considerations.md-240-...
+modules/alif-mlek/docs/sections/memory_considerations.md-241-
+modules/alif-mlek/docs/sections/memory_considerations.md-242-    ;-----------------------------------------------------
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10474-  // @@protoc_insertion_point(field_set:google.protobuf.FileOptions.deprecated)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10475-}
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10476-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10477-// optional bool cc_enable_arenas = 31 [default = true];
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10478-inline bool FileOptions::_internal_has_cc_enable_arenas() const {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h:10479:  bool value = (_has_bits_[0] & 0x00080000u) != 0;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10480-  return value;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10481-}
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10482-inline bool FileOptions::has_cc_enable_arenas() const {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10483-  return _internal_has_cc_enable_arenas();
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10484-}
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10485-inline void FileOptions::clear_cc_enable_arenas() {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10486-  cc_enable_arenas_ = true;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h:10487:  _has_bits_[0] &= ~0x00080000u;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10488-}
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10489-inline bool FileOptions::_internal_cc_enable_arenas() const {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10490-  return cc_enable_arenas_;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10491-}
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10492-inline bool FileOptions::cc_enable_arenas() const {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10493-  // @@protoc_insertion_point(field_get:google.protobuf.FileOptions.cc_enable_arenas)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10494-  return _internal_cc_enable_arenas();
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10495-}
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10496-inline void FileOptions::_internal_set_cc_enable_arenas(bool value) {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h:10497:  _has_bits_[0] |= 0x00080000u;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10498-  cc_enable_arenas_ = value;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10499-}
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10500-inline void FileOptions::set_cc_enable_arenas(bool value) {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10501-  _internal_set_cc_enable_arenas(value);
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10502-  // @@protoc_insertion_point(field_set:google.protobuf.FileOptions.cc_enable_arenas)
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2215-         (0x1356d37b)},
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2216-        {(0x00000000),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2217-         (0x003c8000),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2218-         (0x00700000),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2219-         (0x004c8000),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h:2220:         (0x00080000),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2221-         (0x00348000),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2222-         (0x00780000),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2223-         (0x00448000),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2224-         (0x00021e00),
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2225-         (0x003e9e00),
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-447-        {   // 2^(-25) < |a| < 2^(-14), potentially results in denormal
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-448-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-449-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-450-        }
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-451-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp:452:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-453-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-454-        (void)memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-455-        double aShiftRound = a + shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-456-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-457-        // Prevent the compiler from optimizing away a + shifter - shifter
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-518-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-519-            */
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-520-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-521-        }
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-522-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp:523:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-524-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-525-        (void)std::memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-526-        double aShiftRound = a + shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-527-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-528-        /*
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1107-/* The operand will only be read from */
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1108-#define NPY_ITER_READONLY                   0x00020000
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1109-/* The operand will only be written to */
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1110-#define NPY_ITER_WRITEONLY                  0x00040000
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1111-/* The operand's data must be in native byte order */
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h:1112:#define NPY_ITER_NBO                        0x00080000
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1113-/* The operand's data must be aligned */
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1114-#define NPY_ITER_ALIGNED                    0x00100000
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1115-/* The operand's data must be contiguous (within the inner loop) */
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1116-#define NPY_ITER_CONTIG                     0x00200000
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1117-/* The operand may be copied to satisfy requirements */
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-253-    # RSQRT_LUT has been generated by printing the output from the reference.
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-254-    # These values are always the same but for some unknown reason it is not being
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-255-    # implemented as a LUT in the reference.
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-256-    # So based on the input range (-128, 127) the reference produces the following output:
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-257-    RSQRT_LUT = [
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py:258:        0x00000000, 0x00100000, 0x000b504e, 0x00093cd4, 0x00080000, 0x000727c9, 0x0006882f, 0x00060c24,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-259-        0x0005a827, 0x00055555, 0x00050f45, 0x0004d2fe, 0x00049e6a, 0x00047007, 0x000446b4, 0x00042195,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-260-        0x00040000, 0x0003e16d, 0x0003c570, 0x0003abb0, 0x000393e5, 0x00037dd2, 0x00036945, 0x00035613,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-261-        0x00034418, 0x00033333, 0x0003234b, 0x00031447, 0x00030612, 0x0002f89c, 0x0002ebd3, 0x0002dfaa,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-262-        0x0002d414, 0x0002c906, 0x0002be75, 0x0002b45a, 0x0002aaab, 0x0002a161, 0x00029875, 0x00028fe3,
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lut.py-263-        0x000287a2, 0x00027fb0, 0x00027807, 0x000270a2, 0x0002697f, 0x00026298, 0x00025bec, 0x00025577,
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-441-        {   // 2^(-25) < |a| < 2^(-14), potentially results in denormal
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-442-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-443-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-444-        }
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-445-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp:446:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-447-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-448-        #if defined(__CUDACC__)
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-449-            (void)memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-450-        #else
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-451-            (void)std::memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1751-    /* fma (nan, y, z) --> nan
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1752-       fma (x, nan, z) --> nan
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1753-       fma (x, y, nan) --> nan 
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1754-    */
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1755-    if (((yy.hi << 1) | (yy.lo != 0)) > 0xffe00000U) {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp:1756:      yy.hi |= 0x00080000U;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1757-      memcpy(&d, &yy, sizeof(double));
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1758-      return d;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1759-    }
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1760-    if (((zz.hi << 1) | (zz.lo != 0)) > 0xffe00000U) {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp:1761:      zz.hi |= 0x00080000U;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1762-      memcpy(&d, &zz, sizeof(double));
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1763-      return d;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1764-    }
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1765-    if (((xx.hi << 1) | (xx.lo != 0)) > 0xffe00000U) {
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp:1766:      xx.hi |= 0x00080000U;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1767-      memcpy(&d, &xx, sizeof(double));
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1768-      return d;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1769-    }
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1770-    
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1771-    /* fma (0, inf, z) --> INDEFINITE
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-447-        {   // 2^(-25) < |a| < 2^(-14), potentially results in denormal
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-448-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-449-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-450-        }
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-451-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp:452:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-453-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-454-        (void)memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-455-        double aShiftRound = a + shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-456-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-457-        // Prevent the compiler from optimizing away a + shifter - shifter
+--
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-518-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-519-            */
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-520-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-521-        }
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-522-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp:523:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-524-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-525-        (void)std::memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-526-        double aShiftRound = a + shifter;
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-527-
+modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-528-        /*
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10474-  // @@protoc_insertion_point(field_set:google.protobuf.FileOptions.deprecated)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10475-}
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10476-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10477-// optional bool cc_enable_arenas = 31 [default = true];
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10478-inline bool FileOptions::_internal_has_cc_enable_arenas() const {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h:10479:  bool value = (_has_bits_[0] & 0x00080000u) != 0;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10480-  return value;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10481-}
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10482-inline bool FileOptions::has_cc_enable_arenas() const {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10483-  return _internal_has_cc_enable_arenas();
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10484-}
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10485-inline void FileOptions::clear_cc_enable_arenas() {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10486-  cc_enable_arenas_ = true;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h:10487:  _has_bits_[0] &= ~0x00080000u;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10488-}
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10489-inline bool FileOptions::_internal_cc_enable_arenas() const {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10490-  return cc_enable_arenas_;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10491-}
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10492-inline bool FileOptions::cc_enable_arenas() const {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10493-  // @@protoc_insertion_point(field_get:google.protobuf.FileOptions.cc_enable_arenas)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10494-  return _internal_cc_enable_arenas();
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10495-}
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10496-inline void FileOptions::_internal_set_cc_enable_arenas(bool value) {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h:10497:  _has_bits_[0] |= 0x00080000u;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10498-  cc_enable_arenas_ = value;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10499-}
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10500-inline void FileOptions::set_cc_enable_arenas(bool value) {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10501-  _internal_set_cc_enable_arenas(value);
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/google/protobuf/descriptor.pb.h-10502-  // @@protoc_insertion_point(field_set:google.protobuf.FileOptions.cc_enable_arenas)
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2215-         (0x1356d37b)},
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2216-        {(0x00000000),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2217-         (0x003c8000),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2218-         (0x00700000),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2219-         (0x004c8000),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h:2220:         (0x00080000),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2221-         (0x00348000),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2222-         (0x00780000),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2223-         (0x00448000),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2224-         (0x00021e00),
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/curand/include/curand_mtgp32dc_p_11213.h-2225-         (0x003e9e00),
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-447-        {   // 2^(-25) < |a| < 2^(-14), potentially results in denormal
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-448-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-449-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-450-        }
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-451-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp:452:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-453-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-454-        (void)memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-455-        double aShiftRound = a + shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-456-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-457-        // Prevent the compiler from optimizing away a + shifter - shifter
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-518-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-519-            */
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-520-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-521-        }
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-522-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp:523:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-524-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-525-        (void)std::memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-526-        double aShiftRound = a + shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-527-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/nvidia/cuda_runtime/include/cuda_fp16.hpp-528-        /*
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1107-/* The operand will only be read from */
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1108-#define NPY_ITER_READONLY                   0x00020000
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1109-/* The operand will only be written to */
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1110-#define NPY_ITER_WRITEONLY                  0x00040000
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1111-/* The operand's data must be in native byte order */
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h:1112:#define NPY_ITER_NBO                        0x00080000
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1113-/* The operand's data must be aligned */
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1114-#define NPY_ITER_ALIGNED                    0x00100000
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1115-/* The operand's data must be contiguous (within the inner loop) */
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1116-#define NPY_ITER_CONTIG                     0x00200000
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numpy/_core/include/numpy/ndarraytypes.h-1117-/* The operand may be copied to satisfy requirements */
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-253-    # RSQRT_LUT has been generated by printing the output from the reference.
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-254-    # These values are always the same but for some unknown reason it is not being
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-255-    # implemented as a LUT in the reference.
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-256-    # So based on the input range (-128, 127) the reference produces the following output:
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-257-    RSQRT_LUT = [
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py:258:        0x00000000, 0x00100000, 0x000b504e, 0x00093cd4, 0x00080000, 0x000727c9, 0x0006882f, 0x00060c24,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-259-        0x0005a827, 0x00055555, 0x00050f45, 0x0004d2fe, 0x00049e6a, 0x00047007, 0x000446b4, 0x00042195,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-260-        0x00040000, 0x0003e16d, 0x0003c570, 0x0003abb0, 0x000393e5, 0x00037dd2, 0x00036945, 0x00035613,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-261-        0x00034418, 0x00033333, 0x0003234b, 0x00031447, 0x00030612, 0x0002f89c, 0x0002ebd3, 0x0002dfaa,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-262-        0x0002d414, 0x0002c906, 0x0002be75, 0x0002b45a, 0x0002aaab, 0x0002a161, 0x00029875, 0x00028fe3,
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/ethosu/vela/lut.py-263-        0x000287a2, 0x00027fb0, 0x00027807, 0x000270a2, 0x0002697f, 0x00026298, 0x00025bec, 0x00025577,
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-441-        {   // 2^(-25) < |a| < 2^(-14), potentially results in denormal
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-442-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-443-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-444-        }
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-445-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp:446:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-447-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-448-        #if defined(__CUDACC__)
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-449-            (void)memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-450-        #else
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/numba/cuda/cuda_fp16.hpp-451-            (void)std::memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1751-    /* fma (nan, y, z) --> nan
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1752-       fma (x, nan, z) --> nan
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1753-       fma (x, y, nan) --> nan 
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1754-    */
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1755-    if (((yy.hi << 1) | (yy.lo != 0)) > 0xffe00000U) {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp:1756:      yy.hi |= 0x00080000U;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1757-      memcpy(&d, &yy, sizeof(double));
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1758-      return d;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1759-    }
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1760-    if (((zz.hi << 1) | (zz.lo != 0)) > 0xffe00000U) {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp:1761:      zz.hi |= 0x00080000U;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1762-      memcpy(&d, &zz, sizeof(double));
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1763-      return d;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1764-    }
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1765-    if (((xx.hi << 1) | (xx.lo != 0)) > 0xffe00000U) {
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp:1766:      xx.hi |= 0x00080000U;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1767-      memcpy(&d, &xx, sizeof(double));
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1768-      return d;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1769-    }
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1770-    
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/crt/math_functions.hpp-1771-    /* fma (0, inf, z) --> INDEFINITE
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-447-        {   // 2^(-25) < |a| < 2^(-14), potentially results in denormal
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-448-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-449-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-450-        }
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-451-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp:452:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-453-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-454-        (void)memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-455-        double aShiftRound = a + shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-456-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-457-        // Prevent the compiler from optimizing away a + shifter - shifter
+--
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-518-            // set exponent bits to 42 - 14 + bias
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-519-            */
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-520-            shifterBits = 0x41B0000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-521-        }
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-522-        // set leading mantissa bit to protect against negative inputs
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp:523:        shifterBits |= 0x0008000000000000ULL;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-524-        double shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-525-        (void)std::memcpy(&shifter, &shifterBits, sizeof(shifterBits));
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-526-        double aShiftRound = a + shifter;
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-527-
+modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/triton/backends/nvidia/include/cuda_fp16.hpp-528-        /*
+--
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-127-#define MPC_SRAM_BASE_S                  0x57000000 /* SRAM Memory Protection Controller Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-128-#define MPC_QSPI_BASE_S                  0x57001000 /* QSPI Memory Protection Controller Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-129-#define MPC_DDR4_BASE_S                  0x57002000 /* DDR4 Memory Protection Controller Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-130-
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-131-/** Secure subsystem peripheral region */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h:132:#define SYSTIMER0_ARMV8_M_BASE_S         0x58000000 /* System Timer 0 Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-133-#define SYSTIMER1_ARMV8_M_BASE_S         0x58001000 /* System Timer 1 Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-134-#define SYSTIMER2_ARMV8_M_BASE_S         0x58002000 /* System Timer 0 Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-135-#define SYSTIMER3_ARMV8_M_BASE_S         0x58003000 /* System Timer 1 Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-136-#define CORSTONE315_SYSINFO_BASE_S       0x58020000 /* Corstone-315 System info Block Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/peripheral_memmap.h-137-#define CORSTONE315_SYSCTRL_BASE_S       0x58021000 /* Corstone-315 System control Block Secure base address */
+--
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-18-
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-19-#ifndef MEM_REGION_DEFS_H
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-20-#define MEM_REGION_DEFS_H
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-21-
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-22-/** Sizes */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h:23:#define ITCM_SIZE             (0x00080000)     /* ITCM size */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-24-#define DTCM_BLK_SIZE         (0x00020000)     /* DTCM size, 4 banks of this size available */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-25-#define BRAM_SIZE             (0x00200000)     /* BRAM size */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-26-#define ISRAM0_SIZE           (0x00200000)     /* ISRAM0 size */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-27-#define ISRAM1_SIZE           (0x00200000)     /* ISRAM1 size */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-315/mem_regions.h-28-#define QSPI_SRAM_SIZE        (0x00800000)     /* QSPI Flash size */
+--
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-127-#define MPC_SRAM_BASE_S                  0x57000000 /* SRAM Memory Protection Controller Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-128-#define MPC_QSPI_BASE_S                  0x57001000 /* QSPI Memory Protection Controller Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-129-#define MPC_DDR4_BASE_S                  0x57002000 /* DDR4 Memory Protection Controller Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-130-
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-131-/** Secure subsystem peripheral region */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h:132:#define SYSTIMER0_ARMV8_M_BASE_S         0x58000000 /* System Timer 0 Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-133-#define SYSTIMER1_ARMV8_M_BASE_S         0x58001000 /* System Timer 1 Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-134-#define SYSTIMER2_ARMV8_M_BASE_S         0x58002000 /* System Timer 0 Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-135-#define SYSTIMER3_ARMV8_M_BASE_S         0x58003000 /* System Timer 1 Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-136-#define CORSTONE320_SYSINFO_BASE_S       0x58020000 /* Corstone-320 System info Block Secure base address */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/peripheral_memmap.h-137-#define CORSTONE320_SYSCTRL_BASE_S       0x58021000 /* Corstone-320 System control Block Secure base address */
+--
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-18-
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-19-#ifndef MEM_REGION_DEFS_H
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-20-#define MEM_REGION_DEFS_H
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-21-
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-22-/** Sizes */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h:23:#define ITCM_SIZE             (0x00080000)     /* ITCM size */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-24-#define DTCM_BLK_SIZE         (0x00020000)     /* DTCM size, 4 banks of this size available */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-25-#define BRAM_SIZE             (0x00200000)     /* BRAM size */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-26-#define ISRAM0_SIZE           (0x00200000)     /* ISRAM0 size */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-27-#define ISRAM1_SIZE           (0x00200000)     /* ISRAM1 size */
+modules/alif-mlek/source/hal/source/platform/mps4/include/sse-320/mem_regions.h-28-#define QSPI_SRAM_SIZE        (0x00800000)     /* QSPI Flash size */
+--
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-16- */
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-17-
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-18-#ifndef MEM_REGION_DEFS_H
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-19-#define MEM_REGION_DEFS_H
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-20-
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h:21:#define ITCM_SIZE             (0x00080000)     /* ITCM size */
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-22-#define DTCM_BLK_SIZE         (0x00020000)     /* DTCM size, 4 banks of this size available */
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-23-#define BRAM_SIZE             (0x00100000)     /* BRAM size */
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-24-#define ISRAM0_SIZE           (0x00100000)     /* ISRAM0 size */
+modules/alif-mlek/source/hal/source/platform/mps3/include/sse-300/mem_regions.h-25-#define ISRAM1_SIZE           (0x00100000)     /* ISRAM1 size */
+
+============================================================
+3. FIREWALL AND ADDRESS TRANSLATION CONFIGURATION
+============================================================
+
+============================================================
+4. NPU AXI LIMIT REGISTER CONFIGURATION
+============================================================
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-140-# and Ethos-U85 supports up to 256 bytes.
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-141-# Although, this is system implementation dependent the platforms we build for should support the
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-142-# maximum burst length for all NPU configurations.
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-143-if (ETHOS_U_NPU_ID STREQUAL U55 OR ETHOS_U_NPU_ID STREQUAL U65)
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-144-    target_compile_definitions(ethosu_core_driver PRIVATE
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:145:        AXI_LIMIT0_MAX_BEATS_BYTES=1
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:146:        AXI_LIMIT1_MAX_BEATS_BYTES=1
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:147:        AXI_LIMIT2_MAX_BEATS_BYTES=1
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:148:        AXI_LIMIT3_MAX_BEATS_BYTES=1) # 0 = 64 byte burst & 1 = 128 byte burst
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-149-    # Use "normal" (modifiable) transactions, improving interconnect transit
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-150-    target_compile_definitions(ethosu_core_driver PRIVATE
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:151:        AXI_LIMIT0_MEM_TYPE=2
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:152:        AXI_LIMIT1_MEM_TYPE=2
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:153:        AXI_LIMIT2_MEM_TYPE=2
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:154:        AXI_LIMIT3_MEM_TYPE=2) # 2 = Normal Non-cacheable Non-bufferable
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-155-elseif (ETHOS_U_NPU_ID STREQUAL U85)
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-156-    target_compile_definitions(ethosu_core_driver PRIVATE
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-157-        AXI_LIMIT_SRAM_MAX_BEATS=2
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-158-        AXI_LIMIT_EXT_MAX_BEATS=2) # 0 = 64 byte burst, 1 = 128 byte burst, 2 = 256 byte burst
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-159-    # Use "normal" (modifiable) transactions, improving interconnect transit
+--
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-164-        NPU_MEM_ATTR_3=0x24) # Normal Non-cacheable Non-bufferable, EXT ports
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-165-endif()
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-166-
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-167-# Use "normal" (modifiable) transactions, improving interconnect transit
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-168-target_compile_definitions(ethosu_core_driver PRIVATE
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:169:        AXI_LIMIT0_MEM_TYPE=2
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:170:        AXI_LIMIT1_MEM_TYPE=2
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:171:        AXI_LIMIT2_MEM_TYPE=2
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt:172:        AXI_LIMIT3_MEM_TYPE=2) # 2 = Normal Non-cacheable Non-bufferable
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-173-
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-174-# Create static library
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-175-add_library(${ETHOS_U_NPU_COMPONENT} STATIC)
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-176-
+modules/alif-mlek/source/hal/source/components/npu/CMakeLists.txt-177-## Include directories - public
+--
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-532-
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-533-#endif
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-534-}
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-535-
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-536-#if defined(ARM_NPU)
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c:537:uint64_t ethosu_address_remap(uint64_t address, int index)
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-538-{
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-539-    UNUSED(index);
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-540-    /* Double cast to avoid build warning about pointer/integer size mismatch */
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-541-    return LocalToGlobal((void *) (uint32_t) address);
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-542-}
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-543-
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c:544:unsigned int ethosu_config_select(uint64_t address, int index)
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-545-{
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-546-#if ETHOS_U_BASE_ADDR == ETHOS_U85_NPU_BASE
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-547-    UNUSED(index);
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-548-    // Accessible regions to U85 are main SRAM (0), OSPI (2,A,B,C,D), MRAM (8) and TCMs (5)
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-549-    // SRAM and TCMs need to use SRAM ports, MRAM and OSPI need to use EXT port
