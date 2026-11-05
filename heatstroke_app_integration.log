@@ -1,0 +1,283 @@
+===== APPLICATION FILES =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/BufAttributes.hpp
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/power/power_mgr.h
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/reverse_v2.h
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/UseCaseHandler.hpp
+
+===== RESOLVER AND MODEL INTEGRATION REFERENCES =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:15:class PolyUModel1 : public TflmModel {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:33:    bool EnlistOperations() override;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:40:    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/reverse_v2.h:10:TFLMRegistration Register_REVERSE_V2();
+
+===== CMAKE FILES =====
+
+----- /home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt -----
+# Copyright (C) Alif Semiconductor - All Rights Reserved.
+# Use, distribution and modification of this code is permitted under the
+# terms stated in the Alif Semiconductor Software License Agreement
+#
+# You should have received a copy of the Alif Semiconductor Software
+# License Agreement with this file. If not, please write to:
+# contact@alifsemi.com, or visit: https://alifsemi.com/license
+
+cmake_minimum_required(VERSION 3.20.0)
+
+if(NOT ospi-flash IN_LIST SNIPPET)
+  set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+endif()
+
+# Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+# so the module is not auto-discovered and must be registered explicitly. Ask
+# west for the module path instead of hardcoding the workspace layout.
+execute_process(
+    COMMAND west list --format "{abspath}" alif-mlek
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE MLEK_ROOT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE MLEK_LIST_RESULT
+    ERROR_QUIET
+)
+if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+    message(FATAL_ERROR
+        "alif-mlek module not found. Enable and fetch it first:\n"
+        "  west config manifest.project-filter -- +alif-mlek\n"
+        "  west update\n")
+endif()
+
+# Register the MLEK Zephyr port as an extra Zephyr module
+list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+
+# ---------------------------------------------------------------------------
+# Ethos-U NPU selection
+# ---------------------------------------------------------------------------
+# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+# the build and the Ethos-U driver targets the requested NPU. This overrides the
+# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+#
+# The parsed value is also used to pick the correct Vela-compiled model below.
+# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+        set(_npu_arch "${CMAKE_MATCH_1}")
+        set(_npu_macs "${CMAKE_MATCH_2}")
+        if (_npu_arch STREQUAL "u55")
+            set(_npu_prefix "H")
+        elseif (_npu_arch STREQUAL "u65")
+            set(_npu_prefix "Y")
+        elseif (_npu_arch STREQUAL "u85")
+            set(_npu_prefix "Z")
+        else()
+            message(FATAL_ERROR
+                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+        endif()
+        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+
+        # Feed the matching Kconfig choice into the Zephyr configuration.
+        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+        message(STATUS
+            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+    else()
+        message(FATAL_ERROR
+            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+    endif()
+endif()
+
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+
+project(alif_asr)
+
+# Silence "changed in GCC 7.1" warnigns from C++ headers
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+
+set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+
+set(ML_FRAMEWORK TensorFlowLiteMicro)
+
+# ---------------------------------------------------------------------------
+# Build-time model and labels generation from MLEK resources
+# ---------------------------------------------------------------------------
+set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+    "Path to MLEK resources (models compiled with Vela)")
+setup_source_generator()
+
+# Source generation output directories
+set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+
+message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+
+# Determine NPU config ID based on Zephyr Kconfig.
+# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+    if (CONFIG_ARM_ETHOS_U85_256)
+        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+    elseif (CONFIG_ARM_ETHOS_U55_256)
+        set(ETHOS_U_NPU_CONFIG_ID "H256")
+    else()
+        set(ETHOS_U_NPU_CONFIG_ID "H128")
+    endif()
+endif()
+
+# Model file path
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+
+if (NOT EXISTS ${POLYU_MODEL_PATH})
+    message(FATAL_ERROR
+        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+endif()
+
+set(EXTRA_MODEL_CODE
+	"/* Model parameters for ${use_case} */"
+	"extern const int   g_FrameLength    = 512"
+	"extern const int   g_FrameStride    = 160"
+	"extern const int   g_ctxLen         = 98"
+	"extern const float g_ScoreThreshold = 0.5"
+	)
+
+# Generate model file
+generate_model_code(
+    MODEL_PATH  ${POLYU_MODEL_PATH}
+    DESTINATION ${SRC_GEN_DIR}
+    EXPRESSIONS ${EXTRA_MODEL_CODE}
+    NAMESPACE   "arm" "app" "asr")
+
+# Generate labels C++ code
+set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+
+# Generate labels file
+set(ASR_LABELS_CPP_FILE Labels)
+generate_labels_code(
+    INPUT           "${ASR_LABELS_FILE}"
+    DESTINATION_SRC ${SRC_GEN_DIR}
+    DESTINATION_HDR ${INC_GEN_DIR}
+    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+)
+
+# Collect the generated source files
+file(GLOB ASR_GENERATED_SOURCES ${SRC_GEN_DIR}/*.cc)
+
+# Create static library
+add_library(asr_iface INTERFACE)
+
+## Common include directories - public
+target_include_directories(asr_iface
+    INTERFACE
+	src/application/main/include)
+
+
+target_include_directories(app PRIVATE
+    src/application/main/include
+    src/use_case/alif_asr/include
+	src/power
+	~/sdk-alif/alif/samples/modules/alif_common
+	~/sdk-alif/alif/samples/modules/alif_common/audio
+	~/sdk-alif/alif/samples/modules/alif_common/audio/include
+	 ${INC_GEN_DIR}
+)
+
+target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+
+
+if (CONFIG_USE_APP_MENU)
+target_compile_definitions(app PRIVATE USE_APP_MENU)
+endif()
+
+target_sources(app PRIVATE
+    src/application/main/Main.cc
+    src/use_case/alif_asr/src/MainLoop.cc
+	src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+    src/use_case/alif_asr/src/reverse_v2.cc
+    src/use_case/alif_asr/src/PolyUModel1.cc
+	src/power/power_mgr.c
+	~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+	${ASR_GENERATED_SOURCES}
+)
+
+set(SRC_MAIN "src/application/main/Main.cc")
+
+list(APPEND SRC_MAIN_DEFS
+    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+
+set_source_files_properties(${SRC_MAIN}
+    PROPERTIES COMPILE_DEFINITIONS
+    "${SRC_MAIN_DEFS}")
+
+target_link_libraries(app PRIVATE
+	asr_iface
+    mlek::asr_impl
+)
+
+===== APPLICATION SOURCE FILES =====
+
+----- /home/user/sdk-alif/beeinventor/test_heatstroke/src/power/power_mgr.h -----
+/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+ * Use, distribution and modification of this code is permitted under the
+ * terms stated in the Alif Semiconductor Software License Agreement
+ *
+ * You should have received a copy of the Alif Semiconductor Software
+ * License Agreement with this file. If not, please write to:
+ * contact@alifsemi.com, or visit: https://alifsemi.com/license
+ */
+
+#ifndef __POWER_MGR_H__
+#define __POWER_MGR_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* TODO/FIXME: this is a temporary workaround to disable sleep
+ * during pre-kernel initialization.
+ * Remove this when proper PM integration is done.
+ */
+#define PREKERNEL_DISABLE_SLEEP 1
+
+/**
+ * Disable sleep mode.
+ */
+void power_mgr_disable_sleep(void);
+
+/**
+ * Allow sleep mode.
+ */
+void power_mgr_allow_sleep(void);
+
+#if CONFIG_PM && CONFIG_LOG
+/**
+ * Flush log buffer
+ */
+void power_mgr_log_flush(void);
+
+void print_se_err(void);
+#else
+#define power_mgr_log_flush()
+#endif
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __POWER_MGR_H__ */
