@@ -1,0 +1,280 @@
+============================================================
+1. COMPLETE NPU AXI PORT FUNCTION
+============================================================
+    bool new_btn1, new_btn2;
+    BOARD_BUTTON_STATE btn_state1, btn_state2;
+
+    // Get new button state (active low)
+    BOARD_BUTTON1_GetState(&btn_state1);
+    BOARD_BUTTON2_GetState(&btn_state2);
+    new_btn1 = btn_state1 == BOARD_BUTTON_STATE_LOW;
+    new_btn2 = btn_state2 == BOARD_BUTTON_STATE_LOW;
+
+    if (do_inference_once)
+    {
+        // Edge detector - run inference on the positive edge of the button pressed signal
+        ret = !last_btn1 && new_btn1;
+    }
+    if (new_btn2 && last_btn2 != new_btn2)
+    {
+        // Switch single shot and continuous inference mode
+        do_inference_once ^= 1;
+    }
+    last_btn1 = new_btn1;
+    last_btn2 = new_btn2;
+    return ret;
+
+#endif
+}
+
+#if defined(ARM_NPU)
+uint64_t ethosu_address_remap(uint64_t address, int index)
+{
+    UNUSED(index);
+    /* Double cast to avoid build warning about pointer/integer size mismatch */
+    return LocalToGlobal((void *) (uint32_t) address);
+}
+
+unsigned int ethosu_config_select(uint64_t address, int index)
+{
+#if ETHOS_U_BASE_ADDR == ETHOS_U85_NPU_BASE
+    UNUSED(index);
+    // Accessible regions to U85 are main SRAM (0), OSPI (2,A,B,C,D), MRAM (8) and TCMs (5)
+    // SRAM and TCMs need to use SRAM ports, MRAM and OSPI need to use EXT port
+    // Quick-and-dirty check that gives the right answer for valid addresses:
+    return address & 0xA0000000 ? 2 : 0;
+#else
+
+    // U55s' M1 AXI ports in Ensemble B can't reach MRAM or OSPI. Catch that here.
+    if ((!SOC_FEAT_U55_M1_CAN_ACCESS_HIGHER_ADDRESS) && (address >= U55_M1_HIGHER_ADDRESS)) {
+        return 0;
+    }
+    // Otherwise use original define scheme
+    switch (index) {
+    case -1: return NPU_QCONFIG; break;
+    default:
+    case 0: return NPU_REGIONCFG_0; break;
+    case 1: return NPU_REGIONCFG_1; break;
+    case 2: return NPU_REGIONCFG_2; break;
+    case 3: return NPU_REGIONCFG_3; break;
+    case 4: return NPU_REGIONCFG_4; break;
+    case 5: return NPU_REGIONCFG_5; break;
+    case 6: return NPU_REGIONCFG_6; break;
+    case 7: return NPU_REGIONCFG_7; break;
+    }
+#endif
+}
+#endif /* defined(ARM_NPU) */
+
+typedef struct address_range
+{
+    uintptr_t base;
+    uintptr_t limit;
+} address_range_t;
+
+const address_range_t no_need_to_invalidate_areas[] = {
+    /* TCM is never cached */
+    {
+        .base = 0x00000000,
+        .limit = 0x01FFFFFF,
+    },
+    {
+        .base = 0x20000000,
+        .limit = 0x21FFFFFF,
+    },
+
+============================================================
+2. NPU REGION CONFIGURATION DEFINITIONS
+============================================================
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-550-    // Quick-and-dirty check that gives the right answer for valid addresses:
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-551-    return address & 0xA0000000 ? 2 : 0;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-552-#else
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-553-
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-554-    // U55s' M1 AXI ports in Ensemble B can't reach MRAM or OSPI. Catch that here.
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c:555:    if ((!SOC_FEAT_U55_M1_CAN_ACCESS_HIGHER_ADDRESS) && (address >= U55_M1_HIGHER_ADDRESS)) {
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-556-        return 0;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-557-    }
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-558-    // Otherwise use original define scheme
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-559-    switch (index) {
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c:560:    case -1: return NPU_QCONFIG; break;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-561-    default:
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c:562:    case 0: return NPU_REGIONCFG_0; break;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c:563:    case 1: return NPU_REGIONCFG_1; break;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-564-    case 2: return NPU_REGIONCFG_2; break;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-565-    case 3: return NPU_REGIONCFG_3; break;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-566-    case 4: return NPU_REGIONCFG_4; break;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-567-    case 5: return NPU_REGIONCFG_5; break;
+modules/alif-mlek/source/hal/source/platform/alif/source/platform_drivers.c-568-    case 6: return NPU_REGIONCFG_6; break;
+
+============================================================
+3. ACTIVATION BUFFER LINKER PLACEMENT
+============================================================
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-8-#
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-9-
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-10-CONFIG_SYSTEM_HEAP_SRAM0=y
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-11-CONFIG_LPGPIO_WAKEUP_SOURCE=0
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf:12:CONFIG_ACTIVATION_BUF_SECTION="SRAM0.activation_buf"
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-13-CONFIG_I2S=y
+beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.conf-14-CONFIG_ACTIVATION_BUF_SZ=0x200000
+--
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-8-#
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-9-
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-10-CONFIG_SYSTEM_HEAP_SRAM0=y
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-11-CONFIG_LPGPIO_WAKEUP_SOURCE=0
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf:12:CONFIG_ACTIVATION_BUF_SECTION="SRAM0.activation_buf"
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-13-CONFIG_I2S=y
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-14-CONFIG_AUDIO_DMIC=y
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-15-CONFIG_ACTIVATION_BUF_SZ=0x200000
+beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.conf-16-
+
+============================================================
+4. CURRENT BUILD LINKER MAP
+============================================================
+1594-                0x0000000000000000       0x10 app/libapp.a(AudioBackend.cpp.obj)
+1595- .bss._ZL8rx_start
+1596-                0x0000000000000000       0x10 app/libapp.a(AudioBackend.cpp.obj)
+1597- .bss._ZL12audio_thread
+1598-                0x0000000000000000       0xd0 app/libapp.a(AudioBackend.cpp.obj)
+1599: .noinit."WEST_TOPDIR/alif/samples/modules/alif_common/audio/AudioBackend.cpp".0
+1600-                0x0000000000000000      0x400 app/libapp.a(AudioBackend.cpp.obj)
+1601- ._k_mem_slab.static.mem_slab_
+1602-                0x0000000000000000       0x20 app/libapp.a(AudioBackend.cpp.obj)
+1603: .noinit."WEST_TOPDIR/alif/samples/modules/alif_common/audio/AudioBackend.cpp".k_mem_slab_buf_mem_slab
+1604-                0x0000000000000000     0x1900 app/libapp.a(AudioBackend.cpp.obj)
+1605- .data.pdm_fir  0x0000000000000000       0x48 app/libapp.a(AudioBackend.cpp.obj)
+1606- .bss.pdm_coef_reg
+1607-                0x0000000000000000       0x50 app/libapp.a(AudioBackend.cpp.obj)
+1608- .group         0x0000000000000000        0xc app/libapp.a(Labels.cc.obj)
+--
+2013-                0x0000000000000000       0x13 zephyr/libzephyr.a(log_core.c.obj)
+2014- .text.log_mem_get_max_usage
+2015-                0x0000000000000000       0x30 zephyr/libzephyr.a(log_core.c.obj)
+2016- .bss.logging_thread
+2017-                0x0000000000000000       0xd0 zephyr/libzephyr.a(log_core.c.obj)
+2018: .noinit."WEST_TOPDIR/zephyr/subsys/logging/log_core.c".0
+2019-                0x0000000000000000        0x8 zephyr/libzephyr.a(log_core.c.obj)
+2020- ._log_mpsc_pbuf.static.log_buffer_
+2021-                0x0000000000000000       0x3c zephyr/libzephyr.a(log_core.c.obj)
+2022- .bss.unordered_cnt
+2023-                0x0000000000000000        0x4 zephyr/libzephyr.a(log_core.c.obj)
+--
+17428-Memory Configuration
+17429-
+17430-Name             Origin             Length             Attributes
+17431-FLASH            0x0000000080000000 0x00000000001c8000 xr
+17432-RAM              0x000000002000a000 0x0000000000176000 xw
+17433:ITCM             0x0000000000000000 0x0000000000080000 rw
+17434:RESERVED_DTCM    0x0000000020000000 0x000000000000a000 rw
+17435:DTCM             0x000000002000a000 0x0000000000176000 rw
+17436-OSPI0            0x00000000b0000000 0x0000000004000000 rw
+17437-IDT_LIST         0x00000000ffff7fff 0x0000000000008000 xw
+17438-*default*        0x0000000000000000 0xffffffffffffffff
+17439-
+17440-Linker script and memory map
+--
+23819-
+23820-.gcc_except_table
+23821- *(SORT_BY_ALIGNMENT(.gcc_except_table) SORT_BY_ALIGNMENT(.gcc_except_table.*))
+23822-                0x000000002000b050                __data_region_end = .
+23823-
+23824:.dtcm_bss       0x000000002000a000        0x0
+23825:                0x000000002000a000                __dtcm_start = .
+23826:                0x000000002000a000                __dtcm_bss_start = .
+23827: *(SORT_BY_ALIGNMENT(.dtcm_bss))
+23828: *(SORT_BY_ALIGNMENT(.dtcm_bss.*))
+23829:                0x000000002000a000                __dtcm_bss_end = .
+23830-
+23831:.dtcm_noinit    0x000000002000a000        0x0
+23832:                0x000000002000a000                __dtcm_noinit_start = .
+23833: *(SORT_BY_ALIGNMENT(.dtcm_noinit))
+23834: *(SORT_BY_ALIGNMENT(.dtcm_noinit.*))
+23835:                0x000000002000a000                __dtcm_noinit_end = .
+23836-
+23837:.dtcm_data      0x000000002000a000        0x0 load address 0x0000000080039314
+23838:                0x000000002000a000                __dtcm_data_start = .
+23839: *(SORT_BY_ALIGNMENT(.dtcm_data))
+23840: *(SORT_BY_ALIGNMENT(.dtcm_data.*))
+23841:                0x000000002000a000                __dtcm_data_end = .
+23842:                0x000000002000a000                __dtcm_end = .
+23843:                0x0000000080039314                __dtcm_data_load_start = LOADADDR (.dtcm_data)
+23844-
+23845-ospi0           0x00000000b0000000   0x27d7d0
+23846- *(SORT_BY_ALIGNMENT(.alif_extflash_OSPI0))
+23847- .alif_extflash_OSPI0
+23848-                0x00000000b0000000   0x27d7d0 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+--
+27401-                0x000000000000a2da       0x36 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v8-m.main+dp/hard/libgcc.a(pr-support.o)
+27402- .ARM.attributes
+27403-                0x000000000000a310       0x24 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v8-m.main+dp/hard/libgcc.a(_dvmd_tls.o)
+27404- *(SORT_BY_ALIGNMENT(.gnu.attributes))
+27405-
+27406:ITCM            0x0000000000000000        0x0
+27407:                0x0000000000000000                __ITCM_start = .
+27408: *(SORT_BY_ALIGNMENT(ITCM))
+27409: *(SORT_BY_ALIGNMENT(ITCM.*))
+27410:                0x0000000000000000                __ITCM_end = .
+27411:                0x0000000000000000                __ITCM_size = (__ITCM_end - __ITCM_start)
+27412:                0x0000000000000000                __ITCM_load_start = LOADADDR (ITCM)
+27413-
+27414:RESERVED_DTCM   0x0000000020000000        0x0
+27415:                0x0000000020000000                __RESERVED_DTCM_start = .
+27416: *(SORT_BY_ALIGNMENT(RESERVED_DTCM))
+27417: *(SORT_BY_ALIGNMENT(RESERVED_DTCM.*))
+27418:                0x0000000020000000                __RESERVED_DTCM_end = .
+27419:                0x0000000000000000                __RESERVED_DTCM_size = (__RESERVED_DTCM_end - __RESERVED_DTCM_start)
+27420:                0x0000000020000000                __RESERVED_DTCM_load_start = LOADADDR (RESERVED_DTCM)
+27421-
+27422:DTCM            0x000000002000a000        0x0
+27423:                0x000000002000a000                __DTCM_start = .
+27424: *(SORT_BY_ALIGNMENT(DTCM))
+27425: *(SORT_BY_ALIGNMENT(DTCM.*))
+27426:                0x000000002000a000                __DTCM_end = .
+27427:                0x0000000000000000                __DTCM_size = (__DTCM_end - __DTCM_start)
+27428:                0x000000002000a000                __DTCM_load_start = LOADADDR (DTCM)
+27429-
+27430-OSPI0           0x00000000b027d7d0        0x0
+27431-                0x00000000b027d7d0                __OSPI0_start = .
+27432- *(SORT_BY_ALIGNMENT(OSPI0))
+27433- *(SORT_BY_ALIGNMENT(OSPI0.*))
+--
+27445-                0x000000002000b060                __kernel_ram_start = .
+27446- *(SORT_BY_ALIGNMENT(.bss))
+27447- *(SORT_BY_ALIGNMENT(.bss.*))
+27448- .bss.se_service_all_svc_buf
+27449-                0x000000002000b060      0x120 modules/alif/se_services/lib..__modules__hal__alif__se_services.a(se_service.c.obj)
+27450: .bss.activation_buf
+27451-                0x000000002000b180   0x120000 app/libapp.a(MainLoop.cc.obj)
+27452- .bss.ethosu_data_0
+27453-                0x000000002012b180       0x48 zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj)
+27454- .bss.announced_cycles
+27455-                0x000000002012b1c8        0x8 zephyr/drivers/timer/libdrivers__timer.a(cortex_m_systick.c.obj)
+--
+27643-                0x000000002012bcb7        0x1 zephyr/kernel/libkernel.a(timeslicing.c.obj)
+27644- *(SORT_BY_ALIGNMENT(COMMON))
+27645- *(SORT_BY_ALIGNMENT(.kernel_bss.*))
+27646-                0x000000002012bcb8                __bss_end = ALIGN (0x4)
+27647-
+27648:noinit          0x000000002012bcb8    0x2ac9c
+27649: *(SORT_BY_ALIGNMENT(.noinit))
+27650: *(SORT_BY_ALIGNMENT(.noinit.*))
+27651: .noinit."WEST_TOPDIR/zephyr/arch/arm/core/cortex_m/pm_s2ram.c".1
+27652-                0x000000002012bcb8      0x478 zephyr/arch/arch/arm/core/cortex_m/libarch__arm__core__cortex_m.a(pm_s2ram.c.obj)
+27653: .noinit."WEST_TOPDIR/zephyr/kernel/init.c".2
+27654-                0x000000002012c130     0x1000 zephyr/kernel/libkernel.a(init.c.obj)
+27655-                0x000000002012c130                z_interrupt_stacks
+27656: .noinit."WEST_TOPDIR/zephyr/kernel/init.c".1
+27657-                0x000000002012d130      0x800 zephyr/kernel/libkernel.a(init.c.obj)
+27658: .noinit."WEST_TOPDIR/zephyr/kernel/init.c".0
+27659-                0x000000002012d930     0x1000 zephyr/kernel/libkernel.a(init.c.obj)
+27660-                0x000000002012d930                z_main_stack
+27661: .noinit."WEST_TOPDIR/zephyr/kernel/mempool.c".kheap_buf__system_heap
+27662-                0x000000002012e930    0x28000 zephyr/kernel/libkernel.a(mempool.c.obj)
+27663-                0x000000002012e930                kheap__system_heap
+27664: .noinit."WEST_TOPDIR/zephyr/arch/arm/core/cortex_m/pm_s2ram.c".2
+27665-                0x0000000020156930        0x4 zephyr/arch/arch/arm/core/cortex_m/libarch__arm__core__cortex_m.a(pm_s2ram.c.obj)
+27666: .noinit."WEST_TOPDIR/zephyr/arch/arm/core/cortex_m/pm_s2ram.c".0
+27667-                0x0000000020156934       0x20 zephyr/arch/arch/arm/core/cortex_m/libarch__arm__core__cortex_m.a(pm_s2ram.c.obj)
+27668-                0x0000000020156934                _cpu_context
+27669-                0x0000000020180000                __kernel_ram_end = 0x20180000
+27670-                0x0000000000174fa0                __kernel_ram_size = (__kernel_ram_end - __kernel_ram_start)
+27671-
