@@ -1,0 +1,683 @@
+===== COMPLETE EVAL LSTM TEMPLATE =====
+                   tflite::micro::GetTensorShape(input).FlatSize());
+  TFLITE_DCHECK_LE(
+      step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+      tflite::micro::GetTensorShape(recurrent).FlatSize());
+
+  // Input FC
+  FullyConnected(gate_params.input_fc_params, step_info.InputShape(),
+                 tflite::micro::GetTensorData<ActivationType>(input) +
+                     step_info.InputOffset(),
+                 micro::GetTensorShape(input_weight),
+                 tflite::micro::GetTensorData<WeightType>(input_weight),
+                 tflite::micro::GetTensorShape(input_bias),
+                 tflite::micro::GetOptionalTensorData<BiasType>(input_bias),
+                 gate_output_shape, gate_output);
+
+  // Recurrent FC
+  FullyConnected(gate_params.recurrent_fc_params, step_info.StateShape(),
+                 tflite::micro::GetTensorData<ActivationType>(recurrent) +
+                     step_info.HiddenStateOffset(),
+                 tflite::micro::GetTensorShape(recurrent_weight),
+                 tflite::micro::GetTensorData<WeightType>(recurrent_weight),
+                 tflite::micro::GetTensorShape(recurrent_bias),
+                 tflite::micro::GetOptionalTensorData<BiasType>(recurrent_bias),
+                 gate_output_shape, fc_output_buffer);
+
+  AddElementWise(gate_output, fc_output_buffer,
+                 /*n_batch=*/gate_output_shape.DimsData()[0],
+                 /*n_state=*/gate_output_shape.DimsData()[1], gate_output);
+  // Apply activation
+  switch (activation) {
+    case kTfLiteActSigmoid:
+      Sigmoid(gate_output_shape, gate_output);
+      break;
+    case kTfLiteActTanh: {
+      // Set the scale power to -12 to avoid shift
+      Tanh(/*cell_state_scale_power=*/-12, gate_output_shape, gate_output,
+           gate_output_shape, gate_output);
+    } break;
+    default:
+      // Only Sigmoid or Tanh is used.
+      TFLITE_ASSERT_FALSE;
+  }
+}
+
+// Update the cell state using the output from the forget gate, input gate, and
+// cell gate Formula: updated_cell_state = forget_gate_output*cell_state +
+// input_gate_output * cell_gate_output, where * denotes element wise
+// multiplication
+template <typename CellType>
+void UpdateLstmCell(const LstmStepManager& step_info,
+                    TfLiteEvalTensor* cell_state,
+                    // Gate outputs
+                    CellType* forget_gate_output,
+                    const CellType* input_gate_output,
+                    const CellType* cell_gate_output,
+                    // Mul parameters
+                    const ArithmeticParams& forget_cell_mul_params,
+                    const ArithmeticParams& input_mul_params,
+                    const CellStateInfo& cell_state_info, CellType* buffer) {
+  // Check offset validity to avoid memory overflow
+  TFLITE_DCHECK_LE(
+      step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+      tflite::micro::GetTensorShape(cell_state).FlatSize());
+
+  auto cell_state_shape = step_info.StateShape();
+  // Forget Gate x Cell State
+  Mul(cell_state_shape, forget_cell_mul_params, forget_gate_output,
+      tflite::micro::GetTensorData<CellType>(cell_state) +
+          step_info.CellStateOffset(),
+      tflite::micro::GetTensorData<CellType>(cell_state) +
+          step_info.CellStateOffset());
+  // Input Gate x Cell Gate
+  Mul(cell_state_shape, input_mul_params, input_gate_output, cell_gate_output,
+      buffer);
+
+  // Update the cell state
+  AddElementWise(tflite::micro::GetTensorData<CellType>(cell_state) +
+                     step_info.CellStateOffset(),
+                 buffer,
+                 /*n_batch=*/cell_state_shape.DimsData()[0],
+                 /*n_state=*/cell_state_shape.DimsData()[1],
+                 tflite::micro::GetTensorData<CellType>(cell_state) +
+                     step_info.CellStateOffset());
+
+  if (cell_state_info.cell_clip > 0) {
+    Clipping(cell_state_shape.FlatSize(), cell_state_info,
+             tflite::micro::GetTensorData<CellType>(cell_state) +
+                 step_info.CellStateOffset());
+  }
+}
+
+// Update the hidden state of the LSTM kernel using the following formula:
+// updated_hidden_state = Tanh(updated_cell_state) * output_gate_output, * means
+// element wise multiplication
+template <typename CellType, typename ActivationType>
+void UpdateLstmHidden(const LstmStepManager& step_info,
+                      TfLiteEvalTensor* cell_state,
+                      TfLiteEvalTensor* hidden_state,
+                      const CellType* output_gate_output,
+                      const ArithmeticParams& mul_params,
+                      int32_t cell_state_scale_power, CellType* buffer) {
+  // Check offset validity to avoid memory overflow
+  TFLITE_DCHECK_LE(
+      step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+      tflite::micro::GetTensorShape(cell_state).FlatSize());
+  TFLITE_DCHECK_LE(
+      step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+      tflite::micro::GetTensorShape(hidden_state).FlatSize());
+
+  auto cell_state_shape = step_info.StateShape();
+  CellType* cell_state_data =
+      tflite::micro::GetTensorData<CellType>(cell_state) +
+      step_info.CellStateOffset();
+  // Tanh(cell_state)
+  Tanh(cell_state_scale_power, cell_state_shape, cell_state_data,
+       cell_state_shape, buffer);
+  // Update the hidden state
+  Mul(cell_state_shape, mul_params, buffer, output_gate_output,
+      tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+          step_info.HiddenStateOffset());
+}
+
+template <typename ActivationType, typename WeightType, typename CellType,
+          typename BiasType>
+void LstmStep(const LstmStepManager& step_info, const OpDataLSTM& op_data,
+              LSTMKernelContents& kernel_content,
+              const LSTMBuffers<CellType>& buffers) {
+  /*Step1: Calculate gate outputs to prepare cell state update*/
+  CellType* gate_internal_buffer = buffers.buffer3;
+  CellType* forget_gate_output = buffers.buffer0;
+  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+      step_info, op_data.forget_gate_parameters,
+      // Input FC
+      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+      kernel_content.GetInternalTensor(tflite::kLstmInputToForgetWeightsTensor),
+      kernel_content.GetInternalTensor(tflite::kLstmForgetGateBiasTensor),
+      // Recurrent FC
+      kernel_content.HiddenStateTensor(),
+      kernel_content.GetInternalTensor(
+          tflite::kLstmRecurrentToForgetWeightsTensor),
+      /*recurrent_bias*/ nullptr,
+      // Output
+      forget_gate_output,
+      // Scratch arrays
+      gate_internal_buffer, kTfLiteActSigmoid);
+
+  // Input Gate calculation;
+  CellType* input_gate_output = buffers.buffer1;
+  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+      step_info, op_data.input_gate_parameters,
+      // Input FC
+      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+      kernel_content.GetInternalTensor(tflite::kLstmInputToInputWeightsTensor),
+      kernel_content.GetInternalTensor(tflite::kLstmInputGateBiasTensor),
+      // Recurrent FC
+      kernel_content.HiddenStateTensor(),
+      kernel_content.GetInternalTensor(
+          tflite::kLstmRecurrentToInputWeightsTensor),
+      /*recurrent_bias*/ nullptr,
+      // Output
+      input_gate_output,
+      // Scratch arrays
+      gate_internal_buffer, kTfLiteActSigmoid);
+
+  // Cell Gate calculation
+  CellType* cell_gate_output = buffers.buffer2;
+  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+      step_info, op_data.cell_gate_parameters,
+      // Input FC
+      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+      kernel_content.GetInternalTensor(tflite::kLstmInputToCellWeightsTensor),
+      kernel_content.GetInternalTensor(tflite::kLstmCellGateBiasTensor),
+      // Recurrent FC
+      kernel_content.HiddenStateTensor(),
+      kernel_content.GetInternalTensor(
+          tflite::kLstmRecurrentToCellWeightsTensor),
+      /*recurrent_bias*/ nullptr,
+      // Output
+      cell_gate_output,
+      // Scratch arrays
+      gate_internal_buffer, op_data.cell_gate_nonlinear_type);
+
+  /*Step2: update the cell state */
+  const InterGateParameters& inter_gate_params = op_data.inter_gate_parameters;
+  CellType* updated_input_buffer = buffers.buffer1;  // reuse buffer
+
+  UpdateLstmCell<CellType>(step_info, kernel_content.CellStateTensor(),
+                           forget_gate_output, input_gate_output,
+                           cell_gate_output,
+                           inter_gate_params.forget_cell_mul_params,
+                           inter_gate_params.input_mul_params,
+                           op_data.cell_state_info, updated_input_buffer);
+
+  /*Step3: update the hidden state */
+  CellType* output_gate_output = buffers.buffer1;  // reuse buffer
+  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+      step_info, op_data.output_gate_parameters,
+      // Input FC
+      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+      kernel_content.GetInternalTensor(tflite::kLstmInputToOutputWeightsTensor),
+      kernel_content.GetInternalTensor(tflite::kLstmOutputGateBiasTensor),
+      // Recurrent FC
+      kernel_content.HiddenStateTensor(),
+      kernel_content.GetInternalTensor(
+          tflite::kLstmRecurrentToOutputWeightsTensor),
+      /*recurrent_bias*/ nullptr,
+      // Output
+      output_gate_output,
+      // Scratch arrays
+      gate_internal_buffer, kTfLiteActSigmoid);
+
+  CellType* tanh_activated_cell_buffer = buffers.buffer0;  // reuse buffer
+  tflite::lstm_internal::UpdateLstmHidden<CellType, ActivationType>(
+      step_info, kernel_content.CellStateTensor(),
+      kernel_content.HiddenStateTensor(), output_gate_output,
+      inter_gate_params.output_mul_params,
+      op_data.cell_state_info.cell_state_scale_power,
+      tanh_activated_cell_buffer);
+
+  /*Step4: copy the update the hidden state to output*/
+  // Check offset validity to avoid memory overflow
+  TFLITE_DCHECK_LE(
+      step_info.OutputOffset() + step_info.StateShape().FlatSize(),
+      tflite::micro::GetTensorShape(kernel_content.output_tensor).FlatSize());
+  // record the output (from the updated hidden state)
+  ActivationType* output_ptr = tflite::micro::GetTensorData<ActivationType>(
+      kernel_content.output_tensor);
+  const auto* hidden_state = kernel_content.HiddenStateTensor();
+  std::memcpy(output_ptr + step_info.OutputOffset(),
+              tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+                  step_info.HiddenStateOffset(),
+              step_info.StateShape().FlatSize() * sizeof(ActivationType));
+}
+
+}  // namespace lstm_internal
+
+// Evaulate the LSTM kernel with (potential) multi-steps and multi-batch input
+// Since
+template <typename ActivationType, typename WeightType, typename CellType,
+          typename BiasType>
+TfLiteStatus EvalLstm(const OpDataLSTM& op_data,
+                      LSTMKernelContents& kernel_content,
+                      const LSTMBuffers<CellType>& buffers) {
+  lstm_internal::LstmStepManager step_info(&op_data.size_info);
+  const auto& size_info = op_data.size_info;
+  // time is the first dimention, enable batch computation
+  if (size_info.time_major) {
+    for (int t = 0; t < size_info.time_steps; t++) {
+      lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+          step_info, op_data, kernel_content, buffers);
+      // prepare for the next time step
+      step_info.UpdateTime();
+    }
+  } else {
+    // batch first, unable to size the input data. single batch inference
+    for (int b = 0; b < size_info.batch_size; b++) {
+      for (int t = 0; t < size_info.time_steps; t++) {
+        lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+            step_info, op_data, kernel_content, buffers);
+        // prepare for the next time step
+        step_info.UpdateTime();
+      }
+      // prepare for the next batch
+      step_info.UpdateBatch();
+      step_info.ResetTime();
+    }
+  }
+  return kTfLiteOk;
+}
+}  // namespace tflite
+
+#endif  // TENSORFLOW_LITE_MICRO_KERNELS_LSTM_EVAL_16ACT_H_
+
+===== FLOAT PARAMETER INITIALIZATION =====
+  op_data_lstm->inter_gate_parameters.input_mul_params =
+      CreateInterGateMulParamsFloat();
+  op_data_lstm->inter_gate_parameters.output_mul_params =
+      CreateInterGateMulParamsFloat();
+  return kTfLiteOk;
+}
+
+TfLiteStatus PrepareGateParametersInteger(TfLiteContext* context,
+                                          const LstmTensors& lstm_tensors,
+                                          OpDataLSTM* op_data_lstm) {
+  float nonlinear_input_scale = 0.000244140625;  // 2^-12 Q3.12 -> Q0.15
+  TF_LITE_ENSURE_OK(
+      context,
+      CreateGateParams(
+          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+          lstm_tensors.GetInternalTensor(kLstmInputToForgetWeightsTensor),
+          lstm_tensors.GetInternalTensor(kLstmForgetGateBiasTensor),
+          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+          lstm_tensors.GetInternalTensor(kLstmRecurrentToForgetWeightsTensor),
+          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+          op_data_lstm->forget_gate_parameters));
+  TF_LITE_ENSURE_OK(
+      context,
+      CreateGateParams(
+          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+          lstm_tensors.GetInternalTensor(kLstmInputToInputWeightsTensor),
+          lstm_tensors.GetInternalTensor(kLstmInputGateBiasTensor),
+          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+          lstm_tensors.GetInternalTensor(kLstmRecurrentToInputWeightsTensor),
+          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+          op_data_lstm->input_gate_parameters));
+  TF_LITE_ENSURE_OK(
+      context,
+      CreateGateParams(
+          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+          lstm_tensors.GetInternalTensor(kLstmInputToCellWeightsTensor),
+          lstm_tensors.GetInternalTensor(kLstmCellGateBiasTensor),
+          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+          lstm_tensors.GetInternalTensor(kLstmRecurrentToCellWeightsTensor),
+          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+          op_data_lstm->cell_gate_parameters));
+  TF_LITE_ENSURE_OK(
+      context,
+      CreateGateParams(
+          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+          lstm_tensors.GetInternalTensor(kLstmInputToOutputWeightsTensor),
+          lstm_tensors.GetInternalTensor(kLstmOutputGateBiasTensor),
+          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+          lstm_tensors.GetInternalTensor(kLstmRecurrentToOutputWeightsTensor),
+          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+          op_data_lstm->output_gate_parameters));
+
+  // Inter gate multiplication parameters
+  float nonlinear_output_scale = 0.000030517578125;  // 2^-15 Q3.12 -> Q0.15
+  float cell_state_scale = lstm_tensors.CellStateTensor()->params.scale;
+  // forget gate output (nonlinear output) x cell state -> cell state
+  op_data_lstm->inter_gate_parameters.forget_cell_mul_params =
+      CreateInterGateMulParams(nonlinear_output_scale, cell_state_scale,
+                               cell_state_scale, kTfLiteInt16);
+  // input gate output x cell gate output -> cell state
+  op_data_lstm->inter_gate_parameters.input_mul_params =
+      CreateInterGateMulParams(nonlinear_output_scale, nonlinear_output_scale,
+                               cell_state_scale, kTfLiteInt16);
+  // tanh output x output gate output -> hidden state (potentially asymmetric)
+  op_data_lstm->inter_gate_parameters.output_mul_params =
+      CreateInterGateMulParams(
+          nonlinear_output_scale, nonlinear_output_scale,
+          lstm_tensors.HiddenStateTensor()->params.scale,
+          lstm_tensors.HiddenStateTensor()->type,
+          lstm_tensors.HiddenStateTensor()->params.zero_point);
+  return kTfLiteOk;
+
+===== LSTM EVALUATION CONTENT CONSTRUCTION =====
+
+===== APP CMAKE FILE =====
+# Copyright (C) Alif Semiconductor - All Rights Reserved.
+# Use, distribution and modification of this code is permitted under the
+# terms stated in the Alif Semiconductor Software License Agreement
+#
+# You should have received a copy of the Alif Semiconductor Software
+# License Agreement with this file. If not, please write to:
+# contact@alifsemi.com, or visit: https://alifsemi.com/license
+
+cmake_minimum_required(VERSION 3.20.0)
+
+if(NOT ospi-flash IN_LIST SNIPPET)
+  set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+endif()
+
+# Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+# so the module is not auto-discovered and must be registered explicitly. Ask
+# west for the module path instead of hardcoding the workspace layout.
+execute_process(
+    COMMAND west list --format "{abspath}" alif-mlek
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE MLEK_ROOT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE MLEK_LIST_RESULT
+    ERROR_QUIET
+)
+if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+    message(FATAL_ERROR
+        "alif-mlek module not found. Enable and fetch it first:\n"
+        "  west config manifest.project-filter -- +alif-mlek\n"
+        "  west update\n")
+endif()
+
+# Register the MLEK Zephyr port as an extra Zephyr module
+list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+
+# ---------------------------------------------------------------------------
+# Ethos-U NPU selection
+# ---------------------------------------------------------------------------
+# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+# the build and the Ethos-U driver targets the requested NPU. This overrides the
+# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+#
+# The parsed value is also used to pick the correct Vela-compiled model below.
+# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+        set(_npu_arch "${CMAKE_MATCH_1}")
+        set(_npu_macs "${CMAKE_MATCH_2}")
+        if (_npu_arch STREQUAL "u55")
+            set(_npu_prefix "H")
+        elseif (_npu_arch STREQUAL "u65")
+            set(_npu_prefix "Y")
+        elseif (_npu_arch STREQUAL "u85")
+            set(_npu_prefix "Z")
+        else()
+            message(FATAL_ERROR
+                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+        endif()
+        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+
+        # Feed the matching Kconfig choice into the Zephyr configuration.
+        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+        message(STATUS
+            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+    else()
+        message(FATAL_ERROR
+            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+    endif()
+endif()
+
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+
+project(alif_asr)
+
+# Silence "changed in GCC 7.1" warnigns from C++ headers
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+
+set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+
+set(ML_FRAMEWORK TensorFlowLiteMicro)
+
+# ---------------------------------------------------------------------------
+# Build-time model and labels generation from MLEK resources
+# ---------------------------------------------------------------------------
+set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+    "Path to MLEK resources (models compiled with Vela)")
+setup_source_generator()
+
+# Source generation output directories
+set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+
+message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+
+# Determine NPU config ID based on Zephyr Kconfig.
+# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+    if (CONFIG_ARM_ETHOS_U85_256)
+        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+    elseif (CONFIG_ARM_ETHOS_U55_256)
+        set(ETHOS_U_NPU_CONFIG_ID "H256")
+    else()
+        set(ETHOS_U_NPU_CONFIG_ID "H128")
+    endif()
+endif()
+
+# Model file path
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+
+if (NOT EXISTS ${POLYU_MODEL_PATH})
+    message(FATAL_ERROR
+        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+endif()
+
+set(EXTRA_MODEL_CODE
+	"/* Model parameters for ${use_case} */"
+	"extern const int   g_FrameLength    = 512"
+	"extern const int   g_FrameStride    = 160"
+	"extern const int   g_ctxLen         = 98"
+	"extern const float g_ScoreThreshold = 0.5"
+	)
+
+# Generate model file
+generate_model_code(
+    MODEL_PATH  ${POLYU_MODEL_PATH}
+    DESTINATION ${SRC_GEN_DIR}
+    EXPRESSIONS ${EXTRA_MODEL_CODE}
+    NAMESPACE   "arm" "app" "asr")
+
+# Generate labels C++ code
+set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+
+# Generate labels file
+set(ASR_LABELS_CPP_FILE Labels)
+generate_labels_code(
+    INPUT           "${ASR_LABELS_FILE}"
+    DESTINATION_SRC ${SRC_GEN_DIR}
+    DESTINATION_HDR ${INC_GEN_DIR}
+    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+)
+
+# Collect the generated source files
+file(GLOB ASR_GENERATED_SOURCES ${SRC_GEN_DIR}/*.cc)
+
+# Create static library
+add_library(asr_iface INTERFACE)
+
+## Common include directories - public
+target_include_directories(asr_iface
+    INTERFACE
+	src/application/main/include)
+
+
+target_include_directories(app PRIVATE
+    src/application/main/include
+    src/use_case/alif_asr/include
+	src/power
+	~/sdk-alif/alif/samples/modules/alif_common
+	~/sdk-alif/alif/samples/modules/alif_common/audio
+	~/sdk-alif/alif/samples/modules/alif_common/audio/include
+	 ${INC_GEN_DIR}
+)
+
+target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+
+
+if (CONFIG_USE_APP_MENU)
+target_compile_definitions(app PRIVATE USE_APP_MENU)
+endif()
+
+target_sources(app PRIVATE
+    src/application/main/Main.cc
+    src/use_case/alif_asr/src/MainLoop.cc
+	src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+    src/use_case/alif_asr/src/reverse_v2.cc
+    src/use_case/alif_asr/src/PolyUModel1.cc
+	src/power/power_mgr.c
+	~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+	${ASR_GENERATED_SOURCES}
+)
+
+set(SRC_MAIN "src/application/main/Main.cc")
+
+list(APPEND SRC_MAIN_DEFS
+    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+
+set_source_files_properties(${SRC_MAIN}
+    PROPERTIES COMPILE_DEFINITIONS
+    "${SRC_MAIN_DEFS}")
+
+target_link_libraries(app PRIVATE
+	asr_iface
+    mlek::asr_impl
+)
+
+===== APP MODEL HEADER =====
+#ifndef POLYU_MODEL1_HPP
+#define POLYU_MODEL1_HPP
+
+#include "mlek/fwk/tflm/TflmModel.hpp"
+
+namespace arm::app::asr {
+extern const int g_FrameLength;
+extern const int g_FrameStride;
+extern const float g_ScoreThreshold;
+extern const int g_ctxLen;
+} // namespace arm::app::asr
+
+namespace arm::app::fwk::tflm {
+
+class PolyUModel1 : public TflmModel {
+
+public:
+    /* Indices for the expected model - based on input and output tensor shapes */
+    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    static constexpr uint32_t ms_inputColsIdx  = 2;
+    static constexpr uint32_t ms_outputRowsIdx = 2;
+    static constexpr uint32_t ms_outputColsIdx = 3;
+
+    /* Model specific constants. */
+    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    static constexpr uint32_t ms_numMfccFeatures = 13;
+
+protected:
+    /** @brief   Gets the reference to op resolver interface class. */
+    const tflite::MicroOpResolver& GetOpResolver() override;
+
+    /** @brief   Adds operations to the op resolver instance. */
+    bool EnlistOperations() override;
+
+private:
+    /* Maximum number of individual operations that can be enlisted. */
+    static constexpr int ms_maxOpCnt = 23;
+
+    /* A mutable op resolver instance. */
+    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+};
+
+} /* namespace arm::app::fwk::tflm */
+
+#endif /* POLYU_MODEL1_HPP */
+
+===== APP MODEL IMPLEMENTATION =====
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited and/or its affiliates
+ * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "PolyUModel1.hpp"
+
+#include "mlek/log/log_macros.h"
+#include "reverse_v2.h"
+
+const tflite::MicroOpResolver& arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+{
+    return this->m_opResolver;
+}
+
+TfLiteStatus ParseReverseV2(const tflite::Operator*, tflite::ErrorReporter*, tflite::BuiltinDataAllocator*,
+                        void**) {
+  return kTfLiteOk;
+}
+
+bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+{
+#ifndef ETHOS_U_NPU_ASSUMED
+    
+    this->m_opResolver.AddStridedSlice();
+    this->m_opResolver.AddFullyConnected();
+    this->m_opResolver.AddReshape();
+    this->m_opResolver.AddAveragePool2D();
+    this->m_opResolver.AddUnpack();
+    this->m_opResolver.AddAdd();
+    this->m_opResolver.AddSplit();
+    this->m_opResolver.AddTanh();
+    this->m_opResolver.AddLogistic();
+    this->m_opResolver.AddMul();
+    this->m_opResolver.AddPack();
+    this->m_opResolver.AddConcatenation();
+    this->m_opResolver.AddTranspose();
+    this->m_opResolver.AddGather();
+    this->m_opResolver.AddMean();
+    this->m_opResolver.AddSquaredDifference();
+    this->m_opResolver.AddRsqrt();
+    this->m_opResolver.AddSub();
+    this->m_opResolver.AddPad();
+    this->m_opResolver.AddConv2D();
+    this->m_opResolver.AddSoftmax();
+    //this->m_opResolver.AddCustom("ReverseV2", tflite::Register_REVERSE_V2());
+    const TFLMRegistration& registration = tflite::Register_REVERSE_V2();
+    this->m_opResolver.AddBuiltin(tflite::BuiltinOperator_REVERSE_V2, registration,
+                      ParseReverseV2);
+
+#endif
+
+    if (kTfLiteOk == this->m_opResolver.AddEthosU()) {
+        info("Added %s support to op resolver\n", tflite::GetString_ETHOSU());
+    } else {
+        printf_err("Failed to add Arm NPU support to op resolver.");
+        return false;
+    }
+    return true;
+}
