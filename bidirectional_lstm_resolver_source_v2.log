@@ -1,0 +1,97 @@
+===== PolyUModel1.cc: full source =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#include "PolyUModel1.hpp"
+    18	
+    19	#include "mlek/log/log_macros.h"
+    20	#include "reverse_v2.h"
+    21	#include "heatstroke_bidirectional_lstm.h"
+    22	
+    23	const tflite::MicroOpResolver& arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    24	{
+    25	    return this->m_opResolver;
+    26	}
+    27	
+    28	TfLiteStatus ParseReverseV2(const tflite::Operator*, tflite::ErrorReporter*, tflite::BuiltinDataAllocator*,
+    29	                        void**) {
+    30	  return kTfLiteOk;
+    31	}
+    32	
+    33	bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+    34	{
+    35	#ifndef ETHOS_U_NPU_ASSUMED
+    36	    
+    37	    this->m_opResolver.AddStridedSlice();
+    38	    this->m_opResolver.AddFullyConnected();
+    39	    this->m_opResolver.AddReshape();
+    40	    this->m_opResolver.AddAveragePool2D();
+    41	    this->m_opResolver.AddUnpack();
+    42	    this->m_opResolver.AddAdd();
+    43	    this->m_opResolver.AddSplit();
+    44	    this->m_opResolver.AddTanh();
+    45	    this->m_opResolver.AddLogistic();
+    46	    this->m_opResolver.AddMul();
+    47	    this->m_opResolver.AddPack();
+    48	    this->m_opResolver.AddConcatenation();
+    49	    this->m_opResolver.AddTranspose();
+    50	    this->m_opResolver.AddGather();
+    51	    this->m_opResolver.AddMean();
+    52	    this->m_opResolver.AddSquaredDifference();
+    53	    this->m_opResolver.AddRsqrt();
+    54	    this->m_opResolver.AddSub();
+    55	    this->m_opResolver.AddPad();
+    56	    this->m_opResolver.AddConv2D();
+    57	    this->m_opResolver.AddSoftmax();
+    58	    //this->m_opResolver.AddCustom("ReverseV2", tflite::Register_REVERSE_V2());
+    59	    const TFLMRegistration& registration = tflite::Register_REVERSE_V2();
+    60	    this->m_opResolver.AddBuiltin(tflite::BuiltinOperator_REVERSE_V2, registration,
+    61	                      ParseReverseV2);
+    62	
+    63	#endif
+    64	
+    65	    
+    66	    {
+    67	        const TFLMRegistration registration =
+    68	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+    69	
+    70	        if (this->m_opResolver.AddBuiltin(
+    71	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+    72	                registration, nullptr) != kTfLiteOk) {
+    73	            return false;
+    74	        }
+    75	    }
+    76	
+    77	if (kTfLiteOk == this->m_opResolver.AddEthosU()) {
+    78	        info("Added %s support to op resolver\n", tflite::GetString_ETHOSU());
+    79	    } else {
+    80	        printf_err("Failed to add Arm NPU support to op resolver.");
+    81	        return false;
+    82	    }
+    83	    return true;
+    84	}
+
+===== Resolver declaration confirmation =====
+34-
+35-private:
+36-    /* Maximum number of individual operations that can be enlisted. */
+37:    static constexpr int ms_maxOpCnt = 24;
+38-
+39-    /* A mutable op resolver instance. */
+40:    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+41-};
+42-
+43-} /* namespace arm::app::fwk::tflm */
