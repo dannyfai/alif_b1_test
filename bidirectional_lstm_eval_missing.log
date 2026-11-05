@@ -1,0 +1,144 @@
+===== EVAL LSTM TEMPLATE DEFINITION =====
+
+===== FLOAT GATE PARAMETER IMPLEMENTATION =====
+221-
+222-tflite::ArithmeticParams CreateInterGateMulParamsFloat() {
+223-  tflite::ArithmeticParams op_params = {};
+224-  CalculateActivationRange(kTfLiteActNone, &op_params.float_activation_min,
+225-                           &op_params.float_activation_max);
+226-  return op_params;
+227-}
+228-
+229:TfLiteStatus PrepareGateParametersFloat(TfLiteContext* context,
+230-                                        const LstmTensors& lstm_tensors,
+231-                                        OpDataLSTM* op_data_lstm) {
+232-  // Gate Parameters
+233-  op_data_lstm->forget_gate_parameters = CreateGateParamsFloat();
+234-  op_data_lstm->input_gate_parameters = CreateGateParamsFloat();
+235-  op_data_lstm->cell_gate_parameters = CreateGateParamsFloat();
+236-  op_data_lstm->output_gate_parameters = CreateGateParamsFloat();
+237-  // Inter gate multiplication parameters
+238-  op_data_lstm->inter_gate_parameters.forget_cell_mul_params =
+239-      CreateInterGateMulParamsFloat();
+240-  op_data_lstm->inter_gate_parameters.input_mul_params =
+241-      CreateInterGateMulParamsFloat();
+242-  op_data_lstm->inter_gate_parameters.output_mul_params =
+243-      CreateInterGateMulParamsFloat();
+244-  return kTfLiteOk;
+245-}
+246-
+247-TfLiteStatus PrepareGateParametersInteger(TfLiteContext* context,
+248-                                          const LstmTensors& lstm_tensors,
+249-                                          OpDataLSTM* op_data_lstm) {
+250-  float nonlinear_input_scale = 0.000244140625;  // 2^-12 Q3.12 -> Q0.15
+251-  TF_LITE_ENSURE_OK(
+252-      context,
+253-      CreateGateParams(
+254-          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+255-          lstm_tensors.GetInternalTensor(kLstmInputToForgetWeightsTensor),
+256-          lstm_tensors.GetInternalTensor(kLstmForgetGateBiasTensor),
+257-          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+258-          lstm_tensors.GetInternalTensor(kLstmRecurrentToForgetWeightsTensor),
+259-          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+260-          op_data_lstm->forget_gate_parameters));
+261-  TF_LITE_ENSURE_OK(
+262-      context,
+263-      CreateGateParams(
+264-          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+265-          lstm_tensors.GetInternalTensor(kLstmInputToInputWeightsTensor),
+266-          lstm_tensors.GetInternalTensor(kLstmInputGateBiasTensor),
+267-          lstm_tensors.GetInternalTensor(kLstmOutputStateTensor),
+268-          lstm_tensors.GetInternalTensor(kLstmRecurrentToInputWeightsTensor),
+269-          /*hidden_state_bias=*/nullptr, nonlinear_input_scale, kTfLiteInt16,
+270-          op_data_lstm->input_gate_parameters));
+271-  TF_LITE_ENSURE_OK(
+272-      context,
+273-      CreateGateParams(
+274-          context, lstm_tensors.GetInternalTensor(kLstmInputTensor),
+
+===== TFLITE CONTEXT CALLBACK DECLARATIONS =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-917-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-918-  /// Allocate a buffer which will be deallocated right after invoke phase.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-919-  /// The memory is allocated from heap in TFL, and from volatile arena in TFLM.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-920-  /// This method is only available in invoke stage.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-921-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:922:  /// NOTE: If possible use `RequestScratchBufferInArena` method to avoid memory
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-923-  /// allocation during inference time.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-924-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-925-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-926-  TfLiteStatus (*AllocateBufferForEval)(struct TfLiteContext* ctx, size_t bytes,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-927-                                        void** ptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-928-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-929-  /// Request a scratch buffer in the arena through static memory planning.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-930-  /// This method is only available in `Prepare` stage and the buffer is
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-931-  /// allocated by the interpreter between Prepare and Eval stage. In `Eval`
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:932:  /// stage, `GetScratchBuffer` API can be used to fetch the address.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-933-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-934-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:935:  TfLiteStatus (*RequestScratchBufferInArena)(struct TfLiteContext* ctx,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-936-                                              size_t bytes, int* buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-937-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-938-  /// Get the scratch buffer pointer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-939-  /// This method is only available in Eval stage.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-940-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-941-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:942:  void* (*GetScratchBuffer)(struct TfLiteContext* ctx, int buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-943-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-944-  /// Resize the memory pointer of the `tensor`. This method behaves the same as
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-945-  /// `ResizeTensor`, except that it makes a copy of the shape array internally
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-946-  /// so the shape array could be deallocated right afterwards.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-947-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-948-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-949-  TfLiteStatus (*ResizeTensorExplicit)(struct TfLiteContext* ctx,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-950-                                       TfLiteTensor* tensor, int dims,
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-985-  /// Returns a TfLiteEvalTensor struct for a given index.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-986-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-987-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-988-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-989-  /// WARNING: This method may not be available on all platforms.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:990:  TfLiteEvalTensor* (*GetEvalTensor)(const struct TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-991-                                     int tensor_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-992-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-993-  /// Retrieves named metadata buffer from the TFLite model.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-994-  /// Returns kTfLiteOk if metadata is successfully obtained from the flatbuffer
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-995-  /// Model: that is, there exists a `metadata` entry with given `name` string.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-996-  /// (see TFLite's schema.fbs).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-997-  /// The corresponding `buffer` information is populated in `ptr` & `bytes`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-998-  /// The data from `ptr` is valid for the lifetime of the Interpreter.
+
+===== APP CMAKE SOURCE LIST =====
+180-
+181-target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+182-
+183-
+184-if (CONFIG_USE_APP_MENU)
+185-target_compile_definitions(app PRIVATE USE_APP_MENU)
+186-endif()
+187-
+188:target_sources(app PRIVATE
+189-    src/application/main/Main.cc
+190-    src/use_case/alif_asr/src/MainLoop.cc
+191-	src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+192:    src/use_case/alif_asr/src/reverse_v2.cc
+193:    src/use_case/alif_asr/src/PolyUModel1.cc
+194-	src/power/power_mgr.c
+195-	~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+196-	${ASR_GENERATED_SOURCES}
+197-)
+198-
+199-set(SRC_MAIN "src/application/main/Main.cc")
+200-
+201-list(APPEND SRC_MAIN_DEFS
+202-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+203-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+204-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+205-
+206-set_source_files_properties(${SRC_MAIN}
+207-    PROPERTIES COMPILE_DEFINITIONS
+208-    "${SRC_MAIN_DEFS}")
+209-
+210-target_link_libraries(app PRIVATE
+211-	asr_iface
+212-    mlek::asr_impl
+213-)
