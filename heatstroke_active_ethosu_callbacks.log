@@ -1,0 +1,430 @@
+============================================================
+1. COMPLETE LINKED ALIF CALLBACK SOURCE
+============================================================
+     1	/* SPDX-License-Identifier: Apache-2.0
+     2	 *
+     3	 * Copyright (C) 2024 Alif Semiconductor.
+     4	 */
+     5	
+     6	#include <stdint.h>
+     7	#include <soc_memory_map.h>
+     8	#include <cmsis_core.h>
+     9	
+    10	#define GLOBAL_CLEAN_INVALIDATE_THRESHOLD_SIZE (128 * 1024)
+    11	
+    12	typedef struct address_range {
+    13		uintptr_t base;
+    14		uintptr_t limit;
+    15	} address_range_t;
+    16	
+    17	static const address_range_t no_need_to_invalidate_or_flush_areas[] = {
+    18		/* TCM is never cached */
+    19		{
+    20			.base = DT_REG_ADDR(DT_NODELABEL(itcm)),
+    21			.limit = DT_REG_ADDR(DT_NODELABEL(itcm)) + DT_REG_SIZE(DT_NODELABEL(itcm)) - 1,
+    22		},
+    23		{
+    24			.base = DT_REG_ADDR(DT_NODELABEL(dtcm)),
+    25			.limit = DT_REG_ADDR(DT_NODELABEL(dtcm)) + DT_REG_SIZE(DT_NODELABEL(dtcm)) - 1,
+    26		},
+    27		/* MRAM should never change while running */
+    28		{
+    29			.base = CONFIG_FLASH_BASE_ADDRESS,
+    30			.limit = CONFIG_FLASH_BASE_ADDRESS + (CONFIG_FLASH_SIZE * 1024) - 1,
+    31		}};
+    32	
+    33	
+    34	static bool area_needs_invalidate_or_flush(const void *p, size_t bytes)
+    35	{
+    36		if (bytes == 0) {
+    37			return false;
+    38		}
+    39	
+    40		uintptr_t base = (uintptr_t)p;
+    41		uintptr_t limit = base + bytes - 1;
+    42		size_t nn_flush_size = ARRAY_SIZE(no_need_to_invalidate_or_flush_areas);
+    43	
+    44		for (size_t i = 0; i < nn_flush_size; i++) {
+    45			if (base >= no_need_to_invalidate_or_flush_areas[i].base &&
+    46			    limit <= no_need_to_invalidate_or_flush_areas[i].limit) {
+    47				return false;
+    48			}
+    49		}
+    50	
+    51		return true;
+    52	}
+    53	
+    54	bool __attribute__((weak)) ethosu_area_needs_invalidate_dcache(const void *p, size_t bytes)
+    55	{
+    56		/* Passing NULL as p argument expects the whole cache to be flushed. */
+    57		if (!p) {
+    58			return true;
+    59		}
+    60	
+    61		return area_needs_invalidate_or_flush(p, bytes);
+    62	}
+    63	
+    64	bool __attribute__((weak)) ethosu_area_needs_flush_dcache(const void *p, size_t bytes)
+    65	{
+    66		/* Passing NULL as p argument expects the whole cache to be flushed. */
+    67		if (!p) {
+    68			return true;
+    69		}
+    70	
+    71		return area_needs_invalidate_or_flush(p, bytes);
+    72	}
+    73	
+    74	uint64_t ethosu_address_remap(uint64_t address, int index)
+    75	{
+    76		(void)index;
+    77	
+    78		/* Double cast to avoid build warning about pointer/integer size mismatch */
+    79		return local_to_global((void *) (uint32_t) address);
+    80	}
+    81	
+    82	void ethosu_flush_dcache(uint32_t *p, size_t bytes)
+    83	{
+    84		if (p && ethosu_area_needs_flush_dcache(p, bytes)) {
+    85			if (bytes <= GLOBAL_CLEAN_INVALIDATE_THRESHOLD_SIZE) {
+    86				/*
+    87				 * For small ranges, do what we were told, but if excessively big,
+    88				 * faster to do a full cache operation
+    89				 */
+    90				SCB_CleanDCache_by_Addr(p, bytes);
+    91			} else {
+    92				SCB_CleanDCache();
+    93			}
+    94		} else {
+    95			__DSB();
+    96		}
+    97	}
+    98	
+    99	void ethosu_invalidate_dcache(uint32_t *p, size_t bytes)
+   100	{
+   101		if (p && ethosu_area_needs_invalidate_dcache(p, bytes)) {
+   102			if (bytes <= GLOBAL_CLEAN_INVALIDATE_THRESHOLD_SIZE) {
+   103				/*
+   104				 * For small ranges, do what we were told, but if excessively big,
+   105				 * faster to do a full cache operation
+   106				 */
+   107				SCB_InvalidateDCache_by_Addr(p, bytes);
+   108			} else {
+   109				/*
+   110				 * Not safe to globally invalidate without cleaning
+   111				 * unless we know there are no write-back areas in the system
+   112				 */
+   113				SCB_CleanInvalidateDCache();
+   114			}
+   115		} else {
+   116			__DSB();
+   117		}
+   118	}
+
+============================================================
+2. ETHOS-U CORE DRIVER CALLBACK INTERFACES
+============================================================
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-49-	}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-50-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-51-	return true;
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-52-}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-53-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c:54:bool __attribute__((weak)) ethosu_area_needs_invalidate_dcache(const void *p, size_t bytes)
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-55-{
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-56-	/* Passing NULL as p argument expects the whole cache to be flushed. */
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-57-	if (!p) {
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-58-		return true;
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-59-	}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-60-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-61-	return area_needs_invalidate_or_flush(p, bytes);
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-62-}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-63-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c:64:bool __attribute__((weak)) ethosu_area_needs_flush_dcache(const void *p, size_t bytes)
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-65-{
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-66-	/* Passing NULL as p argument expects the whole cache to be flushed. */
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-67-	if (!p) {
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-68-		return true;
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-69-	}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-70-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-71-	return area_needs_invalidate_or_flush(p, bytes);
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-72-}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-73-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c:74:uint64_t ethosu_address_remap(uint64_t address, int index)
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-75-{
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-76-	(void)index;
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-77-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-78-	/* Double cast to avoid build warning about pointer/integer size mismatch */
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-79-	return local_to_global((void *) (uint32_t) address);
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-80-}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-81-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-82-void ethosu_flush_dcache(uint32_t *p, size_t bytes)
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-83-{
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c:84:	if (p && ethosu_area_needs_flush_dcache(p, bytes)) {
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-85-		if (bytes <= GLOBAL_CLEAN_INVALIDATE_THRESHOLD_SIZE) {
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-86-			/*
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-87-			 * For small ranges, do what we were told, but if excessively big,
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-88-			 * faster to do a full cache operation
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-89-			 */
+--
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-96-	}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-97-}
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-98-
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-99-void ethosu_invalidate_dcache(uint32_t *p, size_t bytes)
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-100-{
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c:101:	if (p && ethosu_area_needs_invalidate_dcache(p, bytes)) {
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-102-		if (bytes <= GLOBAL_CLEAN_INVALIDATE_THRESHOLD_SIZE) {
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-103-			/*
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-104-			 * For small ranges, do what we were told, but if excessively big,
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-105-			 * faster to do a full cache operation
+modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c-106-			 */
+
+============================================================
+3. LINKED CALLBACK SYMBOLS IN FINAL ELF
+============================================================
+
+============================================================
+4. CALLBACK AND CORE DRIVER LINK MAP
+============================================================
+1071-modules/alif/drivers/ospi/lib..__modules__hal__alif__drivers__ospi.a(ospi.c.obj)
+1072-                              (--whole-archive)
+1073-modules/alif/drivers/ospi/lib..__modules__hal__alif__drivers__ospi.a(ospi_hal.c.obj)
+1074-                              (--whole-archive)
+1075:modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+1076-                              (--whole-archive)
+1077-modules/alif/se_services/lib..__modules__hal__alif__se_services.a(se_service.c.obj)
+1078-                              (--whole-archive)
+1079-zephyr/kernel/libkernel.a(busy_wait.c.obj)
+--
+1137-modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmTensor.cc.obj)
+1138-                              modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj) (arm::app::fwk::tflm::TflmTensor::TflmTensor(TfLiteTensor*))
+1139-modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TensorFlowLiteMicro.cc.obj)
+1140-                              modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj) (arm::app::fwk::tflm::EnableTFLMLog())
+1141:modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+1142-                              zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj) (ethosu_irq_handler)
+1143:modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+1144:                              modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj) (ethosu_dev_run_command_stream)
+1145-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o)
+1146-                              app/libapp.a(MainLoop.cc.obj) (operator delete(void*, unsigned int))
+1147-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o)
+1148-                              app/libapp.a(Main.cc.obj) (std::terminate())
+--
+1282-                              modules/tflite-micro/libmodules__tflite-micro.a(rfft.cc.obj) (bsearch)
+1283-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-ctype_.o)
+1284-                              zephyr/libzephyr.a(cbprintf_complete.c.obj) (_ctype_)
+1285-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-fprintf.o)
+1286:                              modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj) (fprintf)
+1287-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-fputs.o)
+1288:                              modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj) (fputs)
+1289-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-fvwrite.o)
+1290-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-fputs.o) (__sfvwrite_r)
+1291-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-impure.o)
+1292-                              modules/tflite-micro/libmodules__tflite-micro.a(debug_log.cc.obj) (_impure_ptr)
+--
+12314- .data          0x0000000000000000        0x0 modules/alif/drivers/ospi/lib..__modules__hal__alif__drivers__ospi.a(ospi_hal.c.obj)
+12315- .bss           0x0000000000000000        0x0 modules/alif/drivers/ospi/lib..__modules__hal__alif__drivers__ospi.a(ospi_hal.c.obj)
+12316- .text.alif_hal_ospi_receive
+12317-                0x0000000000000000        0x4 modules/alif/drivers/ospi/lib..__modules__hal__alif__drivers__ospi.a(ospi_hal.c.obj)
+12318: .text          0x0000000000000000        0x0 modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+12319: .data          0x0000000000000000        0x0 modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+12320: .bss           0x0000000000000000        0x0 modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+12321- .text          0x0000000000000000        0x0 modules/alif/se_services/lib..__modules__hal__alif__se_services.a(se_service.c.obj)
+12322- .data          0x0000000000000000        0x0 modules/alif/se_services/lib..__modules__hal__alif__se_services.a(se_service.c.obj)
+12323- .bss           0x0000000000000000        0x0 modules/alif/se_services/lib..__modules__hal__alif__se_services.a(se_service.c.obj)
+12324- .text.se_service_sync
+--
+12996- .bss           0x0000000000000000        0x0 modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmTensor.cc.obj)
+12997- .text          0x0000000000000000        0x0 modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TensorFlowLiteMicro.cc.obj)
+12998- .data          0x0000000000000000        0x0 modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TensorFlowLiteMicro.cc.obj)
+12999- .bss           0x0000000000000000        0x0 modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TensorFlowLiteMicro.cc.obj)
+13000: .text          0x0000000000000000        0x0 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13001: .data          0x0000000000000000        0x0 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13002: .bss           0x0000000000000000        0x0 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13003- .text.ethosu_flush_dcache
+13004:                0x0000000000000000        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13005- .text.ethosu_invalidate_dcache
+13006:                0x0000000000000000        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13007- .text.ethosu_mutex_create
+13008:                0x0000000000000000        0x8 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13009- .text.ethosu_mutex_destroy
+13010:                0x0000000000000000        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13011- .text.ethosu_mutex_lock
+13012:                0x0000000000000000        0x4 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13013- .text.ethosu_mutex_unlock
+13014:                0x0000000000000000        0x4 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13015- .text.ethosu_semaphore_create
+13016:                0x0000000000000000       0x10 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13017- .text.ethosu_semaphore_destroy
+13018:                0x0000000000000000        0x4 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13019- .text.ethosu_semaphore_take
+13020:                0x0000000000000000       0x10 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13021- .text.ethosu_semaphore_give
+13022:                0x0000000000000000        0xc modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13023- .text.ethosu_set_basep_cache_mask
+13024:                0x0000000000000000        0xa modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13025- .text.ethosu_get_hw_info
+13026:                0x0000000000000000        0x4 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13027- .bss.mutex_placeholder.0
+13028:                0x0000000000000000        0x1 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+13029: .text          0x0000000000000000        0x0 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+13030: .data          0x0000000000000000        0x0 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+13031: .bss           0x0000000000000000        0x0 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+13032- .text.ethosu_address_remap
+13033:                0x0000000000000000        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+13034- .text.ethosu_dev_get_hw_info
+13035:                0x0000000000000000       0x42 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+13036- .text          0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o)
+13037- .data          0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o)
+13038- .bss           0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o)
+13039- .ARM.extab.text._ZdlPvj
+--
+18797- .text.alif_hal_ospi_xip_disable
+18798-                0x000000008001b0ec       0x48 modules/alif/drivers/ospi/lib..__modules__hal__alif__drivers__ospi.a(ospi_hal.c.obj)
+18799-                0x000000008001b0ec                alif_hal_ospi_xip_disable
+18800- .text.ethosu_area_needs_invalidate_dcache
+18801:                0x000000008001b134       0x48 modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+18802-                0x000000008001b134                ethosu_area_needs_invalidate_dcache
+18803- .text.ethosu_flush_dcache
+18804:                0x000000008001b17c       0xa4 modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+18805-                0x000000008001b17c                ethosu_flush_dcache
+18806- .text.ethosu_invalidate_dcache
+18807:                0x000000008001b220       0xa4 modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+18808-                0x000000008001b220                ethosu_invalidate_dcache
+18809- .text.callback_for_send_msg
+18810-                0x000000008001b2c4        0xc modules/alif/se_services/lib..__modules__hal__alif__se_services.a(se_service.c.obj)
+18811- .text.k_mutex_lock.constprop.0
+--
+19088-                0x000000008001f4e0        0xc modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmTensor.cc.obj)
+19089-                0x000000008001f4e0                arm::app::fwk::tflm::TflmTensor::TflmTensor(TfLiteTensor*)
+19090-                0x000000008001f4e0                arm::app::fwk::tflm::TflmTensor::TflmTensor(TfLiteTensor*)
+19091- .text.ethosu_init
+19092:                0x000000008001f4ec       0xe0 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19093-                0x000000008001f4ec                ethosu_init
+19094- .text.ethosu_deinit
+19095:                0x000000008001f5cc       0x78 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19096-                0x000000008001f5cc                ethosu_deinit
+19097- .text.ethosu_soft_reset
+19098:                0x000000008001f644       0x44 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19099-                0x000000008001f644                ethosu_soft_reset
+19100- .text.ethosu_request_power
+19101:                0x000000008001f688       0x44 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19102-                0x000000008001f688                ethosu_request_power
+19103- .text.ethosu_release_power
+19104:                0x000000008001f6cc       0x28 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19105-                0x000000008001f6cc                ethosu_release_power
+19106- .text.ethosu_wait
+19107:                0x000000008001f6f4      0x10c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19108-                0x000000008001f6f4                ethosu_wait
+19109- .text.ethosu_invoke_async
+19110:                0x000000008001f800      0x210 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19111-                0x000000008001f800                ethosu_invoke_async
+19112- .text.ethosu_reserve_driver
+19113:                0x000000008001fa10       0x6c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19114-                0x000000008001fa10                ethosu_reserve_driver
+19115- .text.ethosu_release_driver
+19116:                0x000000008001fa7c       0x5c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+19117-                0x000000008001fa7c                ethosu_release_driver
+19118- .text.ethosu_config_select
+19119:                0x000000008001fad8       0x14 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+19120-                0x000000008001fad8                ethosu_config_select
+19121- .text.ethosu_dev_axi_init
+19122:                0x000000008001faec       0x1c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+19123-                0x000000008001faec                ethosu_dev_axi_init
+19124- .text.ethosu_dev_print_err_status
+19125:                0x000000008001fb08       0x34 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+19126-                0x000000008001fb08                ethosu_dev_print_err_status
+19127- .text.ethosu_dev_soft_reset
+19128:                0x000000008001fb3c       0x88 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+19129-                0x000000008001fb3c                ethosu_dev_soft_reset
+19130- .text.ethosu_dev_init
+19131:                0x000000008001fbc4       0x3c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+19132-                0x000000008001fbc4                ethosu_dev_init
+19133- .text.ethosu_dev_verify_optimizer_config
+19134:                0x000000008001fc00      0x12c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+19135-                0x000000008001fc00                ethosu_dev_verify_optimizer_config
+19136- .text._ZSt13get_terminatev
+19137-                0x000000008001fd2c        0xc /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o)
+19138-                0x000000008001fd2c                std::get_terminate()
+--
+20817- .text.ospi_irq_handler
+20818-                0x000000008002c40c      0x1a4 modules/alif/drivers/ospi/lib..__modules__hal__alif__drivers__ospi.a(ospi.c.obj)
+20819-                0x000000008002c40c                ospi_irq_handler
+20820- .text.ethosu_area_needs_flush_dcache
+20821:                0x000000008002c5b0        0x4 modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+20822-                0x000000008002c5b0                ethosu_area_needs_flush_dcache
+20823- .text.ethosu_address_remap
+20824:                0x000000008002c5b4       0x24 modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a(ethosu_callback.c.obj)
+20825-                0x000000008002c5b4                ethosu_address_remap
+20826- .text.z_log_msg_runtime_create.constprop.0
+20827-                0x000000008002c5d8       0x1e modules/alif/se_services/lib..__modules__hal__alif__se_services.a(se_service.c.obj)
+20828- .text.ipm_set_enabled.isra.0
+--
+21022- .text._ZN3arm3app3fwk4tflm13EnableTFLMLogEv
+21023-                0x000000008002cc6c        0x2 modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TensorFlowLiteMicro.cc.obj)
+21024-                0x000000008002cc6c                arm::app::fwk::tflm::EnableTFLMLog()
+21025- .text.ethosu_reset_job
+21026:                0x000000008002cc6e        0xa modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+21027- .text.ethosu_inference_begin
+21028:                0x000000008002cc78        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+21029-                0x000000008002cc78                ethosu_inference_begin
+21030- .text.ethosu_inference_end
+21031:                0x000000008002cc7a        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+21032-                0x000000008002cc7a                ethosu_inference_end
+21033- .text.ethosu_irq_handler
+21034:                0x000000008002cc7c       0x24 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+21035-                0x000000008002cc7c                ethosu_irq_handler
+21036- .text.ethosu_get_driver_version
+21037:                0x000000008002cca0        0xc modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+21038-                0x000000008002cca0                ethosu_get_driver_version
+21039- .text.ethosu_invoke_v3
+21040:                0x000000008002ccac       0x30 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+21041-                0x000000008002ccac                ethosu_invoke_v3
+21042- .text.ethosu_dev_run_command_stream
+21043:                0x000000008002ccdc       0x6c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+21044-                0x000000008002ccdc                ethosu_dev_run_command_stream
+21045- .text.ethosu_dev_handle_interrupt
+21046:                0x000000008002cd48       0x44 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+21047-                0x000000008002cd48                ethosu_dev_handle_interrupt
+21048- .text.ethosu_dev_verify_access_state
+21049:                0x000000008002cd8c       0x2e modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+21050-                0x000000008002cd8c                ethosu_dev_verify_access_state
+21051- .text.ethosu_dev_set_clock_and_power
+21052:                0x000000008002cdba       0x3a modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+21053-                0x000000008002cdba                ethosu_dev_set_clock_and_power
+21054- .text._ZdlPvj  0x000000008002cdf4        0x4 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o)
+21055-                0x000000008002cdf4                operator delete(void*, unsigned int)
+21056- .text._ZN10__cxxabiv111__terminateEPFvvE
+--
+23458-                0x0000000080037964       0x31 modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmTensor.cc.obj)
+23459- .rodata.CSWTCH.10
+23460-                0x0000000080037995        0xa modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmTensor.cc.obj)
+23461- .rodata.ethosu_init.str1.1
+23462:                0x000000008003799f       0xf9 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+23463- .rodata.ethosu_deinit.str1.1
+23464:                0x0000000080037a98       0x3b modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+23465- .rodata.ethosu_soft_reset.str1.1
+23466:                0x0000000080037ad3       0x25 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+23467- .rodata.ethosu_request_power.str1.1
+23468:                0x0000000080037af8       0x30 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+
+============================================================
+5. CALLBACK OBJECT DISASSEMBLY
+============================================================
+ARM objdump not found.
+
+============================================================
+6. ACTIVE DRIVER BUILD DEFINITIONS
+============================================================
+3284-{
+3285-  "directory": "/home/user/sdk-alif/build",
+3286:  "command": "/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-gcc -DAXI_LIMIT0_MAX_BEATS_BYTES=1 -DAXI_LIMIT0_MEM_TYPE=2 -DAXI_LIMIT1_MAX_BEATS_BYTES=1 -DAXI_LIMIT1_MEM_TYPE=2 -DAXI_LIMIT2_MAX_BEATS_BYTES=1 -DAXI_LIMIT2_MEM_TYPE=2 -DAXI_LIMIT3_MAX_BEATS_BYTES=1 -DAXI_LIMIT3_MEM_TYPE=2 -DETHOSU -DETHOSU55 -DETHOSU_ARCH=u55 -DETHOSU_MACS=128 -DKERNEL -DK_HEAP_MEM_POOL_SIZE=163840 -D_ANSI_SOURCE -D__LINUX_ERRNO_EXTENSIONS__ -D__PROGRAM_START -D__ZEPHYR__=1 -I/home/user/sdk-alif/build/zephyr/include/generated/zephyr -I/home/user/sdk-alif/zephyr/include -I/home/user/sdk-alif/build/zephyr/include/generated -I/home/user/sdk-alif/zephyr/soc/alif/balletto -I/home/user/sdk-alif/zephyr/lib/libc/newlib/include -I/home/user/sdk-alif/zephyr/soc/alif/balletto/b1/. -I/home/user/sdk-alif/zephyr/soc/alif/common/. -I/home/user/sdk-alif/zephyr/soc/alif/balletto/common -I/home/user/sdk-alif/alif/subsys/. -I/home/user/sdk-alif/alif/subsys/modules/ethosu/. -I/home/user/sdk-alif/alif/subsys/modules/testcommands/. -I/home/user/sdk-alif/alif/include -I/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/zephyr/modules/cmsis/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/gemmlowp -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/ruy -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/kissfft -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include -I/home/user/sdk-alif/modules/hal/alif/common/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/include -I/home/user/sdk-alif/modules/hal/alif/se_services/include -I/home/user/sdk-alif/modules/hal/alif/se_services/zephyr/include -I/home/user/sdk-alif/modules/hal/ethos_u/include -isystem /home/user/sdk-alif/zephyr/lib/libc/common/include -O3 -DNDEBUG -fno-strict-aliasing -Os -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wno-pointer-sign -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -Werror=implicit-int -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections -std=c99 -o modules/alif/drivers/ethos_u/CMakeFiles/..__modules__hal__alif__drivers__ethos_u.dir/src/ethosu_callback.c.obj -c /home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c",
+3287:  "file": "/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/src/ethosu_callback.c",
+3288:  "output": "modules/alif/drivers/ethos_u/CMakeFiles/..__modules__hal__alif__drivers__ethos_u.dir/src/ethosu_callback.c.obj"
+3289-},
+3290-{
+--
+3296-{
+3297-  "directory": "/home/user/sdk-alif/build",
+3298:  "command": "/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-gcc -DAXI_LIMIT0_MAX_BEATS_BYTES=1 -DAXI_LIMIT0_MEM_TYPE=2 -DAXI_LIMIT1_MAX_BEATS_BYTES=1 -DAXI_LIMIT1_MEM_TYPE=2 -DAXI_LIMIT2_MAX_BEATS_BYTES=1 -DAXI_LIMIT2_MEM_TYPE=2 -DAXI_LIMIT3_MAX_BEATS_BYTES=1 -DAXI_LIMIT3_MEM_TYPE=2 -DETHOSU -DETHOSU55 -DETHOSU_ARCH=u55 -DETHOSU_LOG_ENABLE=1 -DETHOSU_LOG_SEVERITY=1 -DETHOSU_MACS=128 -DKERNEL -DK_HEAP_MEM_POOL_SIZE=163840 -D_ANSI_SOURCE -D__LINUX_ERRNO_EXTENSIONS__ -D__PROGRAM_START -D__ZEPHYR__=1 -I/home/user/sdk-alif/modules/hal/ethos_u/include -I/home/user/sdk-alif/modules/hal/ethos_u/src -I/home/user/sdk-alif/modules/hal/ethos_u/../cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/build/zephyr/include/generated/zephyr -I/home/user/sdk-alif/zephyr/include -I/home/user/sdk-alif/build/zephyr/include/generated -I/home/user/sdk-alif/zephyr/soc/alif/balletto -I/home/user/sdk-alif/zephyr/lib/libc/newlib/include -I/home/user/sdk-alif/zephyr/soc/alif/balletto/b1/. -I/home/user/sdk-alif/zephyr/soc/alif/common/. -I/home/user/sdk-alif/zephyr/soc/alif/balletto/common -I/home/user/sdk-alif/alif/subsys/. -I/home/user/sdk-alif/alif/subsys/modules/ethosu/. -I/home/user/sdk-alif/alif/subsys/modules/testcommands/. -I/home/user/sdk-alif/alif/include -I/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/zephyr/modules/cmsis/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/gemmlowp -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/ruy -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/kissfft -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include -I/home/user/sdk-alif/modules/hal/alif/common/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/include -I/home/user/sdk-alif/modules/hal/alif/se_services/include -I/home/user/sdk-alif/modules/hal/alif/se_services/zephyr/include -isystem /home/user/sdk-alif/zephyr/lib/libc/common/include -O3 -DNDEBUG -Werror -fno-strict-aliasing -Os -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wno-pointer-sign -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -Werror=implicit-int -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections -std=c99 -o modules/hal_ethos_u/ethos-u-core-driver/CMakeFiles/ethosu_core_driver.dir/src/ethosu_driver.c.obj -c /home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_driver.c",
+3299:  "file": "/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_driver.c",
+3300:  "output": "modules/hal_ethos_u/ethos-u-core-driver/CMakeFiles/ethosu_core_driver.dir/src/ethosu_driver.c.obj"
+3301-},
+3302-{
