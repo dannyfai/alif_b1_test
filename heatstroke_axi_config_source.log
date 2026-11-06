@@ -1,0 +1,816 @@
+============================================================
+1. ACTIVE ETHOS-U DEVICE DRIVER: AXI CONFIGURATION SOURCE
+============================================================
+52-    52	#else
+53-    53	#define ADDRESS_BITS 32
+54-    54	#endif
+55-    55	
+56-    56	#define ADDRESS_MASK ((1ull << ADDRESS_BITS) - 1)
+57-    57	
+58-    58	#define NPU_CMD_PWR_CLK_MASK (0xC)
+59-    59	
+60-    60	/******************************************************************************
+61-    61	 * Functions
+62-    62	 ******************************************************************************/
+63-    63	
+64-    64	uint64_t __attribute__((weak)) ethosu_address_remap(uint64_t address, int index)
+65-    65	{
+66-    66	    (void)(index);
+67-    67	    return address;
+68-    68	}
+69-    69	
+70:    70	unsigned int __attribute__((weak)) ethosu_config_select(uint64_t address, int index)
+71-    71	{
+72-    72	    (void)(address);
+73-    73	    assert(index >= -1 && index <= 7);
+74-    74	    switch (index)
+75-    75	    {
+76-    76	    case -1:
+77:    77	        return NPU_QCONFIG;
+78-    78	    default:
+79-    79	    case 0:
+80:    80	        return NPU_REGIONCFG_0;
+81-    81	    case 1:
+82:    82	        return NPU_REGIONCFG_1;
+83-    83	    case 2:
+84:    84	        return NPU_REGIONCFG_2;
+85-    85	    case 3:
+86:    86	        return NPU_REGIONCFG_3;
+87-    87	    case 4:
+88:    88	        return NPU_REGIONCFG_4;
+89-    89	    case 5:
+90:    90	        return NPU_REGIONCFG_5;
+91-    91	    case 6:
+92:    92	        return NPU_REGIONCFG_6;
+93-    93	    case 7:
+94:    94	        return NPU_REGIONCFG_7;
+95-    95	    }
+96-    96	}
+97-    97	
+98-    98	bool ethosu_dev_init(struct ethosu_device *dev, void *base_address, uint32_t secure_enable, uint32_t privilege_enable)
+99-    99	{
+100-   100	    dev->reg        = (volatile struct NPU_REG *)base_address;
+101-   101	    dev->secure     = secure_enable;
+102-   102	    dev->privileged = privilege_enable;
+103-   103	
+104-   104	#ifdef ETHOSU55
+105-   105	    if (dev->reg->CONFIG.product != ETHOSU_PRODUCT_U55)
+106-   106	#else
+107-   107	    if (dev->reg->CONFIG.product != ETHOSU_PRODUCT_U65)
+108-   108	#endif
+109-   109	    {
+110-   110	        LOG_ERR("Failed to initialize device. Driver has not been compiled for this product");
+111-   111	        return false;
+112-   112	    }
+113-   113	
+114-   114	    // Make sure the NPU is in a known state
+115-   115	    if (ethosu_dev_soft_reset(dev) != ETHOSU_SUCCESS)
+116-   116	    {
+117-   117	        return false;
+118-   118	    }
+119-   119	
+120-   120	    return true;
+121-   121	}
+122-   122	
+123:   123	enum ethosu_error_codes ethosu_dev_axi_init(struct ethosu_device *dev)
+124-   124	{
+125-   125	    struct axi_limit0_r l0 = {0};
+126-   126	    struct axi_limit1_r l1 = {0};
+127-   127	    struct axi_limit2_r l2 = {0};
+128-   128	    struct axi_limit3_r l3 = {0};
+129-   129	
+130:   130	    l0.max_beats                = AXI_LIMIT0_MAX_BEATS_BYTES;
+131:   131	    l0.memtype                  = AXI_LIMIT0_MEM_TYPE;
+132:   132	    l0.max_outstanding_read_m1  = AXI_LIMIT0_MAX_OUTSTANDING_READS - 1;
+133:   133	    l0.max_outstanding_write_m1 = AXI_LIMIT0_MAX_OUTSTANDING_WRITES - 1;
+134-   134	
+135:   135	    l1.max_beats                = AXI_LIMIT1_MAX_BEATS_BYTES;
+136:   136	    l1.memtype                  = AXI_LIMIT1_MEM_TYPE;
+137:   137	    l1.max_outstanding_read_m1  = AXI_LIMIT1_MAX_OUTSTANDING_READS - 1;
+138:   138	    l1.max_outstanding_write_m1 = AXI_LIMIT1_MAX_OUTSTANDING_WRITES - 1;
+139-   139	
+140:   140	    l2.max_beats                = AXI_LIMIT2_MAX_BEATS_BYTES;
+141:   141	    l2.memtype                  = AXI_LIMIT2_MEM_TYPE;
+142:   142	    l2.max_outstanding_read_m1  = AXI_LIMIT2_MAX_OUTSTANDING_READS - 1;
+143:   143	    l2.max_outstanding_write_m1 = AXI_LIMIT2_MAX_OUTSTANDING_WRITES - 1;
+144-   144	
+145:   145	    l3.max_beats                = AXI_LIMIT3_MAX_BEATS_BYTES;
+146:   146	    l3.memtype                  = AXI_LIMIT3_MEM_TYPE;
+147:   147	    l3.max_outstanding_read_m1  = AXI_LIMIT3_MAX_OUTSTANDING_READS - 1;
+148:   148	    l3.max_outstanding_write_m1 = AXI_LIMIT3_MAX_OUTSTANDING_WRITES - 1;
+149-   149	
+150:   150	    dev->reg->AXI_LIMIT0.word = l0.word;
+151:   151	    dev->reg->AXI_LIMIT1.word = l1.word;
+152:   152	    dev->reg->AXI_LIMIT2.word = l2.word;
+153:   153	    dev->reg->AXI_LIMIT3.word = l3.word;
+154-   154	
+155-   155	    return ETHOSU_SUCCESS;
+156-   156	}
+157-   157	
+158-   158	void ethosu_dev_run_command_stream(struct ethosu_device *dev,
+159-   159	                                   const uint8_t *cmd_stream_ptr,
+160-   160	                                   uint32_t cms_length,
+161-   161	                                   const uint64_t *base_addr,
+162-   162	                                   int num_base_addr)
+163-   163	{
+164-   164	    assert(num_base_addr <= NPU_REG_BASEP_ARRLEN);
+165-   165	
+166-   166	    struct cmd_r cmd;
+167:   167	    struct regioncfg_r rcfg = {0};
+168-   168	    uint64_t qbase          = ethosu_address_remap((uintptr_t)cmd_stream_ptr, -1);
+169-   169	    assert(qbase <= ADDRESS_MASK);
+170-   170	    LOG_DEBUG("QBASE=0x%016llx, QSIZE=%" PRIu32 ", cmd_stream_ptr=%p", qbase, cms_length, cmd_stream_ptr);
+171-   171	
+172-   172	    dev->reg->QBASE.word[0] = qbase & 0xffffffff;
+173-   173	#ifdef ETHOSU65
+174-   174	    dev->reg->QBASE.word[1] = qbase >> 32;
+175-   175	#endif
+176-   176	    dev->reg->QSIZE.word   = cms_length;
+177:   177	    dev->reg->QCONFIG.word = ethosu_config_select(qbase, -1);
+178-   178	
+179-   179	    for (int i = 0; i < num_base_addr; i++)
+180-   180	    {
+181-   181	        uint64_t addr = ethosu_address_remap(base_addr[i], i);
+182-   182	        assert(addr <= ADDRESS_MASK);
+183-   183	        LOG_DEBUG("BASEP%d=0x%016llx", i, addr);
+184-   184	        dev->reg->BASEP[i].word[0] = addr & 0xffffffff;
+185-   185	#ifdef ETHOSU65
+186-   186	        dev->reg->BASEP[i].word[1] = addr >> 32;
+187-   187	#endif
+188:   188	        rcfg.word |= ethosu_config_select(addr, i) << (i * 2);
+189-   189	    }
+190-   190	
+191:   191	    dev->reg->REGIONCFG.word = rcfg.word;
+192-   192	
+193-   193	    cmd.word                        = dev->reg->CMD.word & NPU_CMD_PWR_CLK_MASK;
+194-   194	    cmd.transition_to_running_state = 1;
+195-   195	
+196-   196	    dev->reg->CMD.word = cmd.word;
+197-   197	    LOG_DEBUG("CMD=0x%08" PRIx32, cmd.word);
+198-   198	}
+199-   199	
+200-   200	void ethosu_dev_print_err_status(struct ethosu_device *dev)
+201-   201	{
+202-   202	    LOG_ERR("NPU status=0x%08" PRIx32 ", qread=%" PRIu32 ", cmd_end_reached=%u",
+203-   203	            dev->reg->STATUS.word,
+204-   204	            dev->reg->QREAD.word,
+205-   205	            dev->reg->STATUS.cmd_end_reached);
+206-   206	}
+207-   207	
+208-   208	bool ethosu_dev_handle_interrupt(struct ethosu_device *dev)
+209-   209	{
+--
+253-   253	    for (int i = 0; i < 100000 && dev->reg->STATUS.reset_status != 0; i++)
+254-   254	    {
+255-   255	    }
+256-   256	
+257-   257	    if (dev->reg->STATUS.reset_status != 0)
+258-   258	    {
+259-   259	        LOG_ERR("Soft reset timed out");
+260-   260	        return ETHOSU_GENERIC_FAILURE;
+261-   261	    }
+262-   262	
+263-   263	    // Verify that NPU has switched security state and privilege level
+264-   264	    if (ethosu_dev_verify_access_state(dev) != true)
+265-   265	    {
+266-   266	        LOG_ERR("Failed to switch security state and privilege level");
+267-   267	        return ETHOSU_GENERIC_FAILURE;
+268-   268	    }
+269-   269	
+270-   270	    // Reinitialize AXI settings
+271:   271	    ethosu_dev_axi_init(dev);
+272-   272	
+273-   273	    return ETHOSU_SUCCESS;
+274-   274	}
+275-   275	
+276-   276	void ethosu_dev_get_hw_info(struct ethosu_device *dev, struct ethosu_hw_info *hwinfo)
+277-   277	{
+278-   278	    struct config_r cfg;
+279-   279	    struct id_r id;
+280-   280	
+281-   281	    cfg.word = dev->reg->CONFIG.word;
+282-   282	    id.word  = dev->reg->ID.word;
+283-   283	
+284-   284	    hwinfo->cfg.cmd_stream_version = cfg.cmd_stream_version;
+285-   285	    hwinfo->cfg.custom_dma         = cfg.custom_dma;
+286-   286	    hwinfo->cfg.macs_per_cc        = cfg.macs_per_cc;
+287-   287	
+288-   288	    hwinfo->version.arch_major_rev = id.arch_major_rev;
+289-   289	    hwinfo->version.arch_minor_rev = id.arch_minor_rev;
+
+============================================================
+2. ALL DEFINITIONS OF AXI LIMIT AND MEMORY TYPE MACROS
+============================================================
+modules/hal/ethos_u/include/ethosu_driver.h-232-/**
+modules/hal/ethos_u/include/ethosu_driver.h-233- * Select configuration for region access.
+modules/hal/ethos_u/include/ethosu_driver.h-234- *
+modules/hal/ethos_u/include/ethosu_driver.h:235: * Default implementation uses NPU_QCONFIG and NPU_REGIONCFG_n defines.
+modules/hal/ethos_u/include/ethosu_driver.h-236- *
+modules/hal/ethos_u/include/ethosu_driver.h-237- * @param address   Address of region.
+modules/hal/ethos_u/include/ethosu_driver.h-238- * @param index     -1 command stream, 0-n base address index
+--
+modules/hal/ethos_u/src/ethosu_config_u85.h-45-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-46-
+modules/hal/ethos_u/src/ethosu_config_u85.h-47-/* Default MEM_ATTR index to use for command stream */
+modules/hal/ethos_u/src/ethosu_config_u85.h:48:#ifndef NPU_QCONFIG
+modules/hal/ethos_u/src/ethosu_config_u85.h:49:#define NPU_QCONFIG 2
+modules/hal/ethos_u/src/ethosu_config_u85.h-50-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-51-
+modules/hal/ethos_u/src/ethosu_config_u85.h-52-/* Default MEM_ATTR index to use for regions 0-7 */
+modules/hal/ethos_u/src/ethosu_config_u85.h:53:#ifndef NPU_REGIONCFG_0
+modules/hal/ethos_u/src/ethosu_config_u85.h:54:#define NPU_REGIONCFG_0 3
+modules/hal/ethos_u/src/ethosu_config_u85.h-55-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-56-
+modules/hal/ethos_u/src/ethosu_config_u85.h:57:#ifndef NPU_REGIONCFG_1
+modules/hal/ethos_u/src/ethosu_config_u85.h:58:#define NPU_REGIONCFG_1 0
+modules/hal/ethos_u/src/ethosu_config_u85.h-59-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-60-
+modules/hal/ethos_u/src/ethosu_config_u85.h:61:#ifndef NPU_REGIONCFG_2
+modules/hal/ethos_u/src/ethosu_config_u85.h:62:#define NPU_REGIONCFG_2 1
+modules/hal/ethos_u/src/ethosu_config_u85.h-63-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-64-
+modules/hal/ethos_u/src/ethosu_config_u85.h:65:#ifndef NPU_REGIONCFG_3
+modules/hal/ethos_u/src/ethosu_config_u85.h:66:#define NPU_REGIONCFG_3 1
+modules/hal/ethos_u/src/ethosu_config_u85.h-67-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-68-
+modules/hal/ethos_u/src/ethosu_config_u85.h:69:#ifndef NPU_REGIONCFG_4
+modules/hal/ethos_u/src/ethosu_config_u85.h:70:#define NPU_REGIONCFG_4 1
+modules/hal/ethos_u/src/ethosu_config_u85.h-71-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-72-
+modules/hal/ethos_u/src/ethosu_config_u85.h:73:#ifndef NPU_REGIONCFG_5
+modules/hal/ethos_u/src/ethosu_config_u85.h:74:#define NPU_REGIONCFG_5 1
+modules/hal/ethos_u/src/ethosu_config_u85.h-75-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-76-
+modules/hal/ethos_u/src/ethosu_config_u85.h:77:#ifndef NPU_REGIONCFG_6
+modules/hal/ethos_u/src/ethosu_config_u85.h:78:#define NPU_REGIONCFG_6 1
+modules/hal/ethos_u/src/ethosu_config_u85.h-79-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-80-
+modules/hal/ethos_u/src/ethosu_config_u85.h:81:#ifndef NPU_REGIONCFG_7
+modules/hal/ethos_u/src/ethosu_config_u85.h:82:#define NPU_REGIONCFG_7 1
+modules/hal/ethos_u/src/ethosu_config_u85.h-83-#endif
+modules/hal/ethos_u/src/ethosu_config_u85.h-84-
+modules/hal/ethos_u/src/ethosu_config_u85.h-85-/* AXI SRAM/EXT limits
+--
+modules/hal/ethos_u/src/ethosu_device_u85.c-64-    switch (index)
+modules/hal/ethos_u/src/ethosu_device_u85.c-65-    {
+modules/hal/ethos_u/src/ethosu_device_u85.c-66-    case -1:
+modules/hal/ethos_u/src/ethosu_device_u85.c:67:        return NPU_QCONFIG;
+modules/hal/ethos_u/src/ethosu_device_u85.c-68-    default:
+modules/hal/ethos_u/src/ethosu_device_u85.c-69-    case 0:
+modules/hal/ethos_u/src/ethosu_device_u85.c:70:        return NPU_REGIONCFG_0;
+modules/hal/ethos_u/src/ethosu_device_u85.c-71-    case 1:
+modules/hal/ethos_u/src/ethosu_device_u85.c:72:        return NPU_REGIONCFG_1;
+modules/hal/ethos_u/src/ethosu_device_u85.c-73-    case 2:
+modules/hal/ethos_u/src/ethosu_device_u85.c:74:        return NPU_REGIONCFG_2;
+modules/hal/ethos_u/src/ethosu_device_u85.c-75-    case 3:
+modules/hal/ethos_u/src/ethosu_device_u85.c:76:        return NPU_REGIONCFG_3;
+modules/hal/ethos_u/src/ethosu_device_u85.c-77-    case 4:
+modules/hal/ethos_u/src/ethosu_device_u85.c:78:        return NPU_REGIONCFG_4;
+modules/hal/ethos_u/src/ethosu_device_u85.c-79-    case 5:
+modules/hal/ethos_u/src/ethosu_device_u85.c:80:        return NPU_REGIONCFG_5;
+modules/hal/ethos_u/src/ethosu_device_u85.c-81-    case 6:
+modules/hal/ethos_u/src/ethosu_device_u85.c:82:        return NPU_REGIONCFG_6;
+modules/hal/ethos_u/src/ethosu_device_u85.c-83-    case 7:
+modules/hal/ethos_u/src/ethosu_device_u85.c:84:        return NPU_REGIONCFG_7;
+modules/hal/ethos_u/src/ethosu_device_u85.c-85-    }
+modules/hal/ethos_u/src/ethosu_device_u85.c-86-}
+modules/hal/ethos_u/src/ethosu_device_u85.c-87-
+--
+modules/hal/ethos_u/src/ethosu_config_u55.h-21-
+modules/hal/ethos_u/src/ethosu_config_u55.h-22-/* Set default values if not manually overriden */
+modules/hal/ethos_u/src/ethosu_config_u55.h-23-
+modules/hal/ethos_u/src/ethosu_config_u55.h:24:#ifndef NPU_QCONFIG
+modules/hal/ethos_u/src/ethosu_config_u55.h:25:#define NPU_QCONFIG 2
+modules/hal/ethos_u/src/ethosu_config_u55.h-26-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-27-
+modules/hal/ethos_u/src/ethosu_config_u55.h:28:#ifndef NPU_REGIONCFG_0
+modules/hal/ethos_u/src/ethosu_config_u55.h:29:#define NPU_REGIONCFG_0 3
+modules/hal/ethos_u/src/ethosu_config_u55.h-30-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-31-
+modules/hal/ethos_u/src/ethosu_config_u55.h:32:#ifndef NPU_REGIONCFG_1
+modules/hal/ethos_u/src/ethosu_config_u55.h:33:#define NPU_REGIONCFG_1 0
+modules/hal/ethos_u/src/ethosu_config_u55.h-34-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-35-
+modules/hal/ethos_u/src/ethosu_config_u55.h:36:#ifndef NPU_REGIONCFG_2
+modules/hal/ethos_u/src/ethosu_config_u55.h:37:#define NPU_REGIONCFG_2 1
+modules/hal/ethos_u/src/ethosu_config_u55.h-38-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-39-
+modules/hal/ethos_u/src/ethosu_config_u55.h:40:#ifndef NPU_REGIONCFG_3
+modules/hal/ethos_u/src/ethosu_config_u55.h:41:#define NPU_REGIONCFG_3 1
+modules/hal/ethos_u/src/ethosu_config_u55.h-42-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-43-
+modules/hal/ethos_u/src/ethosu_config_u55.h:44:#ifndef NPU_REGIONCFG_4
+modules/hal/ethos_u/src/ethosu_config_u55.h:45:#define NPU_REGIONCFG_4 1
+modules/hal/ethos_u/src/ethosu_config_u55.h-46-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-47-
+modules/hal/ethos_u/src/ethosu_config_u55.h:48:#ifndef NPU_REGIONCFG_5
+modules/hal/ethos_u/src/ethosu_config_u55.h:49:#define NPU_REGIONCFG_5 1
+modules/hal/ethos_u/src/ethosu_config_u55.h-50-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-51-
+modules/hal/ethos_u/src/ethosu_config_u55.h:52:#ifndef NPU_REGIONCFG_6
+modules/hal/ethos_u/src/ethosu_config_u55.h:53:#define NPU_REGIONCFG_6 1
+modules/hal/ethos_u/src/ethosu_config_u55.h-54-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-55-
+modules/hal/ethos_u/src/ethosu_config_u55.h:56:#ifndef NPU_REGIONCFG_7
+modules/hal/ethos_u/src/ethosu_config_u55.h:57:#define NPU_REGIONCFG_7 1
+modules/hal/ethos_u/src/ethosu_config_u55.h-58-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-59-
+modules/hal/ethos_u/src/ethosu_config_u55.h:60:#ifndef AXI_LIMIT0_MAX_BEATS_BYTES
+modules/hal/ethos_u/src/ethosu_config_u55.h:61:#define AXI_LIMIT0_MAX_BEATS_BYTES 0x0
+modules/hal/ethos_u/src/ethosu_config_u55.h-62-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-63-
+modules/hal/ethos_u/src/ethosu_config_u55.h:64:#ifndef AXI_LIMIT0_MEM_TYPE
+modules/hal/ethos_u/src/ethosu_config_u55.h:65:#define AXI_LIMIT0_MEM_TYPE 0x0
+modules/hal/ethos_u/src/ethosu_config_u55.h-66-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-67-
+modules/hal/ethos_u/src/ethosu_config_u55.h-68-#ifndef AXI_LIMIT0_MAX_OUTSTANDING_READS
+--
+modules/hal/ethos_u/src/ethosu_config_u55.h-73-#define AXI_LIMIT0_MAX_OUTSTANDING_WRITES 16
+modules/hal/ethos_u/src/ethosu_config_u55.h-74-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-75-
+modules/hal/ethos_u/src/ethosu_config_u55.h:76:#ifndef AXI_LIMIT1_MAX_BEATS_BYTES
+modules/hal/ethos_u/src/ethosu_config_u55.h:77:#define AXI_LIMIT1_MAX_BEATS_BYTES 0x0
+modules/hal/ethos_u/src/ethosu_config_u55.h-78-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-79-
+modules/hal/ethos_u/src/ethosu_config_u55.h:80:#ifndef AXI_LIMIT1_MEM_TYPE
+modules/hal/ethos_u/src/ethosu_config_u55.h:81:#define AXI_LIMIT1_MEM_TYPE 0x0
+modules/hal/ethos_u/src/ethosu_config_u55.h-82-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-83-
+modules/hal/ethos_u/src/ethosu_config_u55.h-84-#ifndef AXI_LIMIT1_MAX_OUTSTANDING_READS
+--
+modules/hal/ethos_u/src/ethosu_config_u55.h-89-#define AXI_LIMIT1_MAX_OUTSTANDING_WRITES 16
+modules/hal/ethos_u/src/ethosu_config_u55.h-90-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-91-
+modules/hal/ethos_u/src/ethosu_config_u55.h:92:#ifndef AXI_LIMIT2_MAX_BEATS_BYTES
+modules/hal/ethos_u/src/ethosu_config_u55.h:93:#define AXI_LIMIT2_MAX_BEATS_BYTES 0x0
+modules/hal/ethos_u/src/ethosu_config_u55.h-94-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-95-
+modules/hal/ethos_u/src/ethosu_config_u55.h:96:#ifndef AXI_LIMIT2_MEM_TYPE
+modules/hal/ethos_u/src/ethosu_config_u55.h:97:#define AXI_LIMIT2_MEM_TYPE 0x0
+modules/hal/ethos_u/src/ethosu_config_u55.h-98-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-99-
+modules/hal/ethos_u/src/ethosu_config_u55.h-100-#ifndef AXI_LIMIT2_MAX_OUTSTANDING_READS
+--
+modules/hal/ethos_u/src/ethosu_config_u55.h-105-#define AXI_LIMIT2_MAX_OUTSTANDING_WRITES 16
+modules/hal/ethos_u/src/ethosu_config_u55.h-106-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-107-
+modules/hal/ethos_u/src/ethosu_config_u55.h:108:#ifndef AXI_LIMIT3_MAX_BEATS_BYTES
+modules/hal/ethos_u/src/ethosu_config_u55.h:109:#define AXI_LIMIT3_MAX_BEATS_BYTES 0x0
+modules/hal/ethos_u/src/ethosu_config_u55.h-110-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-111-
+modules/hal/ethos_u/src/ethosu_config_u55.h:112:#ifndef AXI_LIMIT3_MEM_TYPE
+modules/hal/ethos_u/src/ethosu_config_u55.h:113:#define AXI_LIMIT3_MEM_TYPE 0x0
+modules/hal/ethos_u/src/ethosu_config_u55.h-114-#endif
+modules/hal/ethos_u/src/ethosu_config_u55.h-115-
+modules/hal/ethos_u/src/ethosu_config_u55.h-116-#ifndef AXI_LIMIT3_MAX_OUTSTANDING_READS
+--
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-74-    switch (index)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-75-    {
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-76-    case -1:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:77:        return NPU_QCONFIG;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-78-    default:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-79-    case 0:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:80:        return NPU_REGIONCFG_0;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-81-    case 1:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:82:        return NPU_REGIONCFG_1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-83-    case 2:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:84:        return NPU_REGIONCFG_2;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-85-    case 3:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:86:        return NPU_REGIONCFG_3;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-87-    case 4:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:88:        return NPU_REGIONCFG_4;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-89-    case 5:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:90:        return NPU_REGIONCFG_5;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-91-    case 6:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:92:        return NPU_REGIONCFG_6;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-93-    case 7:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:94:        return NPU_REGIONCFG_7;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-95-    }
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-96-}
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-97-
+--
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-127-    struct axi_limit2_r l2 = {0};
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-128-    struct axi_limit3_r l3 = {0};
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-129-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:130:    l0.max_beats                = AXI_LIMIT0_MAX_BEATS_BYTES;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:131:    l0.memtype                  = AXI_LIMIT0_MEM_TYPE;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-132-    l0.max_outstanding_read_m1  = AXI_LIMIT0_MAX_OUTSTANDING_READS - 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-133-    l0.max_outstanding_write_m1 = AXI_LIMIT0_MAX_OUTSTANDING_WRITES - 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-134-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:135:    l1.max_beats                = AXI_LIMIT1_MAX_BEATS_BYTES;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:136:    l1.memtype                  = AXI_LIMIT1_MEM_TYPE;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-137-    l1.max_outstanding_read_m1  = AXI_LIMIT1_MAX_OUTSTANDING_READS - 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-138-    l1.max_outstanding_write_m1 = AXI_LIMIT1_MAX_OUTSTANDING_WRITES - 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-139-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:140:    l2.max_beats                = AXI_LIMIT2_MAX_BEATS_BYTES;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:141:    l2.memtype                  = AXI_LIMIT2_MEM_TYPE;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-142-    l2.max_outstanding_read_m1  = AXI_LIMIT2_MAX_OUTSTANDING_READS - 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-143-    l2.max_outstanding_write_m1 = AXI_LIMIT2_MAX_OUTSTANDING_WRITES - 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-144-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:145:    l3.max_beats                = AXI_LIMIT3_MAX_BEATS_BYTES;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:146:    l3.memtype                  = AXI_LIMIT3_MEM_TYPE;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-147-    l3.max_outstanding_read_m1  = AXI_LIMIT3_MAX_OUTSTANDING_READS - 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-148-    l3.max_outstanding_write_m1 = AXI_LIMIT3_MAX_OUTSTANDING_WRITES - 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-149-
+--
+modules/hal/ethos_u/src/ethosu_config_u65.h-21-
+modules/hal/ethos_u/src/ethosu_config_u65.h-22-/* Set default values if not manually overriden */
+modules/hal/ethos_u/src/ethosu_config_u65.h-23-
+modules/hal/ethos_u/src/ethosu_config_u65.h:24:#ifndef NPU_QCONFIG
+modules/hal/ethos_u/src/ethosu_config_u65.h:25:#define NPU_QCONFIG 2
+modules/hal/ethos_u/src/ethosu_config_u65.h-26-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-27-
+modules/hal/ethos_u/src/ethosu_config_u65.h:28:#ifndef NPU_REGIONCFG_0
+modules/hal/ethos_u/src/ethosu_config_u65.h:29:#define NPU_REGIONCFG_0 3
+modules/hal/ethos_u/src/ethosu_config_u65.h-30-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-31-
+modules/hal/ethos_u/src/ethosu_config_u65.h:32:#ifndef NPU_REGIONCFG_1
+modules/hal/ethos_u/src/ethosu_config_u65.h:33:#define NPU_REGIONCFG_1 2
+modules/hal/ethos_u/src/ethosu_config_u65.h-34-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-35-
+modules/hal/ethos_u/src/ethosu_config_u65.h:36:#ifndef NPU_REGIONCFG_2
+modules/hal/ethos_u/src/ethosu_config_u65.h:37:#define NPU_REGIONCFG_2 1
+modules/hal/ethos_u/src/ethosu_config_u65.h-38-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-39-
+modules/hal/ethos_u/src/ethosu_config_u65.h:40:#ifndef NPU_REGIONCFG_3
+modules/hal/ethos_u/src/ethosu_config_u65.h:41:#define NPU_REGIONCFG_3 1
+modules/hal/ethos_u/src/ethosu_config_u65.h-42-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-43-
+modules/hal/ethos_u/src/ethosu_config_u65.h:44:#ifndef NPU_REGIONCFG_4
+modules/hal/ethos_u/src/ethosu_config_u65.h:45:#define NPU_REGIONCFG_4 1
+modules/hal/ethos_u/src/ethosu_config_u65.h-46-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-47-
+modules/hal/ethos_u/src/ethosu_config_u65.h:48:#ifndef NPU_REGIONCFG_5
+modules/hal/ethos_u/src/ethosu_config_u65.h:49:#define NPU_REGIONCFG_5 1
+modules/hal/ethos_u/src/ethosu_config_u65.h-50-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-51-
+modules/hal/ethos_u/src/ethosu_config_u65.h:52:#ifndef NPU_REGIONCFG_6
+modules/hal/ethos_u/src/ethosu_config_u65.h:53:#define NPU_REGIONCFG_6 1
+modules/hal/ethos_u/src/ethosu_config_u65.h-54-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-55-
+modules/hal/ethos_u/src/ethosu_config_u65.h:56:#ifndef NPU_REGIONCFG_7
+modules/hal/ethos_u/src/ethosu_config_u65.h:57:#define NPU_REGIONCFG_7 1
+modules/hal/ethos_u/src/ethosu_config_u65.h-58-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-59-
+modules/hal/ethos_u/src/ethosu_config_u65.h:60:#ifndef AXI_LIMIT0_MAX_BEATS_BYTES
+modules/hal/ethos_u/src/ethosu_config_u65.h:61:#define AXI_LIMIT0_MAX_BEATS_BYTES 0x0
+modules/hal/ethos_u/src/ethosu_config_u65.h-62-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-63-
+modules/hal/ethos_u/src/ethosu_config_u65.h:64:#ifndef AXI_LIMIT0_MEM_TYPE
+modules/hal/ethos_u/src/ethosu_config_u65.h:65:#define AXI_LIMIT0_MEM_TYPE 0x0
+modules/hal/ethos_u/src/ethosu_config_u65.h-66-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-67-
+modules/hal/ethos_u/src/ethosu_config_u65.h-68-#ifndef AXI_LIMIT0_MAX_OUTSTANDING_READS
+--
+modules/hal/ethos_u/src/ethosu_config_u65.h-73-#define AXI_LIMIT0_MAX_OUTSTANDING_WRITES 32
+modules/hal/ethos_u/src/ethosu_config_u65.h-74-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-75-
+modules/hal/ethos_u/src/ethosu_config_u65.h:76:#ifndef AXI_LIMIT1_MAX_BEATS_BYTES
+modules/hal/ethos_u/src/ethosu_config_u65.h:77:#define AXI_LIMIT1_MAX_BEATS_BYTES 0x0
+modules/hal/ethos_u/src/ethosu_config_u65.h-78-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-79-
+modules/hal/ethos_u/src/ethosu_config_u65.h:80:#ifndef AXI_LIMIT1_MEM_TYPE
+modules/hal/ethos_u/src/ethosu_config_u65.h:81:#define AXI_LIMIT1_MEM_TYPE 0x0
+modules/hal/ethos_u/src/ethosu_config_u65.h-82-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-83-
+modules/hal/ethos_u/src/ethosu_config_u65.h-84-#ifndef AXI_LIMIT1_MAX_OUTSTANDING_READS
+--
+modules/hal/ethos_u/src/ethosu_config_u65.h-89-#define AXI_LIMIT1_MAX_OUTSTANDING_WRITES 32
+modules/hal/ethos_u/src/ethosu_config_u65.h-90-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-91-
+modules/hal/ethos_u/src/ethosu_config_u65.h:92:#ifndef AXI_LIMIT2_MAX_BEATS_BYTES
+modules/hal/ethos_u/src/ethosu_config_u65.h:93:#define AXI_LIMIT2_MAX_BEATS_BYTES 0x0
+modules/hal/ethos_u/src/ethosu_config_u65.h-94-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-95-
+modules/hal/ethos_u/src/ethosu_config_u65.h:96:#ifndef AXI_LIMIT2_MEM_TYPE
+modules/hal/ethos_u/src/ethosu_config_u65.h:97:#define AXI_LIMIT2_MEM_TYPE 0x0
+modules/hal/ethos_u/src/ethosu_config_u65.h-98-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-99-
+modules/hal/ethos_u/src/ethosu_config_u65.h-100-#ifndef AXI_LIMIT2_MAX_OUTSTANDING_READS
+--
+modules/hal/ethos_u/src/ethosu_config_u65.h-105-#define AXI_LIMIT2_MAX_OUTSTANDING_WRITES 32
+modules/hal/ethos_u/src/ethosu_config_u65.h-106-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-107-
+modules/hal/ethos_u/src/ethosu_config_u65.h:108:#ifndef AXI_LIMIT3_MAX_BEATS_BYTES
+modules/hal/ethos_u/src/ethosu_config_u65.h:109:#define AXI_LIMIT3_MAX_BEATS_BYTES 0x0
+modules/hal/ethos_u/src/ethosu_config_u65.h-110-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-111-
+modules/hal/ethos_u/src/ethosu_config_u65.h:112:#ifndef AXI_LIMIT3_MEM_TYPE
+modules/hal/ethos_u/src/ethosu_config_u65.h:113:#define AXI_LIMIT3_MEM_TYPE 0x0
+modules/hal/ethos_u/src/ethosu_config_u65.h-114-#endif
+modules/hal/ethos_u/src/ethosu_config_u65.h-115-
+modules/hal/ethos_u/src/ethosu_config_u65.h-116-#ifndef AXI_LIMIT3_MAX_OUTSTANDING_READS
+
+============================================================
+3. CORE DRIVER CALL SITES FOR ADDRESS REMAP AND CONFIG SELECT
+============================================================
+modules/hal/ethos_u/src/ethosu_device_u85.c-46-
+modules/hal/ethos_u/src/ethosu_device_u85.c-47-#define NPU_CMD_PWR_CLK_MASK (0xC)
+modules/hal/ethos_u/src/ethosu_device_u85.c-48-#define NPU_MAC_PWR_RAMP_CYCLES_MASK (0x3F)
+modules/hal/ethos_u/src/ethosu_device_u85.c-49-
+modules/hal/ethos_u/src/ethosu_device_u85.c-50-/******************************************************************************
+modules/hal/ethos_u/src/ethosu_device_u85.c-51- * Functions
+modules/hal/ethos_u/src/ethosu_device_u85.c-52- ******************************************************************************/
+modules/hal/ethos_u/src/ethosu_device_u85.c-53-
+modules/hal/ethos_u/src/ethosu_device_u85.c:54:uint64_t __attribute__((weak)) ethosu_address_remap(uint64_t address, int index)
+modules/hal/ethos_u/src/ethosu_device_u85.c-55-{
+modules/hal/ethos_u/src/ethosu_device_u85.c-56-    (void)(index);
+modules/hal/ethos_u/src/ethosu_device_u85.c-57-    return address;
+modules/hal/ethos_u/src/ethosu_device_u85.c-58-}
+modules/hal/ethos_u/src/ethosu_device_u85.c-59-
+modules/hal/ethos_u/src/ethosu_device_u85.c:60:unsigned int __attribute__((weak)) ethosu_config_select(uint64_t address, int index)
+modules/hal/ethos_u/src/ethosu_device_u85.c-61-{
+modules/hal/ethos_u/src/ethosu_device_u85.c-62-    (void)(address);
+modules/hal/ethos_u/src/ethosu_device_u85.c-63-    assert(index >= -1 && index <= 7);
+modules/hal/ethos_u/src/ethosu_device_u85.c-64-    switch (index)
+modules/hal/ethos_u/src/ethosu_device_u85.c-65-    {
+modules/hal/ethos_u/src/ethosu_device_u85.c-66-    case -1:
+modules/hal/ethos_u/src/ethosu_device_u85.c-67-        return NPU_QCONFIG;
+modules/hal/ethos_u/src/ethosu_device_u85.c-68-    default:
+--
+modules/hal/ethos_u/src/ethosu_device_u85.c-101-    if (ethosu_dev_soft_reset(dev) != ETHOSU_SUCCESS)
+modules/hal/ethos_u/src/ethosu_device_u85.c-102-    {
+modules/hal/ethos_u/src/ethosu_device_u85.c-103-        return false;
+modules/hal/ethos_u/src/ethosu_device_u85.c-104-    }
+modules/hal/ethos_u/src/ethosu_device_u85.c-105-
+modules/hal/ethos_u/src/ethosu_device_u85.c-106-    return true;
+modules/hal/ethos_u/src/ethosu_device_u85.c-107-}
+modules/hal/ethos_u/src/ethosu_device_u85.c-108-
+modules/hal/ethos_u/src/ethosu_device_u85.c:109:enum ethosu_error_codes ethosu_dev_axi_init(struct ethosu_device *dev)
+modules/hal/ethos_u/src/ethosu_device_u85.c-110-{
+modules/hal/ethos_u/src/ethosu_device_u85.c-111-    struct axi_sram_r axi_s = {0};
+modules/hal/ethos_u/src/ethosu_device_u85.c-112-    struct axi_ext_r axi_e  = {0};
+modules/hal/ethos_u/src/ethosu_device_u85.c-113-
+modules/hal/ethos_u/src/ethosu_device_u85.c-114-    // Configure MEM_ATTR array. These are user configurable,
+modules/hal/ethos_u/src/ethosu_device_u85.c-115-    // and each region will be set to use one of the entries
+modules/hal/ethos_u/src/ethosu_device_u85.c-116-    // as its config.
+modules/hal/ethos_u/src/ethosu_device_u85.c-117-    dev->reg->MEM_ATTR[0].word = NPU_MEM_ATTR_0;
+--
+modules/hal/ethos_u/src/ethosu_device_u85.c-139-                                   uint32_t cms_length,
+modules/hal/ethos_u/src/ethosu_device_u85.c-140-                                   const uint64_t *base_addr,
+modules/hal/ethos_u/src/ethosu_device_u85.c-141-                                   int num_base_addr)
+modules/hal/ethos_u/src/ethosu_device_u85.c-142-{
+modules/hal/ethos_u/src/ethosu_device_u85.c-143-    assert(num_base_addr <= NPU_REG_BASEP_ARRLEN);
+modules/hal/ethos_u/src/ethosu_device_u85.c-144-
+modules/hal/ethos_u/src/ethosu_device_u85.c-145-    struct cmd_r cmd;
+modules/hal/ethos_u/src/ethosu_device_u85.c-146-    struct regioncfg_r rcfg = {0};
+modules/hal/ethos_u/src/ethosu_device_u85.c:147:    uint64_t qbase          = ethosu_address_remap((uintptr_t)cmd_stream_ptr, -1);
+modules/hal/ethos_u/src/ethosu_device_u85.c-148-    assert(qbase <= ADDRESS_MASK);
+modules/hal/ethos_u/src/ethosu_device_u85.c-149-    LOG_DEBUG("QBASE=0x%016llx, QSIZE=%" PRIu32 ", cmd_stream_ptr=%p", qbase, cms_length, cmd_stream_ptr);
+modules/hal/ethos_u/src/ethosu_device_u85.c-150-
+modules/hal/ethos_u/src/ethosu_device_u85.c-151-    dev->reg->QBASE.word[0] = qbase & 0xffffffff;
+modules/hal/ethos_u/src/ethosu_device_u85.c-152-    dev->reg->QBASE.word[1] = qbase >> 32;
+modules/hal/ethos_u/src/ethosu_device_u85.c-153-    dev->reg->QSIZE.word    = cms_length;
+modules/hal/ethos_u/src/ethosu_device_u85.c:154:    dev->reg->QCONFIG.word  = ethosu_config_select(qbase, -1);
+modules/hal/ethos_u/src/ethosu_device_u85.c-155-
+modules/hal/ethos_u/src/ethosu_device_u85.c-156-    for (int i = 0; i < num_base_addr; i++)
+modules/hal/ethos_u/src/ethosu_device_u85.c-157-    {
+modules/hal/ethos_u/src/ethosu_device_u85.c:158:        uint64_t addr = ethosu_address_remap(base_addr[i], i);
+modules/hal/ethos_u/src/ethosu_device_u85.c-159-        assert(addr <= ADDRESS_MASK);
+modules/hal/ethos_u/src/ethosu_device_u85.c-160-        LOG_DEBUG("BASEP%d=0x%016llx", i, addr);
+modules/hal/ethos_u/src/ethosu_device_u85.c-161-        dev->reg->BASEP[i].word[0] = addr & 0xffffffff;
+modules/hal/ethos_u/src/ethosu_device_u85.c-162-        dev->reg->BASEP[i].word[1] = addr >> 32;
+modules/hal/ethos_u/src/ethosu_device_u85.c:163:        rcfg.word |= ethosu_config_select(addr, i) << (i * 2);
+modules/hal/ethos_u/src/ethosu_device_u85.c-164-    }
+modules/hal/ethos_u/src/ethosu_device_u85.c-165-
+modules/hal/ethos_u/src/ethosu_device_u85.c-166-    dev->reg->REGIONCFG.word = rcfg.word;
+modules/hal/ethos_u/src/ethosu_device_u85.c-167-
+modules/hal/ethos_u/src/ethosu_device_u85.c-168-    cmd.word                        = dev->reg->CMD.word & NPU_CMD_PWR_CLK_MASK;
+modules/hal/ethos_u/src/ethosu_device_u85.c-169-    cmd.transition_to_running_state = 1;
+modules/hal/ethos_u/src/ethosu_device_u85.c-170-
+modules/hal/ethos_u/src/ethosu_device_u85.c-171-    dev->reg->CMD.word = cmd.word;
+--
+modules/hal/ethos_u/src/ethosu_device_u85.c-235-    // Verify that NPU has switched security state and privilege level
+modules/hal/ethos_u/src/ethosu_device_u85.c-236-    if (ethosu_dev_verify_access_state(dev) != true)
+modules/hal/ethos_u/src/ethosu_device_u85.c-237-    {
+modules/hal/ethos_u/src/ethosu_device_u85.c-238-        LOG_ERR("Failed to switch security state and privilege level");
+modules/hal/ethos_u/src/ethosu_device_u85.c-239-        return ETHOSU_GENERIC_FAILURE;
+modules/hal/ethos_u/src/ethosu_device_u85.c-240-    }
+modules/hal/ethos_u/src/ethosu_device_u85.c-241-
+modules/hal/ethos_u/src/ethosu_device_u85.c-242-    // Reinitialize AXI settings
+modules/hal/ethos_u/src/ethosu_device_u85.c:243:    ethosu_dev_axi_init(dev);
+modules/hal/ethos_u/src/ethosu_device_u85.c-244-
+modules/hal/ethos_u/src/ethosu_device_u85.c-245-    // MAC power ramping up/down control
+modules/hal/ethos_u/src/ethosu_device_u85.c-246-    dev->reg->POWER_CTRL.word = (NPU_MAC_PWR_RAMP_CYCLES & NPU_MAC_PWR_RAMP_CYCLES_MASK);
+modules/hal/ethos_u/src/ethosu_device_u85.c-247-
+modules/hal/ethos_u/src/ethosu_device_u85.c-248-    return ETHOSU_SUCCESS;
+modules/hal/ethos_u/src/ethosu_device_u85.c-249-}
+modules/hal/ethos_u/src/ethosu_device_u85.c-250-
+modules/hal/ethos_u/src/ethosu_device_u85.c-251-void ethosu_dev_get_hw_info(struct ethosu_device *dev, struct ethosu_hw_info *hwinfo)
+--
+modules/hal/ethos_u/src/ethosu_device.h-37-/**
+modules/hal/ethos_u/src/ethosu_device.h-38- * Initialize the device.
+modules/hal/ethos_u/src/ethosu_device.h-39- */
+modules/hal/ethos_u/src/ethosu_device.h-40-bool ethosu_dev_init(struct ethosu_device *dev, void *base_address, uint32_t secure_enable, uint32_t privilege_enable);
+modules/hal/ethos_u/src/ethosu_device.h-41-
+modules/hal/ethos_u/src/ethosu_device.h-42-/**
+modules/hal/ethos_u/src/ethosu_device.h-43- * Initialize AXI settings for device.
+modules/hal/ethos_u/src/ethosu_device.h-44- */
+modules/hal/ethos_u/src/ethosu_device.h:45:enum ethosu_error_codes ethosu_dev_axi_init(struct ethosu_device *dev);
+modules/hal/ethos_u/src/ethosu_device.h-46-
+modules/hal/ethos_u/src/ethosu_device.h-47-/**
+modules/hal/ethos_u/src/ethosu_device.h-48- * Execute a given command stream on NPU.
+modules/hal/ethos_u/src/ethosu_device.h-49- * \param[in] cmd_stream_ptr   Pointer to the command stream
+modules/hal/ethos_u/src/ethosu_device.h-50- * \param[in] cms_length       Command stream length
+modules/hal/ethos_u/src/ethosu_device.h-51- * \param[in] base_addr        Pointer to array of base addresses
+modules/hal/ethos_u/src/ethosu_device.h-52- *                             - 0: weight tensor
+modules/hal/ethos_u/src/ethosu_device.h-53- *                             - 1: scratch tensor
+--
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-56-#define ADDRESS_MASK ((1ull << ADDRESS_BITS) - 1)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-57-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-58-#define NPU_CMD_PWR_CLK_MASK (0xC)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-59-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-60-/******************************************************************************
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-61- * Functions
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-62- ******************************************************************************/
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-63-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:64:uint64_t __attribute__((weak)) ethosu_address_remap(uint64_t address, int index)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-65-{
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-66-    (void)(index);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-67-    return address;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-68-}
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-69-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:70:unsigned int __attribute__((weak)) ethosu_config_select(uint64_t address, int index)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-71-{
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-72-    (void)(address);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-73-    assert(index >= -1 && index <= 7);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-74-    switch (index)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-75-    {
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-76-    case -1:
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-77-        return NPU_QCONFIG;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-78-    default:
+--
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-115-    if (ethosu_dev_soft_reset(dev) != ETHOSU_SUCCESS)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-116-    {
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-117-        return false;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-118-    }
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-119-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-120-    return true;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-121-}
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-122-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:123:enum ethosu_error_codes ethosu_dev_axi_init(struct ethosu_device *dev)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-124-{
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-125-    struct axi_limit0_r l0 = {0};
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-126-    struct axi_limit1_r l1 = {0};
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-127-    struct axi_limit2_r l2 = {0};
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-128-    struct axi_limit3_r l3 = {0};
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-129-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-130-    l0.max_beats                = AXI_LIMIT0_MAX_BEATS_BYTES;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-131-    l0.memtype                  = AXI_LIMIT0_MEM_TYPE;
+--
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-160-                                   uint32_t cms_length,
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-161-                                   const uint64_t *base_addr,
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-162-                                   int num_base_addr)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-163-{
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-164-    assert(num_base_addr <= NPU_REG_BASEP_ARRLEN);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-165-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-166-    struct cmd_r cmd;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-167-    struct regioncfg_r rcfg = {0};
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:168:    uint64_t qbase          = ethosu_address_remap((uintptr_t)cmd_stream_ptr, -1);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-169-    assert(qbase <= ADDRESS_MASK);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-170-    LOG_DEBUG("QBASE=0x%016llx, QSIZE=%" PRIu32 ", cmd_stream_ptr=%p", qbase, cms_length, cmd_stream_ptr);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-171-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-172-    dev->reg->QBASE.word[0] = qbase & 0xffffffff;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-173-#ifdef ETHOSU65
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-174-    dev->reg->QBASE.word[1] = qbase >> 32;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-175-#endif
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-176-    dev->reg->QSIZE.word   = cms_length;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:177:    dev->reg->QCONFIG.word = ethosu_config_select(qbase, -1);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-178-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-179-    for (int i = 0; i < num_base_addr; i++)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-180-    {
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:181:        uint64_t addr = ethosu_address_remap(base_addr[i], i);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-182-        assert(addr <= ADDRESS_MASK);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-183-        LOG_DEBUG("BASEP%d=0x%016llx", i, addr);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-184-        dev->reg->BASEP[i].word[0] = addr & 0xffffffff;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-185-#ifdef ETHOSU65
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-186-        dev->reg->BASEP[i].word[1] = addr >> 32;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-187-#endif
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:188:        rcfg.word |= ethosu_config_select(addr, i) << (i * 2);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-189-    }
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-190-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-191-    dev->reg->REGIONCFG.word = rcfg.word;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-192-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-193-    cmd.word                        = dev->reg->CMD.word & NPU_CMD_PWR_CLK_MASK;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-194-    cmd.transition_to_running_state = 1;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-195-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-196-    dev->reg->CMD.word = cmd.word;
+--
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-263-    // Verify that NPU has switched security state and privilege level
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-264-    if (ethosu_dev_verify_access_state(dev) != true)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-265-    {
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-266-        LOG_ERR("Failed to switch security state and privilege level");
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-267-        return ETHOSU_GENERIC_FAILURE;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-268-    }
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-269-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-270-    // Reinitialize AXI settings
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c:271:    ethosu_dev_axi_init(dev);
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-272-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-273-    return ETHOSU_SUCCESS;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-274-}
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-275-
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-276-void ethosu_dev_get_hw_info(struct ethosu_device *dev, struct ethosu_hw_info *hwinfo)
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-277-{
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-278-    struct config_r cfg;
+modules/hal/ethos_u/src/ethosu_device_u55_u65.c-279-    struct id_r id;
+--
+modules/hal/ethos_u/include/ethosu_driver.h-222-/**
+modules/hal/ethos_u/include/ethosu_driver.h-223- * Remapping command stream and base pointer addresses.
+modules/hal/ethos_u/include/ethosu_driver.h-224- *
+modules/hal/ethos_u/include/ethosu_driver.h-225- * @param address   Address to be remapped.
+modules/hal/ethos_u/include/ethosu_driver.h-226- * @param index     -1 command stream, 0-n base address index
+modules/hal/ethos_u/include/ethosu_driver.h-227- *
+modules/hal/ethos_u/include/ethosu_driver.h-228- * @return Remapped address
+modules/hal/ethos_u/include/ethosu_driver.h-229- */
+modules/hal/ethos_u/include/ethosu_driver.h:230:uint64_t ethosu_address_remap(uint64_t address, int index);
+modules/hal/ethos_u/include/ethosu_driver.h-231-
+modules/hal/ethos_u/include/ethosu_driver.h-232-/**
+modules/hal/ethos_u/include/ethosu_driver.h-233- * Select configuration for region access.
+modules/hal/ethos_u/include/ethosu_driver.h-234- *
+modules/hal/ethos_u/include/ethosu_driver.h-235- * Default implementation uses NPU_QCONFIG and NPU_REGIONCFG_n defines.
+modules/hal/ethos_u/include/ethosu_driver.h-236- *
+modules/hal/ethos_u/include/ethosu_driver.h-237- * @param address   Address of region.
+modules/hal/ethos_u/include/ethosu_driver.h-238- * @param index     -1 command stream, 0-n base address index
+modules/hal/ethos_u/include/ethosu_driver.h-239- *
+modules/hal/ethos_u/include/ethosu_driver.h-240- * @return Configuration to use
+modules/hal/ethos_u/include/ethosu_driver.h-241- */
+modules/hal/ethos_u/include/ethosu_driver.h:242:unsigned int ethosu_config_select(uint64_t address, int index);
+modules/hal/ethos_u/include/ethosu_driver.h-243-
+modules/hal/ethos_u/include/ethosu_driver.h-244-/******************************************************************************
+modules/hal/ethos_u/include/ethosu_driver.h-245- * Prototypes
+modules/hal/ethos_u/include/ethosu_driver.h-246- ******************************************************************************/
+modules/hal/ethos_u/include/ethosu_driver.h-247-
+modules/hal/ethos_u/include/ethosu_driver.h-248-/**
+modules/hal/ethos_u/include/ethosu_driver.h-249- * Set cache mask for cache flush/clean and invalidation per base pointer.
+modules/hal/ethos_u/include/ethosu_driver.h-250- *
+
+============================================================
+4. FINAL ELF: CONFIG SELECT AND AXI INIT DISASSEMBLY
+============================================================
+
+build/zephyr/zephyr.elf:     file format elf32-littlearm
+
+
+Disassembly of section rom_start:
+
+Disassembly of section text:
+
+8001fad8 <ethosu_config_select>:
+8001fad8:	3201      	adds	r2, #1
+8001fada:	2a08      	cmp	r2, #8
+8001fadc:	bf9a      	itte	ls
+8001fade:	4b02      	ldrls	r3, [pc, #8]	; (8001fae8 <ethosu_config_select+0x10>)
+8001fae0:	5c98      	ldrbls	r0, [r3, r2]
+8001fae2:	2003      	movhi	r0, #3
+8001fae4:	4770      	bx	lr
+8001fae6:	bf00      	nop
+8001fae8:	800380fd 	.word	0x800380fd
+
+build/zephyr/zephyr.elf:     file format elf32-littlearm
+
+
+Disassembly of section rom_start:
+
+Disassembly of section text:
+
+8001faec <ethosu_dev_axi_init>:
+8001faec:	6802      	ldr	r2, [r0, #0]
+8001faee:	4b05      	ldr	r3, [pc, #20]	; (8001fb04 <ethosu_dev_axi_init+0x18>)
+8001faf0:	6413      	str	r3, [r2, #64]	; 0x40
+8001faf2:	6802      	ldr	r2, [r0, #0]
+8001faf4:	6453      	str	r3, [r2, #68]	; 0x44
+8001faf6:	6802      	ldr	r2, [r0, #0]
+8001faf8:	6493      	str	r3, [r2, #72]	; 0x48
+8001fafa:	6802      	ldr	r2, [r0, #0]
+8001fafc:	2000      	movs	r0, #0
+8001fafe:	64d3      	str	r3, [r2, #76]	; 0x4c
+8001fb00:	4770      	bx	lr
+8001fb02:	bf00      	nop
+8001fb04:	0f1f0021 	.word	0x0f1f0021
+
+build/zephyr/zephyr.elf:     file format elf32-littlearm
+
+
+Disassembly of section rom_start:
+
+Disassembly of section text:
+
+8002c5b4 <ethosu_address_remap>:
+8002c5b4:	f100 4360 	add.w	r3, r0, #3758096384	; 0xe0000000
+8002c5b8:	f5a3 4320 	sub.w	r3, r3, #40960	; 0xa000
+8002c5bc:	f5b3 1fbb 	cmp.w	r3, #1531904	; 0x176000
+8002c5c0:	d203      	bcs.n	8002c5ca <ethosu_address_remap+0x16>
+8002c5c2:	f100 5062 	add.w	r0, r0, #947912704	; 0x38800000
+8002c5c6:	2100      	movs	r1, #0
+8002c5c8:	4770      	bx	lr
+8002c5ca:	f100 43b0 	add.w	r3, r0, #1476395008	; 0x58000000
+8002c5ce:	f5b0 2f00 	cmp.w	r0, #524288	; 0x80000
+8002c5d2:	bf38      	it	cc
+8002c5d4:	4618      	movcc	r0, r3
+8002c5d6:	e7f6      	b.n	8002c5c6 <ethosu_address_remap+0x12>
+
+============================================================
+5. GENERATED AXI-RELATED CONFIGURATION
+============================================================
+build/zephyr/.config:197:CONFIG_ETHOSU_VERBOSE_LEVEL=1
+build/zephyr/include/generated/zephyr/autoconf.h:124:#define CONFIG_ETHOSU_VERBOSE_LEVEL 1
