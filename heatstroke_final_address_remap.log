@@ -1,0 +1,225 @@
+============================================================
+1. ALIF LOCAL/GLOBAL ADDRESS TRANSLATION HEADER
+============================================================
+     1	/*
+     2	 * Copyright (c) 2024 Alif Semiconductor
+     3	 *
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 */
+     6	#ifndef SOC_MEMORY_MAP_H
+     7	#define SOC_MEMORY_MAP_H
+     8	
+     9	#ifdef __cplusplus
+    10	extern "C" {
+    11	#endif
+    12	
+    13	#include <zephyr/devicetree.h>
+    14	
+    15	#if DT_NODE_EXISTS(DT_NODELABEL(itcm)) && DT_NODE_EXISTS(DT_NODELABEL(dtcm))
+    16	
+    17	#define ITCM_BASE (DT_REG_ADDR(DT_NODELABEL(itcm)))
+    18	#define ITCM_SIZE (DT_REG_SIZE(DT_NODELABEL(itcm)))
+    19	#define DTCM_BASE (DT_REG_ADDR(DT_NODELABEL(dtcm)))
+    20	#define DTCM_SIZE (DT_REG_SIZE(DT_NODELABEL(dtcm)))
+    21	#define ITCM_GLOBAL_BASE DT_PROP(DT_NODELABEL(itcm), global_base)
+    22	#define DTCM_GLOBAL_BASE DT_PROP(DT_NODELABEL(dtcm), global_base)
+    23	
+    24	static inline uint32_t local_to_global(const volatile void *local_addr)
+    25	{
+    26		uint32_t addr = (uint32_t)local_addr;
+    27	
+    28		if ((addr >= DTCM_BASE) && (addr < (DTCM_BASE + DTCM_SIZE))) {
+    29			return (addr - DTCM_BASE + DTCM_GLOBAL_BASE);
+    30		} else if ((addr < (ITCM_BASE + ITCM_SIZE))) {
+    31			return (addr - ITCM_BASE + ITCM_GLOBAL_BASE);
+    32		} else {
+    33			return (addr);
+    34		}
+    35	}
+    36	
+    37	static inline uint32_t global_to_local(const volatile void *global_addr)
+    38	{
+    39		uint32_t addr = (uint32_t)global_addr;
+    40	
+    41		if ((addr >= DTCM_GLOBAL_BASE) && (addr < (DTCM_GLOBAL_BASE + DTCM_SIZE))) {
+    42			return addr - DTCM_GLOBAL_BASE + DTCM_BASE;
+    43		} else if ((addr >= ITCM_GLOBAL_BASE) && (addr < (ITCM_GLOBAL_BASE + ITCM_SIZE))) {
+    44			return addr - ITCM_GLOBAL_BASE + ITCM_BASE;
+    45		} else {
+    46			return addr;
+    47		}
+    48	}
+    49	
+    50	#else /* No local TCM remap (e.g. Cortex-A32/APSS): addresses are already global */
+    51	
+    52	static inline uint32_t local_to_global(const volatile void *local_addr)
+    53	{
+    54		return (uint32_t)local_addr;
+    55	}
+    56	
+    57	static inline uint32_t global_to_local(const volatile void *global_addr)
+    58	{
+    59		return (uint32_t)global_addr;
+    60	}
+    61	
+    62	#endif
+    63	
+    64	#ifdef __cplusplus
+    65	}
+    66	#endif
+    67	#endif /* SOC_MEMORY_MAP_H */
+
+============================================================
+2. ETHOS-U CORE DRIVER REMAPPING SOURCE
+============================================================
+find: ‘modules/hal_ethos_u’: No such file or directory
+
+============================================================
+3. ALIF CALLBACK REMAPPING SOURCE
+============================================================
+    65	{
+    66		/* Passing NULL as p argument expects the whole cache to be flushed. */
+    67		if (!p) {
+    68			return true;
+    69		}
+    70	
+    71		return area_needs_invalidate_or_flush(p, bytes);
+    72	}
+    73	
+    74	uint64_t ethosu_address_remap(uint64_t address, int index)
+    75	{
+    76		(void)index;
+    77	
+    78		/* Double cast to avoid build warning about pointer/integer size mismatch */
+    79		return local_to_global((void *) (uint32_t) address);
+    80	}
+    81	
+    82	void ethosu_flush_dcache(uint32_t *p, size_t bytes)
+    83	{
+    84		if (p && ethosu_area_needs_flush_dcache(p, bytes)) {
+    85			if (bytes <= GLOBAL_CLEAN_INVALIDATE_THRESHOLD_SIZE) {
+    86				/*
+    87				 * For small ranges, do what we were told, but if excessively big,
+    88				 * faster to do a full cache operation
+    89				 */
+    90				SCB_CleanDCache_by_Addr(p, bytes);
+    91			} else {
+    92				SCB_CleanDCache();
+    93			}
+    94		} else {
+    95			__DSB();
+    96		}
+    97	}
+    98	
+    99	void ethosu_invalidate_dcache(uint32_t *p, size_t bytes)
+   100	{
+
+============================================================
+4. FINAL ELF SYMBOL DEFINITIONS
+============================================================
+build/zephyr/zephyr.elf:8002c5b5 T ethosu_address_remap
+build/zephyr/zephyr.elf:8001fad9 W ethosu_config_select
+
+============================================================
+5. REMAPPING SYMBOLS IN BOTH DRIVER ARCHIVES
+============================================================
+--- build/modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a
+build/modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a:ethosu_callback.c.obj:00000001 T ethosu_address_remap
+--- build/modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a
+build/modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a:ethosu_device_u55_u65.c.obj:00000001 W ethosu_address_remap
+build/modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a:ethosu_device_u55_u65.c.obj:00000001 W ethosu_config_select
+
+============================================================
+6. LINKED REMAPPING FUNCTION DISASSEMBLY
+============================================================
+
+build/zephyr/zephyr.elf:     file format elf32-littlearm
+
+
+Disassembly of section rom_start:
+
+Disassembly of section text:
+
+8002c5b4 <ethosu_address_remap>:
+8002c5b4:	f100 4360 	add.w	r3, r0, #3758096384	; 0xe0000000
+8002c5b8:	f5a3 4320 	sub.w	r3, r3, #40960	; 0xa000
+8002c5bc:	f5b3 1fbb 	cmp.w	r3, #1531904	; 0x176000
+8002c5c0:	d203      	bcs.n	8002c5ca <ethosu_address_remap+0x16>
+8002c5c2:	f100 5062 	add.w	r0, r0, #947912704	; 0x38800000
+8002c5c6:	2100      	movs	r1, #0
+8002c5c8:	4770      	bx	lr
+8002c5ca:	f100 43b0 	add.w	r3, r0, #1476395008	; 0x58000000
+8002c5ce:	f5b0 2f00 	cmp.w	r0, #524288	; 0x80000
+8002c5d2:	bf38      	it	cc
+8002c5d4:	4618      	movcc	r0, r3
+8002c5d6:	e7f6      	b.n	8002c5c6 <ethosu_address_remap+0x12>
+
+build/zephyr/zephyr.elf:     file format elf32-littlearm
+
+
+Disassembly of section rom_start:
+
+Disassembly of section text:
+
+8001fad8 <ethosu_config_select>:
+8001fad8:	3201      	adds	r2, #1
+8001fada:	2a08      	cmp	r2, #8
+8001fadc:	bf9a      	itte	ls
+8001fade:	4b02      	ldrls	r3, [pc, #8]	; (8001fae8 <ethosu_config_select+0x10>)
+8001fae0:	5c98      	ldrbls	r0, [r3, r2]
+8001fae2:	2003      	movhi	r0, #3
+8001fae4:	4770      	bx	lr
+8001fae6:	bf00      	nop
+8001fae8:	800380fd 	.word	0x800380fd
+
+============================================================
+7. BOARD MEMORY MAP DEFINITIONS
+============================================================
+modules/hal/alif/common/include/sau_tcm_ns_setup.h:14:#define DTCM_BASE DT_REG_ADDR(DT_NODELABEL(dtcm))
+modules/hal/alif/common/include/sau_tcm_ns_setup.h:15:#define DTCM_END (DTCM_BASE + DT_REG_SIZE(DT_NODELABEL(dtcm)))
+modules/hal/alif/common/include/sau_tcm_ns_setup.h:17:#define ITCM_BASE DT_REG_ADDR(DT_NODELABEL(itcm))
+modules/hal/alif/common/include/sau_tcm_ns_setup.h:18:#define ITCM_END (DTCM_BASE + DT_REG_SIZE(DT_NODELABEL(itcm)))
+modules/hal/alif/common/include/soc_memory_map.h:17:#define ITCM_BASE (DT_REG_ADDR(DT_NODELABEL(itcm)))
+modules/hal/alif/common/include/soc_memory_map.h:19:#define DTCM_BASE (DT_REG_ADDR(DT_NODELABEL(dtcm)))
+modules/hal/alif/common/include/soc_memory_map.h:28:	if ((addr >= DTCM_BASE) && (addr < (DTCM_BASE + DTCM_SIZE))) {
+modules/hal/alif/common/include/soc_memory_map.h:29:		return (addr - DTCM_BASE + DTCM_GLOBAL_BASE);
+modules/hal/alif/common/include/soc_memory_map.h:30:	} else if ((addr < (ITCM_BASE + ITCM_SIZE))) {
+modules/hal/alif/common/include/soc_memory_map.h:31:		return (addr - ITCM_BASE + ITCM_GLOBAL_BASE);
+modules/hal/alif/common/include/soc_memory_map.h:42:		return addr - DTCM_GLOBAL_BASE + DTCM_BASE;
+modules/hal/alif/common/include/soc_memory_map.h:44:		return addr - ITCM_GLOBAL_BASE + ITCM_BASE;
+
+============================================================
+8. ACTIVE BOARD CONFIGURATION
+============================================================
+CONFIG_SOC_RESET_HOOK=y
+CONFIG_CACHE_MANAGEMENT=y
+CONFIG_ARM_ETHOS_U55_128=y
+CONFIG_BOARD="alif_b1_dk"
+CONFIG_BOARD_REVISION=""
+CONFIG_BOARD_TARGET="alif_b1_dk/ab1c1f4m51820ph0/rtss_he"
+CONFIG_BOARD_ALIF_B1_DK=y
+CONFIG_BOARD_ALIF_B1_DK_AB1C1F4M51820PH0_RTSS_HE=y
+CONFIG_BOARD_QUALIFIERS="ab1c1f4m51820ph0/rtss_he"
+CONFIG_SOC="ab1c1f4m51820ph0"
+CONFIG_SOC_SERIES="b1"
+CONFIG_SOC_FAMILY="balletto"
+CONFIG_SOC_SERIES_B1=y
+CONFIG_SOC_AB1C1F4M51820PH0=y
+CONFIG_SOC_AB1C1F4M51820PH0_RTSS_HE=y
+# CONFIG_SOC_FAMILY_ENSEMBLE is not set
+CONFIG_SOC_SUPPORT_ARM_MHUV2=y
+CONFIG_SOC_FAMILY_BALLETTO=y
+# CONFIG_SOC_LOG_LEVEL_OFF is not set
+# CONFIG_SOC_LOG_LEVEL_ERR is not set
+# CONFIG_SOC_LOG_LEVEL_WRN is not set
+# CONFIG_SOC_LOG_LEVEL_INF is not set
+# CONFIG_SOC_LOG_LEVEL_DBG is not set
+CONFIG_SOC_LOG_LEVEL_DEFAULT=y
+CONFIG_SOC_LOG_LEVEL=3
+# CONFIG_SOC_PREP_HOOK is not set
+# CONFIG_SOC_EARLY_INIT_HOOK is not set
+# CONFIG_SOC_LATE_INIT_HOOK is not set
+# CONFIG_SOC_PER_CORE_INIT_HOOK is not set
+# CONFIG_BOARD_EARLY_INIT_HOOK is not set
+# CONFIG_BOARD_LATE_INIT_HOOK is not set
+# CONFIG_ETHOS_U_AXI0_ONLY is not set
