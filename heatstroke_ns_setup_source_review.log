@@ -1,0 +1,319 @@
+============================================================
+1. NON-SECURE TCM SETUP IMPLEMENTATION
+============================================================
+modules/hal/alif/common/include/sau_tcm_ns_setup.h
+modules/hal/alif/common/src/sau_tcm_ns_setup.c
+--- modules/hal/alif/common/src/sau_tcm_ns_setup.c
+     1	/*
+     2	 * Copyright (c) 2025 Alif Semiconductor
+     3	 *
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 */
+     6	
+     7	/* Includes ------------------------------------------------------------------*/
+     8	#include "stdint.h"
+     9	#include "soc.h"
+    10	#include "sau_tcm_ns_setup.h"
+    11	#include "tgu.h"
+    12	
+    13	#if !(defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U))
+    14	
+    15	typedef struct {
+    16		__IOM uint32_t CTRL;       /*!< Offset: 0x000 (R/W)  SAU Control Register */
+    17	
+    18		__IM  uint32_t TYPE;       /*!< Offset: 0x004 (R/ )  SAU Type Register */
+    19	
+    20		__IOM uint32_t RNR;        /*!< Offset: 0x008 (R/W)  SAU Region Number Register */
+    21		__IOM uint32_t RBAR;       /*!< Offset: 0x00C (R/W)  SAU Region Base Address Register */
+    22		__IOM uint32_t RLAR;       /*!< Offset: 0x010 (R/W)  SAU Region Limit Address Register */
+    23		__IOM uint32_t SFSR;       /*!< Offset: 0x014 (R/W)  Secure Fault Status Register */
+    24		__IOM uint32_t SFAR;       /*!< Offset: 0x018 (R/W)  Secure Fault Address Register */
+    25	} SAU_Type;
+    26	
+    27	#define SAU_CTRL_ENABLE_Pos   0U                                   /*!< SAU CTRL: ENABLE Position */
+    28	#define SAU_CTRL_ENABLE_Msk   (1UL /*<< SAU_CTRL_ENABLE_Pos*/)     /*!< SAU CTRL: ENABLE Mask */
+    29	
+    30	/* SAU Region Base Address Register Definitions */
+    31	#define SAU_RBAR_BADDR_Pos    5U                                   /*!< SAU RBAR: BADDR Position */
+    32	#define SAU_RBAR_BADDR_Msk    (0x7FFFFFFUL << SAU_RBAR_BADDR_Pos)  /*!< SAU RBAR: BADDR Mask */
+    33	
+    34	/* SAU Region Limit Address Register Definitions */
+    35	#define SAU_RLAR_LADDR_Pos    5U                                   /*!< SAU RLAR: LADDR Position */
+    36	#define SAU_RLAR_LADDR_Msk    (0x7FFFFFFUL << SAU_RLAR_LADDR_Pos)  /*!< SAU RLAR: LADDR Mask */
+    37	
+    38	#define SAU_RLAR_ENABLE_Pos   0U                                   /*!< SAU RLAR: ENABLE Position */
+    39	#define SAU_RLAR_ENABLE_Msk   (1UL /*<< SAU_RLAR_ENABLE_Pos*/)     /*!< SAU RLAR: ENABLE Mask */
+    40	
+    41	#define SAU_BASE              (SCS_BASE +  0x0DD0UL)               /*!< Security Attribution Unit */
+    42	#define SAU                   ((SAU_Type       *)     SAU_BASE)    /*!< Security Attribution Unit */
+    43	
+    44	__STATIC_INLINE void SAU_TCM_NS_Setup(void)
+    45	{
+    46		SAU->RNR = 0;
+    47		SAU->RBAR = (uint32_t)NS_REGION_0_BASE & SAU_RBAR_BADDR_Msk;
+    48		SAU->RLAR = (((uint32_t)NS_REGION_0_END - 1) & SAU_RLAR_LADDR_Msk) | SAU_RLAR_ENABLE_Msk;
+    49	
+    50		SAU->CTRL = ((1U << SAU_CTRL_ENABLE_Pos) & SAU_CTRL_ENABLE_Msk);
+    51	}
+    52	
+    53	void sau_tcm_ns_setup(void)
+    54	{
+    55		/* SAU and TGU Setup */
+    56		SAU_TCM_NS_Setup();
+    57		TGU_Setup();
+    58	}
+    59	#endif
+--- modules/hal/alif/common/include/sau_tcm_ns_setup.h
+     1	/*
+     2	 * Copyright (c) 2025 Alif Semiconductor
+     3	 *
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 */
+     6	
+     7	#ifndef SAU_TCM_NS_SETUP_H
+     8	#define SAU_TCM_NS_SETUP_H
+     9	
+    10	#ifdef __cplusplus
+    11	extern "C" {
+    12	#endif
+    13	
+    14	#define DTCM_BASE DT_REG_ADDR(DT_NODELABEL(dtcm))
+    15	#define DTCM_END (DTCM_BASE + DT_REG_SIZE(DT_NODELABEL(dtcm)))
+    16	
+    17	#define ITCM_BASE DT_REG_ADDR(DT_NODELABEL(itcm))
+    18	#define ITCM_END (DTCM_BASE + DT_REG_SIZE(DT_NODELABEL(itcm)))
+    19	
+    20	/* NS REGIONs, should be TGU Block size aligned */
+    21	#if DT_NODE_EXISTS(DT_NODELABEL(ns))
+    22	#define NS_REGION_0_BASE DT_REG_ADDR(DT_NODELABEL(ns))
+    23	#define NS_REGION_0_SIZE DT_REG_SIZE(DT_NODELABEL(ns))
+    24	#define NS_REGION_0_END  (NS_REGION_0_BASE + NS_REGION_0_SIZE)
+    25	#else
+    26	#error "Non-secure DTS node not found."
+    27	#endif /* DT_NODE_EXISTS(DT_NODELABEL(ns)) */
+    28	
+    29	
+    30	/*
+    31	 * sau_tcm_ns_setup ()
+    32	 * Set up the TCM Nonsecure partitioning in SAU and TGU
+    33	 */
+    34	void sau_tcm_ns_setup(void);
+    35	
+    36	#ifdef __cplusplus
+    37	}
+    38	#endif
+    39	
+    40	#endif /* SAU_TCM_NS_SETUP_H */
+
+============================================================
+2. NS REGION MACRO DEFINITIONS
+============================================================
+modules/hal/alif/common/include/sau_tcm_ns_setup.h:22:#define NS_REGION_0_BASE DT_REG_ADDR(DT_NODELABEL(ns))
+modules/hal/alif/common/include/sau_tcm_ns_setup.h:24:#define NS_REGION_0_END  (NS_REGION_0_BASE + NS_REGION_0_SIZE)
+modules/hal/alif/common/src/sau_tcm_ns_setup.c:47:	SAU->RBAR = (uint32_t)NS_REGION_0_BASE & SAU_RBAR_BADDR_Msk;
+modules/hal/alif/common/src/sau_tcm_ns_setup.c:48:	SAU->RLAR = (((uint32_t)NS_REGION_0_END - 1) & SAU_RLAR_LADDR_Msk) | SAU_RLAR_ENABLE_Msk;
+modules/hal/alif/common/src/tgu.c:24:	{(uint32_t)NS_REGION_0_BASE, (uint32_t)NS_REGION_0_END - 1, DTCM},
+modules/hal/alif/common/src/tgu.c:28: * TGU setup function. Marks single memory region starting at NS_REGION_1_BASE
+modules/hal/alif/common/src/tgu.c:29: * and ending at NS_REGION_1_END as Non Secure in the TGU look up tables. The
+
+============================================================
+3. APPLICATION DEVICE TREE OVERLAYS
+============================================================
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-13-/* RTC is needed for Zephyr kernel to be able track timing after
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-14- * sleep periods.
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-15- */
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-16-&rtc0 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-17-	prescaler = <1>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay:18:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-19-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-20-
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-21-/ {
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-22-	chosen {
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-23-		zephyr,cortex-m-idle-timer = &rtc0;
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-25-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-26-
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-27-&stop_s2ram {
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-28-	min-residency-us = <1000000>; /* 1s */
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-29-	exit-latency-us = <3000>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay:30:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-31-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-32-
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-33-
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-34-/* Disable Zephyr handler for these modules. These
+/home/user/sdk-alif/beeinventor/test_heatstroke/sleep.overlay-35- * will be controlled from application directly
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-15-		i2s-output = &i2s3;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-16-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-17-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-18-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-19-&lppdm {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay:20:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-21-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-22-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-23-&i2s4 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay:24:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-25-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-26-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-27-&i2s3 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay:28:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_dk_ae822fa0e5597xx0_rtss_he.overlay-29-};
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-15-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-16-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-17-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-18-/ {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-19-	ext_flash_xip: memory@c0000000 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay:20:		compatible = "zephyr,memory-region";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-21-		reg = <0xc0000000 DT_SIZE_M(64)>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay:22:		zephyr,memory-region = "OSPI1";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-23-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-24-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-25-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-26-&ospi1 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-27-	pinctrl-0 = <&pinctrl_flash>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay:28:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-29-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-30-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-31-&ospi_flash {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay:32:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-33-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-34-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-35-&pinctrl_lpgpio {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-36-	group0 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-37-		pinmux = <PIN_P15_4__LPGPIO>;
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-42-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-43-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-44-&lpgpio {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-45-	pinctrl-0 = < &pinctrl_lpgpio >;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-46-	pinctrl-names = "default";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay:47:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-48-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-49-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-50-/ {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay:51:	wakeup_pins: wakeup_pins {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-52-		compatible = "lpgpio-wakeup-pin";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-53-		lpgpios = <&lpgpio 4 GPIO_ACTIVE_LOW>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-54-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-55-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-56-
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-80-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-81-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-82-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-83-&i2c1 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-84-	clock-frequency = <I2C_BITRATE_STANDARD>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay:85:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-86-	wm8904: wm8904@1a {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-87-		compatible = "cirrus,wm8904";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-88-		reg = <0x1a>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay:89:		status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-90-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_common.overlay-91-};
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-16-		audio-codec = &wm8904;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-17-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-18-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-19-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-20-&lppdm {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:21:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-22-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-23-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-24-&i2s0 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:25:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-26-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-27-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-28-/ {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-29-	ext_flash_xip: memory@b0000000 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:30:		compatible = "zephyr,memory-region";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-31-		reg = <0xb0000000 DT_SIZE_M(64)>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:32:		zephyr,memory-region = "OSPI0";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-33-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-34-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-35-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-36-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-37-&ospi0 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-38-	bus-speed = <80000000>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:39:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-40-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-41-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-42-&ospi_flash {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:43:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-44-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-45-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-46-&pinctrl_lpgpio {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-47-	group0 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-48-		pinmux = <PIN_P15_0__LPGPIO>,
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-54-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-55-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-56-&lpgpio {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-57-	pinctrl-0 = < &pinctrl_lpgpio >;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-58-	pinctrl-names = "default";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:59:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-60-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-61-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-62-/ {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:63:	wakeup_pins: wakeup_pins {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-64-		compatible = "lpgpio-wakeup-pin";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-65-		lpgpios = <&lpgpio 0 GPIO_ACTIVE_LOW>,
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-66-			  <&lpgpio 1 GPIO_ACTIVE_LOW>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-67-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-68-};
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-84-			 <PIN_P1_7__I2S0_WS_A>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-85-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-86-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-87-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-88-&i2c1 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:89:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-90-	wm8904: wm8904@1a {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-91-		compatible = "cirrus,wm8904";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-92-		reg = <0x1a>;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay:93:		status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-94-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-95-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-96-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-97-&uart_ahi {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay-98-	status = "disabled";
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-14-		i2s-output = &i2s2;
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-15-	};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-16-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-17-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-18-&pdm {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay:19:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-20-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-21-
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-22-&i2s2 {
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay:23:	status = "okay";
+/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_e8_ak_ae822fa0e5597xx0_rtss_he.overlay-24-};
+
+============================================================
+4. ACTIVE BOARD NS NODE AND GENERATED CONFIGURATION
+============================================================
+109-				};
+110-			};
+111-		};
+112:		ns: ns@20040000 {
+113-			compatible = "zephyr,memory-region";
+114-			reg = < 0x20040000 0x80000 >;
+115-			zephyr,memory-region = "NON_SECURE0";
+116-			status = "disabled";
+117-		};
+118-		pinctrl: pin-controller@1a603000 {
+119-			compatible = "alif,pinctrl";
+120-			reg = < 0x1a603000 0x1000 >, < 0x42007000 0x1000 >;
+
+============================================================
+5. CURRENT BUILD OVERLAY SETTINGS
+============================================================
+334:// board's .dts file. Multiple files may be listed, e.g. DTC_OVERLAY_FILE="dts1.overlay
+336:DTC_OVERLAY_FILE:STRING=/home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay
+353:EXTRA_DTC_OVERLAY_FILE:UNINITIALIZED=sleep.overlay
