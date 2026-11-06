@@ -1,0 +1,801 @@
+============================================================
+1. COMPLETE SAU/TCM SETUP SOURCE
+============================================================
+     1	/*
+     2	 * Copyright (c) 2025 Alif Semiconductor
+     3	 *
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 */
+     6	
+     7	/* Includes ------------------------------------------------------------------*/
+     8	#include "stdint.h"
+     9	#include "soc.h"
+    10	#include "sau_tcm_ns_setup.h"
+    11	#include "tgu.h"
+    12	
+    13	#if !(defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U))
+    14	
+    15	typedef struct {
+    16		__IOM uint32_t CTRL;       /*!< Offset: 0x000 (R/W)  SAU Control Register */
+    17	
+    18		__IM  uint32_t TYPE;       /*!< Offset: 0x004 (R/ )  SAU Type Register */
+    19	
+    20		__IOM uint32_t RNR;        /*!< Offset: 0x008 (R/W)  SAU Region Number Register */
+    21		__IOM uint32_t RBAR;       /*!< Offset: 0x00C (R/W)  SAU Region Base Address Register */
+    22		__IOM uint32_t RLAR;       /*!< Offset: 0x010 (R/W)  SAU Region Limit Address Register */
+    23		__IOM uint32_t SFSR;       /*!< Offset: 0x014 (R/W)  Secure Fault Status Register */
+    24		__IOM uint32_t SFAR;       /*!< Offset: 0x018 (R/W)  Secure Fault Address Register */
+    25	} SAU_Type;
+    26	
+    27	#define SAU_CTRL_ENABLE_Pos   0U                                   /*!< SAU CTRL: ENABLE Position */
+    28	#define SAU_CTRL_ENABLE_Msk   (1UL /*<< SAU_CTRL_ENABLE_Pos*/)     /*!< SAU CTRL: ENABLE Mask */
+    29	
+    30	/* SAU Region Base Address Register Definitions */
+    31	#define SAU_RBAR_BADDR_Pos    5U                                   /*!< SAU RBAR: BADDR Position */
+    32	#define SAU_RBAR_BADDR_Msk    (0x7FFFFFFUL << SAU_RBAR_BADDR_Pos)  /*!< SAU RBAR: BADDR Mask */
+    33	
+    34	/* SAU Region Limit Address Register Definitions */
+    35	#define SAU_RLAR_LADDR_Pos    5U                                   /*!< SAU RLAR: LADDR Position */
+    36	#define SAU_RLAR_LADDR_Msk    (0x7FFFFFFUL << SAU_RLAR_LADDR_Pos)  /*!< SAU RLAR: LADDR Mask */
+    37	
+    38	#define SAU_RLAR_ENABLE_Pos   0U                                   /*!< SAU RLAR: ENABLE Position */
+    39	#define SAU_RLAR_ENABLE_Msk   (1UL /*<< SAU_RLAR_ENABLE_Pos*/)     /*!< SAU RLAR: ENABLE Mask */
+    40	
+    41	#define SAU_BASE              (SCS_BASE +  0x0DD0UL)               /*!< Security Attribution Unit */
+    42	#define SAU                   ((SAU_Type       *)     SAU_BASE)    /*!< Security Attribution Unit */
+    43	
+    44	__STATIC_INLINE void SAU_TCM_NS_Setup(void)
+    45	{
+    46		SAU->RNR = 0;
+    47		SAU->RBAR = (uint32_t)NS_REGION_0_BASE & SAU_RBAR_BADDR_Msk;
+    48		SAU->RLAR = (((uint32_t)NS_REGION_0_END - 1) & SAU_RLAR_LADDR_Msk) | SAU_RLAR_ENABLE_Msk;
+    49	
+    50		SAU->CTRL = ((1U << SAU_CTRL_ENABLE_Pos) & SAU_CTRL_ENABLE_Msk);
+    51	}
+    52	
+    53	void sau_tcm_ns_setup(void)
+    54	{
+    55		/* SAU and TGU Setup */
+    56		SAU_TCM_NS_Setup();
+    57		TGU_Setup();
+    58	}
+    59	#endif
+
+============================================================
+2. COMPLETE TGU SOURCE
+============================================================
+     1	/*
+     2	 * Copyright (c) 2025 Alif Semiconductor
+     3	 *
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 */
+     6	
+     7	#include "stdint.h"
+     8	#include "soc.h"
+     9	#include "tgu.h"
+    10	#include "sau_tcm_ns_setup.h"
+    11	
+    12	/* DTCM_BASE and ITCM_BASE defines denote memory regions that might be
+    13	 * offset in the actual TCM - we need to refer to the actual physical base.
+    14	 */
+    15	#define ITCM_PHYSICAL_BASE 0x00000000
+    16	#define DTCM_PHYSICAL_BASE 0x20000000
+    17	
+    18	/*
+    19	 * Array of NS memory regions. Add new regions to this list.
+    20	 * The start and end address of the non-secure region in updated
+    21	 * from the linker scripts.
+    22	 */
+    23	static const struct mem_region ns_regions[] = {
+    24		{(uint32_t)NS_REGION_0_BASE, (uint32_t)NS_REGION_0_END - 1, DTCM},
+    25	};
+    26	
+    27	/*----------------------------------------------------------------------------
+    28	 * TGU setup function. Marks single memory region starting at NS_REGION_1_BASE
+    29	 * and ending at NS_REGION_1_END as Non Secure in the TGU look up tables. The
+    30	 * region should be in the DTCM area. Can be extended to include the ITCM region
+    31	 * and multiple discontigous regions if needed.
+    32	 *----------------------------------------------------------------------------
+    33	 */
+    34	void TGU_Setup(void)
+    35	{
+    36		uint32_t start_block, end_block, start_lut, end_lut;
+    37		uint32_t start_offset, end_offset, lut_val_l, lut_val_h;
+    38		uint32_t base, itcm_blksize, dtcm_blksize, blksize;
+    39		uint32_t i;
+    40	
+    41		/* Find out the TGU block size for ITCM */
+    42		blksize = *((volatile unsigned int *) ITGU_CFG) & ITGU_CFG_BLKSZ;
+    43		/* ITCM blksize is 2^(blksize + 5)*/
+    44		itcm_blksize = 1 << (blksize + 5);
+    45	
+    46		/* Find out the TGU block size for DTCM */
+    47		blksize = *((volatile unsigned int *) DTGU_CFG) & DTGU_CFG_BLKSZ;
+    48		/* DTCM block size is 2^(blksize + 5) */
+    49		dtcm_blksize = 1 << (blksize + 5);
+    50	
+    51		for (i = 0; i < ARRAY_SIZE(ns_regions); i++) {
+    52			if (ns_regions[i].type == DTCM) {
+    53				start_block =  (ns_regions[i].start - DTCM_PHYSICAL_BASE) / dtcm_blksize;
+    54				end_block = (ns_regions[i].end - DTCM_PHYSICAL_BASE) / dtcm_blksize;
+    55				base = DTGU_BASE;
+    56			} else {
+    57				start_block =  (ns_regions[i].start - ITCM_PHYSICAL_BASE) / itcm_blksize;
+    58				end_block = (ns_regions[i].end - ITCM_PHYSICAL_BASE) / itcm_blksize;
+    59				base = ITGU_BASE;
+    60			}
+    61	
+    62			start_lut = start_block / 32;
+    63			end_lut = end_block / 32;
+    64	
+    65			start_offset = start_block % 32;
+    66			end_offset = end_block % 32;
+    67	
+    68			if (start_lut == end_lut) {
+    69				/* same LUT register */
+    70				lut_val_l = SET_BIT_RANGE(start_offset, end_offset);
+    71				*((volatile uint32_t *) TGU_LUT(base, start_lut)) |= lut_val_l;
+    72			} else {
+    73				/* the range spans multiple LUT registers */
+    74				lut_val_l = SET_BIT_RANGE(start_offset, 31);
+    75				lut_val_h = SET_BIT_RANGE(0, end_offset);
+    76	
+    77				/* Write into the first LUT register */
+    78				*((volatile uint32_t *) TGU_LUT(base, start_lut)) = lut_val_l;
+    79	
+    80				/* Now write to all the intermediate LUT registers */
+    81				while (start_lut != (end_lut - 1)) {
+    82					start_lut++;
+    83					*((volatile uint32_t *) TGU_LUT(base, start_lut)) = 0xFFFFFFFFU;
+    84				}
+    85	
+    86				/* Write into the last LUT register*/
+    87				*((volatile uint32_t *) TGU_LUT(base, end_lut)) |= lut_val_h;
+    88			}
+    89		}
+    90	}
+
+============================================================
+3. ALL ns_regions DEFINITIONS AND REFERENCES
+============================================================
+modules/hal/alif/common/include/tgu.h-32-	uint32_t start;
+modules/hal/alif/common/include/tgu.h-33-	uint32_t end;
+modules/hal/alif/common/include/tgu.h-34-	enum tcm_type type;
+modules/hal/alif/common/include/tgu.h-35-};
+modules/hal/alif/common/include/tgu.h-36-
+modules/hal/alif/common/include/tgu.h-37-/*
+modules/hal/alif/common/include/tgu.h-38- * TGU_Setup()
+modules/hal/alif/common/include/tgu.h-39- * Set up the TGU look up tables as per the information provided by
+modules/hal/alif/common/include/tgu.h:40: * the platform in ns_regions array.
+modules/hal/alif/common/include/tgu.h-41- */
+modules/hal/alif/common/include/tgu.h-42-void TGU_Setup(void);
+modules/hal/alif/common/include/tgu.h-43-#endif /* TGU_H */
+--
+modules/hal/alif/common/src/tgu.c-15-#define ITCM_PHYSICAL_BASE 0x00000000
+modules/hal/alif/common/src/tgu.c-16-#define DTCM_PHYSICAL_BASE 0x20000000
+modules/hal/alif/common/src/tgu.c-17-
+modules/hal/alif/common/src/tgu.c-18-/*
+modules/hal/alif/common/src/tgu.c-19- * Array of NS memory regions. Add new regions to this list.
+modules/hal/alif/common/src/tgu.c-20- * The start and end address of the non-secure region in updated
+modules/hal/alif/common/src/tgu.c-21- * from the linker scripts.
+modules/hal/alif/common/src/tgu.c-22- */
+modules/hal/alif/common/src/tgu.c:23:static const struct mem_region ns_regions[] = {
+modules/hal/alif/common/src/tgu.c-24-	{(uint32_t)NS_REGION_0_BASE, (uint32_t)NS_REGION_0_END - 1, DTCM},
+modules/hal/alif/common/src/tgu.c-25-};
+modules/hal/alif/common/src/tgu.c-26-
+modules/hal/alif/common/src/tgu.c-27-/*----------------------------------------------------------------------------
+modules/hal/alif/common/src/tgu.c-28- * TGU setup function. Marks single memory region starting at NS_REGION_1_BASE
+modules/hal/alif/common/src/tgu.c-29- * and ending at NS_REGION_1_END as Non Secure in the TGU look up tables. The
+modules/hal/alif/common/src/tgu.c-30- * region should be in the DTCM area. Can be extended to include the ITCM region
+modules/hal/alif/common/src/tgu.c-31- * and multiple discontigous regions if needed.
+--
+modules/hal/alif/common/src/tgu.c-43-	/* ITCM blksize is 2^(blksize + 5)*/
+modules/hal/alif/common/src/tgu.c-44-	itcm_blksize = 1 << (blksize + 5);
+modules/hal/alif/common/src/tgu.c-45-
+modules/hal/alif/common/src/tgu.c-46-	/* Find out the TGU block size for DTCM */
+modules/hal/alif/common/src/tgu.c-47-	blksize = *((volatile unsigned int *) DTGU_CFG) & DTGU_CFG_BLKSZ;
+modules/hal/alif/common/src/tgu.c-48-	/* DTCM block size is 2^(blksize + 5) */
+modules/hal/alif/common/src/tgu.c-49-	dtcm_blksize = 1 << (blksize + 5);
+modules/hal/alif/common/src/tgu.c-50-
+modules/hal/alif/common/src/tgu.c:51:	for (i = 0; i < ARRAY_SIZE(ns_regions); i++) {
+modules/hal/alif/common/src/tgu.c:52:		if (ns_regions[i].type == DTCM) {
+modules/hal/alif/common/src/tgu.c:53:			start_block =  (ns_regions[i].start - DTCM_PHYSICAL_BASE) / dtcm_blksize;
+modules/hal/alif/common/src/tgu.c:54:			end_block = (ns_regions[i].end - DTCM_PHYSICAL_BASE) / dtcm_blksize;
+modules/hal/alif/common/src/tgu.c-55-			base = DTGU_BASE;
+modules/hal/alif/common/src/tgu.c-56-		} else {
+modules/hal/alif/common/src/tgu.c:57:			start_block =  (ns_regions[i].start - ITCM_PHYSICAL_BASE) / itcm_blksize;
+modules/hal/alif/common/src/tgu.c:58:			end_block = (ns_regions[i].end - ITCM_PHYSICAL_BASE) / itcm_blksize;
+modules/hal/alif/common/src/tgu.c-59-			base = ITGU_BASE;
+modules/hal/alif/common/src/tgu.c-60-		}
+modules/hal/alif/common/src/tgu.c-61-
+modules/hal/alif/common/src/tgu.c-62-		start_lut = start_block / 32;
+modules/hal/alif/common/src/tgu.c-63-		end_lut = end_block / 32;
+modules/hal/alif/common/src/tgu.c-64-
+modules/hal/alif/common/src/tgu.c-65-		start_offset = start_block % 32;
+modules/hal/alif/common/src/tgu.c-66-		end_offset = end_block % 32;
+
+============================================================
+4. STARTUP CALL PATH
+============================================================
+modules/hal/alif/common/include/tgu.h-30-
+modules/hal/alif/common/include/tgu.h-31-struct mem_region {
+modules/hal/alif/common/include/tgu.h-32-	uint32_t start;
+modules/hal/alif/common/include/tgu.h-33-	uint32_t end;
+modules/hal/alif/common/include/tgu.h-34-	enum tcm_type type;
+modules/hal/alif/common/include/tgu.h-35-};
+modules/hal/alif/common/include/tgu.h-36-
+modules/hal/alif/common/include/tgu.h-37-/*
+modules/hal/alif/common/include/tgu.h:38: * TGU_Setup()
+modules/hal/alif/common/include/tgu.h-39- * Set up the TGU look up tables as per the information provided by
+modules/hal/alif/common/include/tgu.h-40- * the platform in ns_regions array.
+modules/hal/alif/common/include/tgu.h-41- */
+modules/hal/alif/common/include/tgu.h:42:void TGU_Setup(void);
+modules/hal/alif/common/include/tgu.h-43-#endif /* TGU_H */
+--
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-23-#define NS_REGION_0_SIZE DT_REG_SIZE(DT_NODELABEL(ns))
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-24-#define NS_REGION_0_END  (NS_REGION_0_BASE + NS_REGION_0_SIZE)
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-25-#else
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-26-#error "Non-secure DTS node not found."
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-27-#endif /* DT_NODE_EXISTS(DT_NODELABEL(ns)) */
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-28-
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-29-
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-30-/*
+modules/hal/alif/common/include/sau_tcm_ns_setup.h:31: * sau_tcm_ns_setup ()
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-32- * Set up the TCM Nonsecure partitioning in SAU and TGU
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-33- */
+modules/hal/alif/common/include/sau_tcm_ns_setup.h:34:void sau_tcm_ns_setup(void);
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-35-
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-36-#ifdef __cplusplus
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-37-}
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-38-#endif
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-39-
+modules/hal/alif/common/include/sau_tcm_ns_setup.h-40-#endif /* SAU_TCM_NS_SETUP_H */
+--
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-2- * Copyright (c) 2025 Alif Semiconductor
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-3- *
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-4- * SPDX-License-Identifier: Apache-2.0
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-5- */
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-6-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-7-/* Includes ------------------------------------------------------------------*/
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-8-#include "stdint.h"
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-9-#include "soc.h"
+modules/hal/alif/common/src/sau_tcm_ns_setup.c:10:#include "sau_tcm_ns_setup.h"
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-11-#include "tgu.h"
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-12-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-13-#if !(defined(__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U))
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-14-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-15-typedef struct {
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-16-	__IOM uint32_t CTRL;       /*!< Offset: 0x000 (R/W)  SAU Control Register */
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-17-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-18-	__IM  uint32_t TYPE;       /*!< Offset: 0x004 (R/ )  SAU Type Register */
+--
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-36-#define SAU_RLAR_LADDR_Msk    (0x7FFFFFFUL << SAU_RLAR_LADDR_Pos)  /*!< SAU RLAR: LADDR Mask */
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-37-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-38-#define SAU_RLAR_ENABLE_Pos   0U                                   /*!< SAU RLAR: ENABLE Position */
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-39-#define SAU_RLAR_ENABLE_Msk   (1UL /*<< SAU_RLAR_ENABLE_Pos*/)     /*!< SAU RLAR: ENABLE Mask */
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-40-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-41-#define SAU_BASE              (SCS_BASE +  0x0DD0UL)               /*!< Security Attribution Unit */
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-42-#define SAU                   ((SAU_Type       *)     SAU_BASE)    /*!< Security Attribution Unit */
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-43-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c:44:__STATIC_INLINE void SAU_TCM_NS_Setup(void)
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-45-{
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-46-	SAU->RNR = 0;
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-47-	SAU->RBAR = (uint32_t)NS_REGION_0_BASE & SAU_RBAR_BADDR_Msk;
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-48-	SAU->RLAR = (((uint32_t)NS_REGION_0_END - 1) & SAU_RLAR_LADDR_Msk) | SAU_RLAR_ENABLE_Msk;
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-49-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-50-	SAU->CTRL = ((1U << SAU_CTRL_ENABLE_Pos) & SAU_CTRL_ENABLE_Msk);
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-51-}
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-52-
+modules/hal/alif/common/src/sau_tcm_ns_setup.c:53:void sau_tcm_ns_setup(void)
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-54-{
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-55-	/* SAU and TGU Setup */
+modules/hal/alif/common/src/sau_tcm_ns_setup.c:56:	SAU_TCM_NS_Setup();
+modules/hal/alif/common/src/sau_tcm_ns_setup.c:57:	TGU_Setup();
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-58-}
+modules/hal/alif/common/src/sau_tcm_ns_setup.c-59-#endif
+--
+modules/hal/alif/common/src/system.c-1-/*
+modules/hal/alif/common/src/system.c-2- * Copyright (c) 2025 Alif Semiconductor
+modules/hal/alif/common/src/system.c-3- *
+modules/hal/alif/common/src/system.c-4- * SPDX-License-Identifier: Apache-2.0
+modules/hal/alif/common/src/system.c-5- */
+modules/hal/alif/common/src/system.c-6-
+modules/hal/alif/common/src/system.c-7-#include "soc.h"
+modules/hal/alif/common/src/system.c:8:#include "sau_tcm_ns_setup.h"
+modules/hal/alif/common/src/system.c-9-#include "tgu.h"
+modules/hal/alif/common/src/system.c-10-
+modules/hal/alif/common/src/system.c-11-/*----------------------------------------------------------------------------
+modules/hal/alif/common/src/system.c-12- * WICCONTROL register
+modules/hal/alif/common/src/system.c-13- *----------------------------------------------------------------------------
+modules/hal/alif/common/src/system.c-14- * WIC bit positions in WICCONTROL
+modules/hal/alif/common/src/system.c-15- *
+modules/hal/alif/common/src/system.c-16- */
+--
+modules/hal/alif/common/src/system.c-36-	 */
+modules/hal/alif/common/src/system.c-37-}
+modules/hal/alif/common/src/system.c-38-
+modules/hal/alif/common/src/system.c-39-
+modules/hal/alif/common/src/system.c-40-/*----------------------------------------------------------------------------
+modules/hal/alif/common/src/system.c-41- *System initialization function
+modules/hal/alif/common/src/system.c-42- *----------------------------------------------------------------------------
+modules/hal/alif/common/src/system.c-43- */
+modules/hal/alif/common/src/system.c:44:void SystemInit(void)
+modules/hal/alif/common/src/system.c-45-{
+modules/hal/alif/common/src/system.c-46-	__set_FAULTMASK(0);
+modules/hal/alif/common/src/system.c-47-
+modules/hal/alif/common/src/system.c-48-	/* Disable the MPU */
+modules/hal/alif/common/src/system.c-49-	ARM_MPU_Disable();
+modules/hal/alif/common/src/system.c-50-
+modules/hal/alif/common/src/system.c-51-	/* Enable UsageFault, BusFault, MemFault and SecurityFault exceptions */
+modules/hal/alif/common/src/system.c-52-	/* Otherwise all you see is HardFault, even in the debugger */
+--
+modules/hal/alif/common/src/system.c-77-
+modules/hal/alif/common/src/system.c-78-	/* Enable limited static branch prediction using low overhead loops */
+modules/hal/alif/common/src/system.c-79-	ICB->ACTLR &= ~ICB_ACTLR_DISLOBR_Msk;
+modules/hal/alif/common/src/system.c-80-
+modules/hal/alif/common/src/system.c-81-	__DSB();
+modules/hal/alif/common/src/system.c-82-	__ISB();
+modules/hal/alif/common/src/system.c-83-
+modules/hal/alif/common/src/system.c-84-#if DT_NODE_HAS_STATUS(DT_NODELABEL(ns), okay)
+modules/hal/alif/common/src/system.c:85:	sau_tcm_ns_setup();
+modules/hal/alif/common/src/system.c-86-#endif
+modules/hal/alif/common/src/system.c-87-
+modules/hal/alif/common/src/system.c-88-}
+--
+modules/hal/alif/common/src/tgu.c-2- * Copyright (c) 2025 Alif Semiconductor
+modules/hal/alif/common/src/tgu.c-3- *
+modules/hal/alif/common/src/tgu.c-4- * SPDX-License-Identifier: Apache-2.0
+modules/hal/alif/common/src/tgu.c-5- */
+modules/hal/alif/common/src/tgu.c-6-
+modules/hal/alif/common/src/tgu.c-7-#include "stdint.h"
+modules/hal/alif/common/src/tgu.c-8-#include "soc.h"
+modules/hal/alif/common/src/tgu.c-9-#include "tgu.h"
+modules/hal/alif/common/src/tgu.c:10:#include "sau_tcm_ns_setup.h"
+modules/hal/alif/common/src/tgu.c-11-
+modules/hal/alif/common/src/tgu.c-12-/* DTCM_BASE and ITCM_BASE defines denote memory regions that might be
+modules/hal/alif/common/src/tgu.c-13- * offset in the actual TCM - we need to refer to the actual physical base.
+modules/hal/alif/common/src/tgu.c-14- */
+modules/hal/alif/common/src/tgu.c-15-#define ITCM_PHYSICAL_BASE 0x00000000
+modules/hal/alif/common/src/tgu.c-16-#define DTCM_PHYSICAL_BASE 0x20000000
+modules/hal/alif/common/src/tgu.c-17-
+modules/hal/alif/common/src/tgu.c-18-/*
+--
+modules/hal/alif/common/src/tgu.c-26-
+modules/hal/alif/common/src/tgu.c-27-/*----------------------------------------------------------------------------
+modules/hal/alif/common/src/tgu.c-28- * TGU setup function. Marks single memory region starting at NS_REGION_1_BASE
+modules/hal/alif/common/src/tgu.c-29- * and ending at NS_REGION_1_END as Non Secure in the TGU look up tables. The
+modules/hal/alif/common/src/tgu.c-30- * region should be in the DTCM area. Can be extended to include the ITCM region
+modules/hal/alif/common/src/tgu.c-31- * and multiple discontigous regions if needed.
+modules/hal/alif/common/src/tgu.c-32- *----------------------------------------------------------------------------
+modules/hal/alif/common/src/tgu.c-33- */
+modules/hal/alif/common/src/tgu.c:34:void TGU_Setup(void)
+modules/hal/alif/common/src/tgu.c-35-{
+modules/hal/alif/common/src/tgu.c-36-	uint32_t start_block, end_block, start_lut, end_lut;
+modules/hal/alif/common/src/tgu.c-37-	uint32_t start_offset, end_offset, lut_val_l, lut_val_h;
+modules/hal/alif/common/src/tgu.c-38-	uint32_t base, itcm_blksize, dtcm_blksize, blksize;
+modules/hal/alif/common/src/tgu.c-39-	uint32_t i;
+modules/hal/alif/common/src/tgu.c-40-
+modules/hal/alif/common/src/tgu.c-41-	/* Find out the TGU block size for ITCM */
+modules/hal/alif/common/src/tgu.c-42-	blksize = *((volatile unsigned int *) ITGU_CFG) & ITGU_CFG_BLKSZ;
+
+============================================================
+5. ACTIVE DEVICE TREE: ITCM AND NON-SECURE MEMORY
+============================================================
+build/zephyr/zephyr.dts-104-					};
+build/zephyr/zephyr.dts-105-					storage_partition: partition@1C5800 {
+build/zephyr/zephyr.dts-106-						label = "storage";
+build/zephyr/zephyr.dts-107-						reg = < 0x1c5800 0x2800 >;
+build/zephyr/zephyr.dts-108-					};
+build/zephyr/zephyr.dts-109-				};
+build/zephyr/zephyr.dts-110-			};
+build/zephyr/zephyr.dts-111-		};
+build/zephyr/zephyr.dts:112:		ns: ns@20040000 {
+build/zephyr/zephyr.dts-113-			compatible = "zephyr,memory-region";
+build/zephyr/zephyr.dts-114-			reg = < 0x20040000 0x80000 >;
+build/zephyr/zephyr.dts:115:			zephyr,memory-region = "NON_SECURE0";
+build/zephyr/zephyr.dts:116:			status = "disabled";
+build/zephyr/zephyr.dts-117-		};
+build/zephyr/zephyr.dts-118-		pinctrl: pin-controller@1a603000 {
+build/zephyr/zephyr.dts-119-			compatible = "alif,pinctrl";
+build/zephyr/zephyr.dts-120-			reg = < 0x1a603000 0x1000 >, < 0x42007000 0x1000 >;
+build/zephyr/zephyr.dts-121-			reg-names = "pinctrl", "lpgpio_pinctrl";
+build/zephyr/zephyr.dts-122-			pinctrl_uart4: pinctrl_uart4 {
+build/zephyr/zephyr.dts-123-				phandle = < 0x11 >;
+build/zephyr/zephyr.dts-124-				group0 {
+--
+build/zephyr/zephyr.dts-660-				group1 {
+build/zephyr/zephyr.dts-661-					pinmux = < 0x109 >, < 0xc1 >, < 0xc9 >, < 0xd1 >, < 0xd9 >, < 0xe1 >, < 0xe9 >, < 0xf1 >, < 0xf9 >;
+build/zephyr/zephyr.dts-662-					read-enable = < 0x1 >;
+build/zephyr/zephyr.dts-663-					drive-strength = < 0xc >;
+build/zephyr/zephyr.dts-664-					slew-rate = < 0x1 >;
+build/zephyr/zephyr.dts-665-				};
+build/zephyr/zephyr.dts-666-			};
+build/zephyr/zephyr.dts-667-		};
+build/zephyr/zephyr.dts:668:		itcm: itcm@0 {
+build/zephyr/zephyr.dts-669-			compatible = "alif,itcm", "zephyr,memory-region";
+build/zephyr/zephyr.dts-670-			global_base = < 0x58000000 >;
+build/zephyr/zephyr.dts:671:			zephyr,memory-region = "ITCM";
+build/zephyr/zephyr.dts-672-			reg = < 0x0 0x80000 >;
+build/zephyr/zephyr.dts-673-		};
+build/zephyr/zephyr.dts-674-		reserved_dtcm: dtcm@20000000 {
+build/zephyr/zephyr.dts-675-			compatible = "alif,dtcm", "zephyr,memory-region";
+build/zephyr/zephyr.dts-676-			global_base = < 0x58800000 >;
+build/zephyr/zephyr.dts-677-			reg = < 0x20000000 0xa000 >;
+build/zephyr/zephyr.dts-678-			zephyr,memory-region = "RESERVED_DTCM";
+build/zephyr/zephyr.dts-679-		};
+--
+build/zephyr/zephyr.dts-690-			interrupts = < 0x66 0x0 >, < 0x67 0x0 >;
+build/zephyr/zephyr.dts-691-			interrupt-names = "sdmmc", "sdmmc_wakeup";
+build/zephyr/zephyr.dts-692-			max-bus-freq = < 0x17d7840 >;
+build/zephyr/zephyr.dts-693-			min-bus-freq = < 0x61a80 >;
+build/zephyr/zephyr.dts-694-			power-delay-ms = < 0x3e8 >;
+build/zephyr/zephyr.dts-695-			pinctrl-0 = < &pinctrl_sdmmc >;
+build/zephyr/zephyr.dts-696-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-697-			cd-gpios = < &gpio6 0x5 0x1 >;
+build/zephyr/zephyr.dts:698:			status = "disabled";
+build/zephyr/zephyr.dts-699-			vmmc-supply = < &sd_pwr >;
+build/zephyr/zephyr.dts-700-			vqmmc-supply = < &sd_vsel >;
+build/zephyr/zephyr.dts-701-			mmc {
+build/zephyr/zephyr.dts-702-				compatible = "zephyr,sdmmc-disk";
+build/zephyr/zephyr.dts-703-				bus-width = < 0x4 >;
+build/zephyr/zephyr.dts:704:				status = "disabled";
+build/zephyr/zephyr.dts-705-			};
+build/zephyr/zephyr.dts-706-		};
+build/zephyr/zephyr.dts-707-		usb: usb@48200000 {
+build/zephyr/zephyr.dts-708-			compatible = "snps,dwc3";
+build/zephyr/zephyr.dts-709-			reg = < 0x48200000 0xca04 >;
+build/zephyr/zephyr.dts-710-			clocks = < &clockctrl 0x18062 >, < &clockctrl 0x1a062 >;
+build/zephyr/zephyr.dts-711-			maximum-speed = "high-speed";
+build/zephyr/zephyr.dts-712-			interrupts = < 0x65 0x3 >;
+build/zephyr/zephyr.dts-713-			num-out-eps = < 0x5 >;
+build/zephyr/zephyr.dts-714-			num-in-eps = < 0xb >;
+build/zephyr/zephyr.dts:715:			status = "disabled";
+build/zephyr/zephyr.dts-716-		};
+build/zephyr/zephyr.dts-717-		peripheral@40000000 {
+build/zephyr/zephyr.dts-718-			#address-cells = < 0x1 >;
+build/zephyr/zephyr.dts-719-			#size-cells = < 0x1 >;
+build/zephyr/zephyr.dts-720-			ranges = < 0x0 0x40000000 0x2000000 >;
+build/zephyr/zephyr.dts-721-			seservice0r: mhu@40040000 {
+build/zephyr/zephyr.dts-722-				compatible = "arm,mhuv2";
+build/zephyr/zephyr.dts-723-				reg = < 0x40040000 0x1000 >;
+--
+build/zephyr/zephyr.dts-732-				interrupt-names = "tx";
+build/zephyr/zephyr.dts-733-				phandle = < 0x58 >;
+build/zephyr/zephyr.dts-734-			};
+build/zephyr/zephyr.dts-735-			seservice1r: mhu@40060000 {
+build/zephyr/zephyr.dts-736-				compatible = "arm,mhuv2";
+build/zephyr/zephyr.dts-737-				reg = < 0x40060000 0x1000 >;
+build/zephyr/zephyr.dts-738-				interrupts = < 0x27 0x0 >;
+build/zephyr/zephyr.dts-739-				interrupt-names = "rx";
+build/zephyr/zephyr.dts:740:				status = "disabled";
+build/zephyr/zephyr.dts-741-			};
+build/zephyr/zephyr.dts-742-			seservice1s: mhu@40070000 {
+build/zephyr/zephyr.dts-743-				compatible = "arm,mhuv2";
+build/zephyr/zephyr.dts-744-				reg = < 0x40070000 0x1000 >;
+build/zephyr/zephyr.dts-745-				interrupts = < 0x28 0x0 >;
+build/zephyr/zephyr.dts-746-				interrupt-names = "tx";
+build/zephyr/zephyr.dts:747:				status = "disabled";
+build/zephyr/zephyr.dts-748-			};
+build/zephyr/zephyr.dts-749-		};
+build/zephyr/zephyr.dts-750-		wdog0: wdog0@40100000 {
+build/zephyr/zephyr.dts-751-			compatible = "arm,cmsdk-watchdog";
+build/zephyr/zephyr.dts-752-			reg = < 0x40100000 0x1000 >;
+build/zephyr/zephyr.dts-753-			clocks = < &syst_core >;
+build/zephyr/zephyr.dts:754:			status = "disabled";
+build/zephyr/zephyr.dts-755-		};
+build/zephyr/zephyr.dts-756-		rtc0: lprtc@42000000 {
+build/zephyr/zephyr.dts-757-			compatible = "snps,dw-apb-rtc";
+build/zephyr/zephyr.dts-758-			reg = < 0x42000000 0x1000 >;
+build/zephyr/zephyr.dts-759-			interrupts = < 0x3a 0x0 >;
+build/zephyr/zephyr.dts-760-			clock-frequency = < 0x8000 >;
+build/zephyr/zephyr.dts-761-			prescaler = < 0x1 >;
+build/zephyr/zephyr.dts-762-			load-value = < 0x0 >;
+--
+build/zephyr/zephyr.dts-764-		};
+build/zephyr/zephyr.dts-765-		rtc1: lprtc@42003000 {
+build/zephyr/zephyr.dts-766-			compatible = "snps,dw-apb-rtc";
+build/zephyr/zephyr.dts-767-			reg = < 0x42003000 0x1000 >;
+build/zephyr/zephyr.dts-768-			interrupts = < 0x3b 0x0 >;
+build/zephyr/zephyr.dts-769-			clock-frequency = < 0x8000 >;
+build/zephyr/zephyr.dts-770-			prescaler = < 0x0 >;
+build/zephyr/zephyr.dts-771-			load-value = < 0x0 >;
+build/zephyr/zephyr.dts:772:			status = "disabled";
+build/zephyr/zephyr.dts-773-		};
+build/zephyr/zephyr.dts-774-		uart0: uart@49018000 {
+build/zephyr/zephyr.dts-775-			compatible = "ns16550";
+build/zephyr/zephyr.dts-776-			reg = < 0x49018000 0x100 >;
+build/zephyr/zephyr.dts-777-			clocks = < &clockctrl 0x10b0043 >;
+build/zephyr/zephyr.dts-778-			interrupts = < 0x7c 0x0 >;
+build/zephyr/zephyr.dts-779-			power-domains = < &pd_syst >;
+build/zephyr/zephyr.dts-780-			reg-shift = < 0x2 >;
+build/zephyr/zephyr.dts-781-			current-speed = < 0x1c200 >;
+build/zephyr/zephyr.dts-782-			dlf = < 0xb >;
+build/zephyr/zephyr.dts-783-			pinctrl-0 = < &pinctrl_uart0 >;
+build/zephyr/zephyr.dts-784-			pinctrl-1 = < &pinctrl_uart0_sleep >;
+build/zephyr/zephyr.dts-785-			pinctrl-names = "default", "sleep";
+build/zephyr/zephyr.dts-786-			fifo-size = < 0x20 >;
+build/zephyr/zephyr.dts:787:			status = "disabled";
+build/zephyr/zephyr.dts-788-		};
+build/zephyr/zephyr.dts-789-		uart1: uart@49019000 {
+build/zephyr/zephyr.dts-790-			compatible = "ns16550";
+build/zephyr/zephyr.dts-791-			reg = < 0x49019000 0x100 >;
+build/zephyr/zephyr.dts-792-			clocks = < &clockctrl 0x12b0843 >;
+build/zephyr/zephyr.dts-793-			interrupts = < 0x7d 0x0 >;
+build/zephyr/zephyr.dts-794-			power-domains = < &pd_syst >;
+build/zephyr/zephyr.dts-795-			reg-shift = < 0x2 >;
+build/zephyr/zephyr.dts-796-			current-speed = < 0x1c200 >;
+build/zephyr/zephyr.dts-797-			dlf = < 0xb >;
+build/zephyr/zephyr.dts-798-			pinctrl-0 = < &pinctrl_uart1 >;
+build/zephyr/zephyr.dts-799-			pinctrl-1 = < &pinctrl_uart1_sleep >;
+build/zephyr/zephyr.dts-800-			pinctrl-names = "default", "sleep";
+build/zephyr/zephyr.dts-801-			fifo-size = < 0x20 >;
+build/zephyr/zephyr.dts:802:			status = "disabled";
+build/zephyr/zephyr.dts-803-		};
+build/zephyr/zephyr.dts-804-		uart2: uart@4901a000 {
+build/zephyr/zephyr.dts-805-			compatible = "ns16550";
+build/zephyr/zephyr.dts-806-			reg = < 0x4901a000 0x100 >;
+build/zephyr/zephyr.dts-807-			clocks = < &clockctrl 0x14b1043 >;
+build/zephyr/zephyr.dts-808-			interrupts = < 0x7e 0x0 >;
+build/zephyr/zephyr.dts-809-			power-domains = < &pd_syst >;
+build/zephyr/zephyr.dts-810-			reg-shift = < 0x2 >;
+--
+build/zephyr/zephyr.dts-824-			power-domains = < &pd_syst >;
+build/zephyr/zephyr.dts-825-			reg-shift = < 0x2 >;
+build/zephyr/zephyr.dts-826-			current-speed = < 0x1c200 >;
+build/zephyr/zephyr.dts-827-			dlf = < 0xb >;
+build/zephyr/zephyr.dts-828-			pinctrl-0 = < &pinctrl_uart3 >;
+build/zephyr/zephyr.dts-829-			pinctrl-1 = < &pinctrl_uart3_sleep >;
+build/zephyr/zephyr.dts-830-			pinctrl-names = "default", "sleep";
+build/zephyr/zephyr.dts-831-			fifo-size = < 0x20 >;
+build/zephyr/zephyr.dts:832:			status = "disabled";
+build/zephyr/zephyr.dts-833-		};
+build/zephyr/zephyr.dts-834-		uart4: uart@4901c000 {
+build/zephyr/zephyr.dts-835-			compatible = "ns16550";
+build/zephyr/zephyr.dts-836-			reg = < 0x4901c000 0x100 >;
+build/zephyr/zephyr.dts-837-			clocks = < &clockctrl 0x18b2043 >;
+build/zephyr/zephyr.dts-838-			interrupts = < 0x80 0x0 >;
+build/zephyr/zephyr.dts-839-			power-domains = < &pd_syst >;
+build/zephyr/zephyr.dts-840-			reg-shift = < 0x2 >;
+build/zephyr/zephyr.dts-841-			current-speed = < 0x1c200 >;
+build/zephyr/zephyr.dts-842-			dlf = < 0xb >;
+build/zephyr/zephyr.dts-843-			pinctrl-0 = < &pinctrl_uart4 >;
+build/zephyr/zephyr.dts-844-			pinctrl-1 = < &pinctrl_uart4_sleep >;
+build/zephyr/zephyr.dts-845-			pinctrl-names = "default", "sleep";
+build/zephyr/zephyr.dts-846-			fifo-size = < 0x20 >;
+build/zephyr/zephyr.dts:847:			status = "disabled";
+build/zephyr/zephyr.dts-848-		};
+build/zephyr/zephyr.dts-849-		uart5: uart@4901d000 {
+build/zephyr/zephyr.dts-850-			compatible = "ns16550";
+build/zephyr/zephyr.dts-851-			reg = < 0x4901d000 0x100 >;
+build/zephyr/zephyr.dts-852-			clocks = < &clockctrl 0x1ab2843 >;
+build/zephyr/zephyr.dts-853-			interrupts = < 0x81 0x0 >;
+build/zephyr/zephyr.dts-854-			power-domains = < &pd_syst >;
+build/zephyr/zephyr.dts-855-			reg-shift = < 0x2 >;
+build/zephyr/zephyr.dts-856-			current-speed = < 0x1c200 >;
+build/zephyr/zephyr.dts-857-			dlf = < 0xb >;
+build/zephyr/zephyr.dts-858-			pinctrl-0 = < &pinctrl_uart5 >;
+build/zephyr/zephyr.dts-859-			pinctrl-1 = < &pinctrl_uart5_sleep >;
+build/zephyr/zephyr.dts-860-			pinctrl-names = "default", "sleep";
+build/zephyr/zephyr.dts-861-			fifo-size = < 0x20 >;
+build/zephyr/zephyr.dts:862:			status = "disabled";
+build/zephyr/zephyr.dts-863-		};
+build/zephyr/zephyr.dts-864-		gpio0: gpio@49000000 {
+build/zephyr/zephyr.dts-865-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-866-			reg = < 0x49000000 0x1000 >;
+build/zephyr/zephyr.dts-867-			ngpios = < 0x8 >;
+build/zephyr/zephyr.dts-868-			interrupts = < 0xb3 0x0 >, < 0xb4 0x0 >, < 0xb5 0x0 >, < 0xb6 0x0 >, < 0xb7 0x0 >, < 0xb8 0x0 >, < 0xb9 0x0 >, < 0xba 0x0 >;
+build/zephyr/zephyr.dts-869-			pinctrl-0 = < &pinctrl_gpio0 >;
+build/zephyr/zephyr.dts-870-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-871-			gpio-controller;
+build/zephyr/zephyr.dts-872-			#gpio-cells = < 0x2 >;
+build/zephyr/zephyr.dts:873:			status = "disabled";
+build/zephyr/zephyr.dts-874-			phandle = < 0x2f >;
+build/zephyr/zephyr.dts-875-		};
+build/zephyr/zephyr.dts-876-		gpio1: gpio@49001000 {
+build/zephyr/zephyr.dts-877-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-878-			reg = < 0x49001000 0x1000 >;
+build/zephyr/zephyr.dts-879-			ngpios = < 0x8 >;
+build/zephyr/zephyr.dts-880-			interrupts = < 0xbb 0x0 >, < 0xbc 0x0 >, < 0xbd 0x0 >, < 0xbe 0x0 >, < 0xbf 0x0 >, < 0xc0 0x0 >, < 0xc1 0x0 >, < 0xc2 0x0 >;
+build/zephyr/zephyr.dts-881-			pinctrl-0 = < &pinctrl_gpio1 >;
+build/zephyr/zephyr.dts-882-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-883-			gpio-controller;
+build/zephyr/zephyr.dts-884-			#gpio-cells = < 0x2 >;
+build/zephyr/zephyr.dts:885:			status = "disabled";
+build/zephyr/zephyr.dts-886-		};
+build/zephyr/zephyr.dts-887-		gpio2: gpio@49002000 {
+build/zephyr/zephyr.dts-888-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-889-			reg = < 0x49002000 0x1000 >;
+build/zephyr/zephyr.dts-890-			ngpios = < 0x8 >;
+build/zephyr/zephyr.dts-891-			interrupts = < 0xc3 0x0 >, < 0xc4 0x0 >, < 0xc5 0x0 >, < 0xc6 0x0 >, < 0xc7 0x0 >, < 0xc8 0x0 >, < 0xc9 0x0 >, < 0xca 0x0 >;
+build/zephyr/zephyr.dts-892-			pinctrl-0 = < &pinctrl_gpio2 >;
+build/zephyr/zephyr.dts-893-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-894-			gpio-controller;
+build/zephyr/zephyr.dts-895-			#gpio-cells = < 0x2 >;
+build/zephyr/zephyr.dts:896:			status = "disabled";
+build/zephyr/zephyr.dts-897-		};
+build/zephyr/zephyr.dts-898-		gpio3: gpio@49003000 {
+build/zephyr/zephyr.dts-899-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-900-			reg = < 0x49003000 0x1000 >;
+build/zephyr/zephyr.dts-901-			ngpios = < 0x8 >;
+build/zephyr/zephyr.dts-902-			interrupts = < 0xcb 0x0 >, < 0xcc 0x0 >, < 0xcd 0x0 >, < 0xce 0x0 >, < 0xcf 0x0 >, < 0xd0 0x0 >, < 0xd1 0x0 >, < 0xd2 0x0 >;
+build/zephyr/zephyr.dts-903-			pinctrl-0 = < &pinctrl_gpio3 >;
+build/zephyr/zephyr.dts-904-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-905-			gpio-controller;
+build/zephyr/zephyr.dts-906-			#gpio-cells = < 0x2 >;
+build/zephyr/zephyr.dts:907:			status = "disabled";
+build/zephyr/zephyr.dts-908-		};
+build/zephyr/zephyr.dts-909-		gpio4: gpio@49004000 {
+build/zephyr/zephyr.dts-910-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-911-			reg = < 0x49004000 0x1000 >;
+build/zephyr/zephyr.dts-912-			ngpios = < 0x8 >;
+build/zephyr/zephyr.dts-913-			interrupts = < 0xd3 0x0 >, < 0xd4 0x0 >, < 0xd5 0x0 >, < 0xd6 0x0 >, < 0xd7 0x0 >, < 0xd8 0x0 >, < 0xd9 0x0 >, < 0xda 0x0 >;
+build/zephyr/zephyr.dts-914-			pinctrl-0 = < &pinctrl_gpio4 >;
+build/zephyr/zephyr.dts-915-			pinctrl-names = "default";
+--
+build/zephyr/zephyr.dts-934-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-935-			reg = < 0x49006000 0x1000 >;
+build/zephyr/zephyr.dts-936-			ngpios = < 0x8 >;
+build/zephyr/zephyr.dts-937-			interrupts = < 0xe3 0x0 >, < 0xe4 0x0 >, < 0xe5 0x0 >, < 0xe6 0x0 >, < 0xe7 0x0 >, < 0xe8 0x0 >, < 0xe9 0x0 >, < 0xea 0x0 >;
+build/zephyr/zephyr.dts-938-			pinctrl-0 = < &pinctrl_gpio6 >;
+build/zephyr/zephyr.dts-939-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-940-			gpio-controller;
+build/zephyr/zephyr.dts-941-			#gpio-cells = < 0x2 >;
+build/zephyr/zephyr.dts:942:			status = "disabled";
+build/zephyr/zephyr.dts-943-			phandle = < 0x3 >;
+build/zephyr/zephyr.dts-944-		};
+build/zephyr/zephyr.dts-945-		gpio7: gpio@49007000 {
+build/zephyr/zephyr.dts-946-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-947-			reg = < 0x49007000 0x1000 >;
+build/zephyr/zephyr.dts-948-			ngpios = < 0x8 >;
+build/zephyr/zephyr.dts-949-			interrupts = < 0xeb 0x0 >, < 0xec 0x0 >, < 0xed 0x0 >, < 0xee 0x0 >, < 0xef 0x0 >, < 0xf0 0x0 >, < 0xf1 0x0 >, < 0xf2 0x0 >;
+build/zephyr/zephyr.dts-950-			pinctrl-0 = < &pinctrl_gpio7 >;
+build/zephyr/zephyr.dts-951-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-952-			gpio-controller;
+build/zephyr/zephyr.dts-953-			#gpio-cells = < 0x2 >;
+build/zephyr/zephyr.dts:954:			status = "disabled";
+build/zephyr/zephyr.dts-955-			phandle = < 0x5e >;
+build/zephyr/zephyr.dts-956-		};
+build/zephyr/zephyr.dts-957-		gpio8: gpio@49008000 {
+build/zephyr/zephyr.dts-958-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-959-			reg = < 0x49008000 0x1000 >;
+build/zephyr/zephyr.dts-960-			ngpios = < 0x8 >;
+build/zephyr/zephyr.dts-961-			interrupts = < 0xf3 0x0 >, < 0xf4 0x0 >, < 0xf5 0x0 >, < 0xf6 0x0 >, < 0xf7 0x0 >, < 0xf8 0x0 >, < 0xf9 0x0 >, < 0xfa 0x0 >;
+build/zephyr/zephyr.dts-962-			pinctrl-0 = < &pinctrl_gpio8 >;
+build/zephyr/zephyr.dts-963-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-964-			gpio-controller;
+build/zephyr/zephyr.dts-965-			#gpio-cells = < 0x2 >;
+build/zephyr/zephyr.dts:966:			status = "disabled";
+build/zephyr/zephyr.dts-967-			phandle = < 0x55 >;
+build/zephyr/zephyr.dts-968-		};
+build/zephyr/zephyr.dts-969-		gpio9: gpio@49009000 {
+build/zephyr/zephyr.dts-970-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-971-			reg = < 0x49009000 0x1000 >;
+build/zephyr/zephyr.dts-972-			ngpios = < 0x3 >;
+build/zephyr/zephyr.dts-973-			interrupts = < 0xfb 0x0 >, < 0xfc 0x0 >, < 0xfd 0x0 >;
+build/zephyr/zephyr.dts-974-			gpio-controller;
+build/zephyr/zephyr.dts-975-			#gpio-cells = < 0x2 >;
+build/zephyr/zephyr.dts:976:			status = "disabled";
+build/zephyr/zephyr.dts-977-		};
+build/zephyr/zephyr.dts-978-		lpgpio: gpio@42002000 {
+build/zephyr/zephyr.dts-979-			compatible = "snps,designware-gpio";
+build/zephyr/zephyr.dts-980-			reg = < 0x42002000 0x1000 >;
+build/zephyr/zephyr.dts-981-			ngpios = < 0x2 >;
+build/zephyr/zephyr.dts-982-			interrupts = < 0xab 0x0 >, < 0xac 0x0 >;
+build/zephyr/zephyr.dts-983-			gpio-controller;
+build/zephyr/zephyr.dts-984-			#gpio-cells = < 0x2 >;
+--
+build/zephyr/zephyr.dts-1005-			adc_channel_scan = "SINGLE_CHANNEL_SCAN";
+build/zephyr/zephyr.dts-1006-			adc_conversion_mode = "SINGLE_SHOT_CONVERSION";
+build/zephyr/zephyr.dts-1007-			pga_gain = "ADC_PGA_GAIN_0_DB";
+build/zephyr/zephyr.dts-1008-			pinctrl-0 = < &pinctrl_adc0 >;
+build/zephyr/zephyr.dts-1009-			pinctrl-1 = < &pinctrl_adc0_sleep >;
+build/zephyr/zephyr.dts-1010-			pinctrl-names = "default", "sleep";
+build/zephyr/zephyr.dts-1011-			interrupts = < 0x97 0x0 >, < 0x9a 0x0 >, < 0x9d 0x0 >, < 0xa0 0x0 >;
+build/zephyr/zephyr.dts-1012-			interrupt-names = "done0", "done1", "comp_a", "comp_b";
+build/zephyr/zephyr.dts:1013:			status = "disabled";
+build/zephyr/zephyr.dts-1014-		};
+build/zephyr/zephyr.dts-1015-		adc1: adc1@49021000 {
+build/zephyr/zephyr.dts-1016-			compatible = "alif,adc";
+build/zephyr/zephyr.dts-1017-			reg = < 0x49021000 0x1000 >, < 0x49020000 0x100 >, < 0x49023000 0x100 >, < 0x1a604000 0x100 >, < 0x4902b000 0x100 >;
+build/zephyr/zephyr.dts-1018-			reg-names = "adc_reg", "analog_reg", "comp_reg", "aon_regs", "adc_vref";
+build/zephyr/zephyr.dts-1019-			comparator_threshold_a = < 0x1 >;
+build/zephyr/zephyr.dts-1020-			comparator_threshold_b = < 0x1 >;
+build/zephyr/zephyr.dts-1021-			comparator_threshold_comparison = "ABOVE_THRESHOLD_A_AND_B";
+--
+build/zephyr/zephyr.dts-1030-			adc_channel_scan = "SINGLE_CHANNEL_SCAN";
+build/zephyr/zephyr.dts-1031-			adc_conversion_mode = "SINGLE_SHOT_CONVERSION";
+build/zephyr/zephyr.dts-1032-			pga_gain = "ADC_PGA_GAIN_0_DB";
+build/zephyr/zephyr.dts-1033-			pinctrl-0 = < &pinctrl_adc1 >;
+build/zephyr/zephyr.dts-1034-			pinctrl-1 = < &pinctrl_adc1_sleep >;
+build/zephyr/zephyr.dts-1035-			pinctrl-names = "default", "sleep";
+build/zephyr/zephyr.dts-1036-			interrupts = < 0x98 0x0 >, < 0x9b 0x0 >, < 0x9e 0x0 >, < 0xa1 0x0 >;
+build/zephyr/zephyr.dts-1037-			interrupt-names = "done0", "done1", "comp_a", "comp_b";
+build/zephyr/zephyr.dts:1038:			status = "disabled";
+build/zephyr/zephyr.dts-1039-		};
+build/zephyr/zephyr.dts-1040-		cmp0: cmp0@49023000 {
+build/zephyr/zephyr.dts-1041-			compatible = "alif,cmp";
+build/zephyr/zephyr.dts-1042-			reg = < 0x49023000 0x1000 >, < 0x49023000 0x1000 >, < 0x4902a000 0x100 >, < 0x4902b000 0x100 >;
+build/zephyr/zephyr.dts-1043-			reg-names = "cmp_reg", "config_reg", "dac6_reg", "adc_vref";
+build/zephyr/zephyr.dts-1044-			clocks = < &clockctrl 0x101c3 >;
+build/zephyr/zephyr.dts-1045-			pinctrl-0 = < &pinctrl_cmp0 >;
+build/zephyr/zephyr.dts-1046-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-1047-			driver_instance = "CMP_INSTANCE_0";
+build/zephyr/zephyr.dts-1048-			filter_taps = < 0x3 >;
+build/zephyr/zephyr.dts-1049-			prescaler = < 0x8 >;
+build/zephyr/zephyr.dts-1050-			positive_input = "CMP_POS_IN0";
+build/zephyr/zephyr.dts-1051-			negative_input = "CMP_NEG_IN3";
+build/zephyr/zephyr.dts-1052-			hysteresis_level = "42mV";
+build/zephyr/zephyr.dts-1053-			interrupts = < 0xa7 0x0 >;
+build/zephyr/zephyr.dts-1054-			cmp-gpios = < &gpio4 0x3 0x0 >;
+build/zephyr/zephyr.dts:1055:			status = "disabled";
+build/zephyr/zephyr.dts-1056-		};
+build/zephyr/zephyr.dts-1057-		cmp1: cmp1@49024000 {
+build/zephyr/zephyr.dts-1058-			compatible = "alif,cmp";
+build/zephyr/zephyr.dts-1059-			reg = < 0x49024000 0x1000 >, < 0x49023000 0x100 >, < 0x4902a000 0x100 >, < 0x4902b000 0x100 >;
+build/zephyr/zephyr.dts-1060-			reg-names = "cmp_reg", "config_reg", "dac6_reg", "adc_vref";
+build/zephyr/zephyr.dts-1061-			clocks = < &clockctrl 0x121c3 >, < &clockctrl 0x101c3 >;
+build/zephyr/zephyr.dts-1062-			pinctrl-0 = < &pinctrl_cmp1 >;
+build/zephyr/zephyr.dts-1063-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-1064-			driver_instance = "CMP_INSTANCE_1";
+build/zephyr/zephyr.dts-1065-			filter_taps = < 0x3 >;
+build/zephyr/zephyr.dts-1066-			prescaler = < 0x8 >;
+build/zephyr/zephyr.dts-1067-			positive_input = "CMP_POS_IN0";
+build/zephyr/zephyr.dts-1068-			negative_input = "CMP_NEG_IN3";
+build/zephyr/zephyr.dts-1069-			hysteresis_level = "42mV";
+build/zephyr/zephyr.dts-1070-			interrupts = < 0xa8 0x0 >;
+build/zephyr/zephyr.dts-1071-			cmp-gpios = < &gpio4 0x7 0x0 >;
+build/zephyr/zephyr.dts:1072:			status = "disabled";
+build/zephyr/zephyr.dts-1073-		};
+build/zephyr/zephyr.dts-1074-		lpcmp: lpcmp@1a60a03c {
+build/zephyr/zephyr.dts-1075-			compatible = "alif,cmp";
+build/zephyr/zephyr.dts-1076-			reg = < 0x1a60a03c 0x10 >, < 0x1a60a03c 0x10 >;
+build/zephyr/zephyr.dts-1077-			reg-names = "cmp_reg", "config_reg";
+build/zephyr/zephyr.dts-1078-			pinctrl-0 = < &pinctrl_lpcmp >;
+build/zephyr/zephyr.dts-1079-			pinctrl-names = "default";
+build/zephyr/zephyr.dts-1080-			driver_instance = "CMP_INSTANCE_LP";
+build/zephyr/zephyr.dts-1081-			positive_input = "CMP_POS_IN0";
+build/zephyr/zephyr.dts-1082-			negative_input = "CMP_NEG_IN0";
+build/zephyr/zephyr.dts-1083-			hysteresis_level = "42mV";
+build/zephyr/zephyr.dts-1084-			interrupts = < 0x38 0x0 >;
+build/zephyr/zephyr.dts:1085:			status = "disabled";
+build/zephyr/zephyr.dts-1086-		};
+build/zephyr/zephyr.dts-1087-		i2c0: i2c0@49010000 {
+build/zephyr/zephyr.dts-1088-			compatible = "snps,designware-i2c";
+build/zephyr/zephyr.dts-1089-			clock-frequency = < 0x186a0 >;
+build/zephyr/zephyr.dts-1090-			clocks = < &clockctrl 0x10283 >;
+build/zephyr/zephyr.dts-1091-			hcnt-offset = < 0x0 >;
+build/zephyr/zephyr.dts-1092-			lcnt-offset = < 0x0 >;
+build/zephyr/zephyr.dts-1093-			fs-spike-len = < 0x5 >;
+--
+build/zephyr/zephyr.dts-1097-			reg = < 0x49010000 0x1000 >;
+build/zephyr/zephyr.dts-1098-			pinctrl-0 = < &pinctrl_i2c0 >;
+build/zephyr/zephyr.dts-1099-			pinctrl-1 = < &pinctrl_i2c0_sleep >;
+build/zephyr/zephyr.dts-1100-			pinctrl-names = "default", "sleep";
+build/zephyr/zephyr.dts-1101-			interrupt-parent = < &nvic >;
+build/zephyr/zephyr.dts-1102-			interrupts = < 0x84 0x0 >;
+build/zephyr/zephyr.dts-1103-			tx_threshold = < 0x10 >;
+build/zephyr/zephyr.dts-1104-			rx_threshold = < 0x0 >;
+build/zephyr/zephyr.dts:1105:			status = "disabled";
+build/zephyr/zephyr.dts-1106-		};
+build/zephyr/zephyr.dts-1107-		i2c1: i2c1@49011000 {
+build/zephyr/zephyr.dts-1108-			compatible = "snps,designware-i2c";
+build/zephyr/zephyr.dts-1109-			clock-frequency = < 0x186a0 >;
+build/zephyr/zephyr.dts-1110-			clocks = < &clockctrl 0x102a3 >;
+
+============================================================
+6. FINAL ELF: TGU AND SAU SYMBOLS
+============================================================
+
+============================================================
+7. BUILD CONFIGURATION RELATED TO SECURITY SETUP
+============================================================
+build/zephyr/.config:121:CONFIG_DT_HAS_ALIF_SECURE_ENCLAVE_SERVICES_ENABLED=y
+build/zephyr/.config:122:CONFIG_DT_HAS_ALIF_SECURE_ENCLAVE_TRNG_ENABLED=y
+build/zephyr/.config:646:# CONFIG_ARM_TRUSTZONE_M is not set
+build/zephyr/.config:651:CONFIG_CPU_HAS_ARM_SAU=y
+build/zephyr/.config:1700:CONFIG_PM_SAU_SAVE_RESTORE=y
+build/zephyr/.config:1736:# CONFIG_SECURE_STORAGE is not set
+build/zephyr/include/generated/zephyr/autoconf.h:84:#define CONFIG_DT_HAS_ALIF_SECURE_ENCLAVE_SERVICES_ENABLED 1
+build/zephyr/include/generated/zephyr/autoconf.h:85:#define CONFIG_DT_HAS_ALIF_SECURE_ENCLAVE_TRNG_ENABLED 1
+build/zephyr/include/generated/zephyr/autoconf.h:265:#define CONFIG_CPU_HAS_ARM_SAU 1
+build/zephyr/include/generated/zephyr/autoconf.h:520:#define CONFIG_PM_SAU_SAVE_RESTORE 1
