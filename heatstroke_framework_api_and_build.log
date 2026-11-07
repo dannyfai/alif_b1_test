@@ -1,0 +1,696 @@
+===== HEATSTROKE FRAMEWORK API AND BUILD REVIEW =====
+Sat Nov  7 10:42:24 AM HKT 2026
+Application: /home/user/sdk-alif/beeinventor/test_heatstroke
+
+===== TFLM MODEL BASE CLASS LOCATIONS =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp
+
+===== TFLM MODEL BASE CLASS SOURCE =====
+
+----- /home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp -----
+/*
+ * SPDX-FileCopyrightText: Copyright 2021-2023, 2025 Arm Limited and/or its affiliates
+ * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#ifndef MLEK_TFLM_MODEL_HPP
+#define MLEK_TFLM_MODEL_HPP
+
+#include "mlek/fwk/iface/Model.hpp"
+#include "mlek/fwk/tflm/TensorFlowLiteMicro.hpp"
+#include <cstdint>
+
+namespace arm::app::fwk::tflm {
+
+/**
+ * Backend data for TensorFlow Lite Micro framework.
+ */
+struct TflmBackendData {
+    const tflite::Model* m_pModel{nullptr};        /**< Tflite model pointer. */
+    tflite::MicroAllocator* m_pAllocator{nullptr}; /**< Tflite micro allocator. */
+
+    /** Tflite interpreter. */
+    std::unique_ptr<tflite::MicroInterpreter> m_pInterpreter{nullptr};
+};
+
+/**
+ * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+ */
+class TflmModel : public iface::Model {
+public:
+    /** @brief Constructor. */
+    TflmModel();
+
+    /** @brief Destructor. */
+    virtual ~TflmModel() = default;
+
+    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+
+    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+
+    /** @brief  Gets the model's data type. */
+    iface::TensorType GetType() const override;
+
+    /** @brief  Gets the pointer to the model's input shape. */
+    std::vector<size_t> GetInputShape(size_t index) const override;
+
+    /** @brief  Gets the pointer to the model's output shape at given output index. */
+    std::vector<size_t> GetOutputShape(size_t index) const override;
+
+    /** @brief  Gets the number of input tensors the model has. */
+    size_t GetNumInputs() const override;
+
+    /** @brief  Gets the number of output tensors the model has. */
+    size_t GetNumOutputs() const override;
+
+    /** @brief  Logs the tensor information to stdout. */
+    void LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor) override;
+
+    /** @brief  Logs the interpreter information to stdout. */
+    void LogInterpreterInfo() override;
+
+    /** @brief      Initialise the model class object.
+     *  @return     true if initialisation succeeds, false otherwise.
+     **/
+    bool Init(iface::MemoryRegion& computeBuffer,
+              iface::MemoryRegion& nnModel,
+              const void* backendData = nullptr) override;
+
+    /** @brief  Checks if this object has been initialised. */
+    bool IsInited() const override;
+
+    /** @brief  Checks if the model uses signed data. */
+    bool IsDataSigned() const override;
+
+    /** @brief Checks if the model uses Ethos-U operator */
+    bool ContainsEthosUOperator() const override;
+
+    /** @brief  Runs the inference (invokes the interpreter). */
+    bool RunInference() override;
+
+    /**
+     * @brief   Gets memory region information for the backend's compute buffer.
+     * @return  Const reference to MemoryRegion object.
+     */
+    const iface::MemoryRegion& GetComputeBuffer() const override;
+
+    /**
+     * @brief   Gets memory region information for neural network model.
+     * @return  Const reference to MemoryRegion object.
+     */
+    const iface::MemoryRegion& GetModelBuffer() const override;
+
+    /**
+     * @brief       Gets TensorFlow Lite Micro backend data.
+     * @return      Backend data, with pointers to the model, memory allocator and interpreter.
+     **/
+    const TflmBackendData& GetBackendData() const;
+
+protected:
+    /**
+     * @brief       Gets the op resolver for the model instance.
+     * @return      const reference to a tflite::MicroOpResolver object.
+     **/
+    virtual const tflite::MicroOpResolver& GetOpResolver() = 0;
+
+    /**
+     * @brief       Add all the operators required for the given model.
+     *              Implementation of this should come from the use case.
+     * @return      true is ops are successfully added, false otherwise.
+     **/
+    virtual bool EnlistOperations() = 0;
+
+private:
+    TflmBackendData m_backendData{};
+    bool m_inited{false}; /* Indicates whether this object has been initialised. */
+    iface::MemoryRegion m_computeBuffer{};
+    iface::MemoryRegion m_modelBuffer{};
+
+    std::vector<std::shared_ptr<iface::TensorIface>> m_input{}; /* Model's input tensor pointers. */
+    std::vector<std::shared_ptr<iface::TensorIface>>
+        m_output{};                                       /* Model's output tensor pointers. */
+    iface::TensorType m_type{iface::TensorType::INVALID}; /* Model's data type. */
+};
+} /* namespace arm::app::fwk::tflm */
+
+#endif /* MLEK_TFLM_MODEL_HPP */
+
+===== MODEL INTERFACE SOURCE =====
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/InferenceTestYoloFastest.cc:67:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/object_detection/InferenceTestYoloFastest.cc:98:    std::vector output_arr{model.GetOutputTensor(0), model.GetOutputTensor(1)};
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:40:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:52:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestMicroNetKws.cc:75:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:107:        std::vector<int8_t> tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:122:        tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:128:        std::vector<int8_t> tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:143:        tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:169:        std::vector<int8_t> tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:188:        tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:214:        std::vector<int8_t> tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/Wav2LetterPostprocessingTest.cc:232:        tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:40:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:50:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:86:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws_asr/InferenceTestWav2Letter.cc:91:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:39:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/img_class/tflm/InferenceTestMobilenetV2.cc:61:    auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/InferenceVisualWakeWordModelTests.cc:27:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/vww/InferenceVisualWakeWordModelTests.cc:50:    auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:59:    const size_t numOutputs = model.GetNumOutputs();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:61:    size_t lastTensorSize   = model.GetOutputTensor(numOutputs - 1)->Bytes();
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:64:        auto tensor = model.GetOutputTensor(i);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNNoiseUCTests.cc:83:            auto tensor = model.GetOutputTensor(i);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:41:        for (size_t i = 0; i < model.GetNumInputs(); ++i) {
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:42:            auto inputTensor = model.GetInputTensor(i);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:59:        for (size_t i = 0; i < model.GetNumInputs(); ++i) {
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:60:            auto inputTensor = model.GetInputTensor(i);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:88:        for (size_t i = 0; i < model.GetNumInputs(); ++i) {
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:89:            auto inputTensor = model.GetInputTensor(i);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:95:        for (size_t i = 0; i < model.GetNumOutputs(); ++i) {
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/InferenceTestRNNoise.cc:96:            auto outputTensor = model.GetOutputTensor(i);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:40:    auto inputTensor = model.GetInputTensor(dataInputIndex);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:64:    auto inputTensor = model.GetInputTensor(dataInputIndex);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:86:        auto inputGruStateTensor = model.GetInputTensor(i);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:122:        auto gruOut       = model.GetOutputTensor(mapping.first);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:149:        auto gruOut       = model.GetOutputTensor(mapping.first);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/noise_reduction/RNNoiseModelTests.cc:160:        auto gruInput    = model.GetInputTensor(mapping.second);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:45:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:59:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/ad/InferenceTestAD.cc:82:    auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:40:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:52:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/kws/InferenceTestMicroNetKws.cc:75:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:107:        std::vector<int8_t> tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:122:        tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:128:        std::vector<int8_t> tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:143:        tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:169:        std::vector<int8_t> tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:188:        tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:214:        std::vector<int8_t> tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/Wav2LetterPostprocessingTest.cc:232:        tensorVec = VectorFromTensor<int8_t>(model.GetOutputTensor(0));
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:40:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:50:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:86:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/tests/use_case/asr/tflm/InferenceTestWav2Letter.cc:91:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/jit/serialization/export.h:16:class ModelProto;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/inductor/aoti_runner/model_container_runner.h:78:  decltype(&AOTInductorModelContainerGetNumOutputs) get_num_outputs_func_{
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/inductor/aoti_runtime/interface.h:201:AOTI_API AOTIRuntimeError AOTInductorModelContainerGetNumInputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/inductor/aoti_runtime/interface.h:212:AOTI_API AOTIRuntimeError AOTInductorModelContainerGetNumOutputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/inductor/aoti_runtime/interface.h:260:AOTI_API AOTIRuntimeError AOTInductorModelGetNumOutputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/utils/throughput_benchmark.h:70:template <class Input, class Output, class Model>
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/utils/throughput_benchmark-inl.h:19:template <class Input, class Output, class Model>
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/api/include/torch/nativert/ModelRunnerHandle.h:17:class ModelRunner;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/aoti_runtime/interface.cpp:334:AOTIRuntimeError AOTInductorModelContainerGetNumInputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/aoti_runtime/interface.cpp:355:AOTIRuntimeError AOTInductorModelContainerGetNumOutputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/_inductor/codegen/aoti_runtime/interface.cpp:438:AOTIRuntimeError AOTInductorModelGetNumOutputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/include/model_runner.h:27:class ModelRunnerImpl;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/include/tosa_serialization_lib/tosa_serialization_handler.h:516:    [[deprecated("Use GetInputNames instead")]] std::vector<std::string>& GetInputTensorNames()
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/include/tosa_serialization_lib/tosa_serialization_handler.h:520:    [[deprecated("Use GetOutputNames instead")]] std::vector<std::string>& GetOutputTensorNames()
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/torch/csrc/jit/serialization/export.h:16:class ModelProto;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/torch/csrc/inductor/aoti_runner/model_container_runner.h:78:  decltype(&AOTInductorModelContainerGetNumOutputs) get_num_outputs_func_{
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/torch/csrc/inductor/aoti_runtime/interface.h:201:AOTI_API AOTIRuntimeError AOTInductorModelContainerGetNumInputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/torch/csrc/inductor/aoti_runtime/interface.h:212:AOTI_API AOTIRuntimeError AOTInductorModelContainerGetNumOutputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/torch/csrc/inductor/aoti_runtime/interface.h:260:AOTI_API AOTIRuntimeError AOTInductorModelGetNumOutputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/torch/csrc/utils/throughput_benchmark.h:70:template <class Input, class Output, class Model>
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/torch/csrc/utils/throughput_benchmark-inl.h:19:template <class Input, class Output, class Model>
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/torch/csrc/api/include/torch/nativert/ModelRunnerHandle.h:17:class ModelRunner;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/aoti_runtime/interface.cpp:334:AOTIRuntimeError AOTInductorModelContainerGetNumInputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/aoti_runtime/interface.cpp:355:AOTIRuntimeError AOTInductorModelContainerGetNumOutputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/_inductor/codegen/aoti_runtime/interface.cpp:438:AOTIRuntimeError AOTInductorModelGetNumOutputs(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/include/model_runner.h:27:class ModelRunnerImpl;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/include/tosa_serialization_lib/tosa_serialization_handler.h:516:    [[deprecated("Use GetInputNames instead")]] std::vector<std::string>& GetInputTensorNames()
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/include/tosa_serialization_lib/tosa_serialization_handler.h:520:    [[deprecated("Use GetOutputNames instead")]] std::vector<std::string>& GetOutputTensorNames()
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc:145:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws/src/UseCaseHandler.cc:146:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/src/UseCaseHandler.cc:72:        auto inputTensor   = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/src/UseCaseHandler.cc:73:        auto outputTensor0 = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/object_detection/src/UseCaseHandler.cc:74:        auto outputTensor1 = model.GetOutputTensor(1);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_vww/src/UseCaseHandler.cc:118:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_vww/src/UseCaseHandler.cc:119:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:130:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/MainLoop.cc:140:    auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/UseCaseHandler.cc:97:        auto kwsInputTensor            = kwsModel.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/UseCaseHandler.cc:98:        auto kwsOutputTensor           = kwsModel.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/UseCaseHandler.cc:234:        auto asrInputTensor  = asrModel.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws_asr/src/UseCaseHandler.cc:235:        auto asrOutputTensor = asrModel.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/UseCaseHandler.cc:96:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/UseCaseHandler.cc:138:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/UseCaseHandler.cc:139:        auto outputTensor0 = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection/src/UseCaseHandler.cc:140:        auto outputTensor1 = model.GetOutputTensor(1);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/MainLoop.cc:118:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/MainLoop.cc:128:    auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/UseCaseHandlerTflm.cc:104:        const auto inputTensor  = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/UseCaseHandlerTflm.cc:105:        const auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/UseCaseHandlerEt.cc:212:        auto inputTensorMelSpec  = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/UseCaseHandlerEt.cc:213:        auto inputTensorChunkSize = model.GetInputTensor(1);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/UseCaseHandlerEt.cc:214:        auto outputTensorLogits  = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_asr/src/UseCaseHandlerEt.cc:215:        auto outputTensorChunkSize = model.GetOutputTensor(1);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/src/UseCaseHandler.cc:121:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/src/UseCaseHandler.cc:157:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_img_class/src/UseCaseHandler.cc:158:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/src/UseCaseHandler.cc:74:        auto inputTensor  = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/img_class/src/UseCaseHandler.cc:75:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/vww/src/UseCaseHandler.cc:48:        auto inputTensor      = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/vww/src/UseCaseHandler.cc:49:        auto outputTensor     = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/UseCaseHandler.cc:31:        const size_t numInputs = model.GetNumInputs();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/UseCaseHandler.cc:40:        auto inputTensor = model.GetInputTensor(inputIndex);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/UseCaseHandler.cc:76:    const size_t numOutputs = model.GetNumOutputs();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/UseCaseHandler.cc:81:        auto outputTensor = model.GetOutputTensor(outputIdx);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/UseCaseHandler.cc:103:    for (size_t inputIndex = 0; inputIndex < model.GetNumInputs(); inputIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/UseCaseHandler.cc:104:        arm::app::DumpTensor(model.GetInputTensor(inputIndex));
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/UseCaseHandler.cc:111:    for (size_t outputIndex = 0; outputIndex < model.GetNumOutputs(); outputIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/inference_runner/src/UseCaseHandler.cc:112:        arm::app::DumpTensor(model.GetOutputTensor(outputIndex));
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/UseCaseHandler.cc:63:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/UseCaseHandler.cc:76:        auto outputTensor = model.GetOutputTensor(model.m_indexForModelOutput);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/UseCaseHandler.cc:323:        const size_t numOutputs = model.GetNumOutputs();
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/noise_reduction/src/UseCaseHandler.cc:329:            auto tensor         = model.GetOutputTensor(i);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws_with_power/src/UseCaseHandler.cc:102:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_kws_with_power/src/UseCaseHandler.cc:103:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/ad/src/UseCaseHandler.cc:59:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/ad/src/UseCaseHandler.cc:60:        auto inputTensor  = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_ad/src/UseCaseHandler.cc:95:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_ad/src/UseCaseHandler.cc:96:        auto inputTensor  = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws/src/UseCaseHandler.cc:65:        auto inputTensor  = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/kws/src/UseCaseHandler.cc:66:        auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/MainLoop.cc:106:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/MainLoop.cc:116:    auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/UseCaseHandlerTflm.cc:61:        const auto inputTensor  = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/UseCaseHandlerTflm.cc:62:        const auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/UseCaseHandlerEt.cc:63:        auto inputTensorMelSpec  = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/UseCaseHandlerEt.cc:64:        auto inputTensorChunkSize = model.GetInputTensor(1);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/UseCaseHandlerEt.cc:65:        auto outputTensorLogits  = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/asr/src/UseCaseHandlerEt.cc:66:        auto outputTensorChunkSize = model.GetOutputTensor(1);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/UseCaseHandler.cc:107:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/UseCaseHandler.cc:151:        auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/UseCaseHandler.cc:152:        auto outputTensor0 = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/app/use_case/alif_object_detection_power/src/UseCaseHandler.cc:153:        auto outputTensor1 = model.GetOutputTensor(1);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPostprocess.cc:38:        this->m_outputTensor     = model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPostprocess.cc:142:        const auto inputTensor = this->m_model.GetInputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPostprocess.cc:183:        const auto outputTensor   = this->m_model.GetOutputTensor(0);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:49:    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:52:    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:64:    size_t GetNumInputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:67:    size_t GetNumOutputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:184:    this->m_input.resize(this->GetNumInputs());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:185:    for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:190:    this->m_output.resize(this->GetNumOutputs());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:191:    for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:203:        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:206:        for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:217:std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:219:    if (index < this->GetNumInputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:225:std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:227:    if (index < this->GetNumOutputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:368:size_t TflmModel::GetNumInputs() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:376:size_t TflmModel::GetNumOutputs() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:391:    if (index < this->GetNumInputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:399:    if (index < this->GetNumOutputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:56:        auto inputGruStateTensor = this->GetInputTensor(stateMapping.second);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:71:        auto outputGruStateTensor = this->GetOutputTensor(stateMapping.first);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:81:        auto inputGruStateTensor      = this->GetInputTensor(stateMapping.first);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:39:class Model {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:48:    virtual std::shared_ptr<TensorIface> GetInputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:51:    virtual std::shared_ptr<TensorIface> GetOutputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:63:    virtual size_t GetNumInputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:66:    virtual size_t GetNumOutputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:274:std::shared_ptr<iface::TensorIface> EtModel::GetInputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:276:    if (index < this->GetNumInputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:282:std::shared_ptr<iface::TensorIface> EtModel::GetOutputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:284:    if (index < this->GetNumOutputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:311:    info("Number of input tensors:  %zu\n", this->GetNumInputs());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:315:    info("Number of output tensors: %zu\n", this->GetNumOutputs());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:485:size_t EtModel::GetNumInputs() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:491:size_t EtModel::GetNumOutputs() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:504:    assert(index < this->GetNumInputs());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:510:    assert(index < this->GetNumOutputs());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:56:    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:59:    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:71:    size_t GetNumInputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:74:    size_t GetNumOutputs() const override;
+
+===== APPLICATION CMAKE =====
+# Copyright (C) Alif Semiconductor - All Rights Reserved.
+# Use, distribution and modification of this code is permitted under the
+# terms stated in the Alif Semiconductor Software License Agreement
+#
+# You should have received a copy of the Alif Semiconductor Software
+# License Agreement with this file. If not, please write to:
+# contact@alifsemi.com, or visit: https://alifsemi.com/license
+
+cmake_minimum_required(VERSION 3.20.0)
+
+if(NOT ospi-flash IN_LIST SNIPPET)
+  set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+endif()
+
+# Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+# so the module is not auto-discovered and must be registered explicitly. Ask
+# west for the module path instead of hardcoding the workspace layout.
+execute_process(
+    COMMAND west list --format "{abspath}" alif-mlek
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE MLEK_ROOT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE MLEK_LIST_RESULT
+    ERROR_QUIET
+)
+if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+    message(FATAL_ERROR
+        "alif-mlek module not found. Enable and fetch it first:\n"
+        "  west config manifest.project-filter -- +alif-mlek\n"
+        "  west update\n")
+endif()
+
+# Register the MLEK Zephyr port as an extra Zephyr module
+list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+
+# ---------------------------------------------------------------------------
+# Ethos-U NPU selection
+# ---------------------------------------------------------------------------
+# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+# the build and the Ethos-U driver targets the requested NPU. This overrides the
+# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+#
+# The parsed value is also used to pick the correct Vela-compiled model below.
+# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+        set(_npu_arch "${CMAKE_MATCH_1}")
+        set(_npu_macs "${CMAKE_MATCH_2}")
+        if (_npu_arch STREQUAL "u55")
+            set(_npu_prefix "H")
+        elseif (_npu_arch STREQUAL "u65")
+            set(_npu_prefix "Y")
+        elseif (_npu_arch STREQUAL "u85")
+            set(_npu_prefix "Z")
+        else()
+            message(FATAL_ERROR
+                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+        endif()
+        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+
+        # Feed the matching Kconfig choice into the Zephyr configuration.
+        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+        message(STATUS
+            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+    else()
+        message(FATAL_ERROR
+            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+    endif()
+endif()
+
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+
+project(alif_asr)
+
+# Silence "changed in GCC 7.1" warnigns from C++ headers
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+
+set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+
+set(ML_FRAMEWORK TensorFlowLiteMicro)
+
+# ---------------------------------------------------------------------------
+# Build-time model and labels generation from MLEK resources
+# ---------------------------------------------------------------------------
+set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+    "Path to MLEK resources (models compiled with Vela)")
+setup_source_generator()
+
+# Source generation output directories
+set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+
+message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+
+# Determine NPU config ID based on Zephyr Kconfig.
+# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+    if (CONFIG_ARM_ETHOS_U85_256)
+        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+    elseif (CONFIG_ARM_ETHOS_U55_256)
+        set(ETHOS_U_NPU_CONFIG_ID "H256")
+    else()
+        set(ETHOS_U_NPU_CONFIG_ID "H128")
+    endif()
+endif()
+
+# Model file path
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+
+if (NOT EXISTS ${POLYU_MODEL_PATH})
+    message(FATAL_ERROR
+        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+endif()
+
+set(EXTRA_MODEL_CODE
+	"/* Model parameters for ${use_case} */"
+	"extern const int   g_FrameLength    = 512"
+	"extern const int   g_FrameStride    = 160"
+	"extern const int   g_ctxLen         = 98"
+	"extern const float g_ScoreThreshold = 0.5"
+	)
+
+# Generate model file
+generate_model_code(
+    MODEL_PATH  ${POLYU_MODEL_PATH}
+    DESTINATION ${SRC_GEN_DIR}
+    EXPRESSIONS ${EXTRA_MODEL_CODE}
+    NAMESPACE   "arm" "app" "asr")
+
+# Generate labels C++ code
+set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+
+# Generate labels file
+set(ASR_LABELS_CPP_FILE Labels)
+generate_labels_code(
+    INPUT           "${ASR_LABELS_FILE}"
+    DESTINATION_SRC ${SRC_GEN_DIR}
+    DESTINATION_HDR ${INC_GEN_DIR}
+    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+)
+
+# Collect the generated source files
+file(GLOB ASR_GENERATED_SOURCES ${SRC_GEN_DIR}/*.cc)
+
+# Create static library
+add_library(asr_iface INTERFACE)
+
+## Common include directories - public
+target_include_directories(asr_iface
+    INTERFACE
+	src/application/main/include)
+
+
+target_include_directories(app PRIVATE
+    src/application/main/include
+    src/use_case/alif_asr/include
+	src/power
+	~/sdk-alif/alif/samples/modules/alif_common
+	~/sdk-alif/alif/samples/modules/alif_common/audio
+	~/sdk-alif/alif/samples/modules/alif_common/audio/include
+	 ${INC_GEN_DIR}
+)
+
+target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+
+
+if (CONFIG_USE_APP_MENU)
+target_compile_definitions(app PRIVATE USE_APP_MENU)
+endif()
+
+target_sources(app PRIVATE
+    src/application/main/Main.cc
+    src/use_case/alif_asr/src/MainLoop.cc
+	src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+    src/use_case/alif_asr/src/reverse_v2.cc
+    src/use_case/alif_asr/src/PolyUModel1.cc
+    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+	src/power/power_mgr.c
+	~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+	${ASR_GENERATED_SOURCES}
+)
+
+set(SRC_MAIN "src/application/main/Main.cc")
+
+list(APPEND SRC_MAIN_DEFS
+    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+
+set_source_files_properties(${SRC_MAIN}
+    PROPERTIES COMPILE_DEFINITIONS
+    "${SRC_MAIN_DEFS}")
+
+target_link_libraries(app PRIVATE
+	asr_iface
+    mlek::asr_impl
+)
+
+===== APPLICATION CONFIGURATION =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/prj.conf:7:CONFIG_ARM_ETHOS_U=y
+/home/user/sdk-alif/beeinventor/test_heatstroke/prj.conf:77:CONFIG_MODEL_IN_EXT_FLASH=y
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:39:# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:41:# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:47:if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:48:    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:61:                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:63:        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:67:        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:70:            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:71:            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:74:            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:108:# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:110:if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:111:    if (CONFIG_ARM_ETHOS_U85_256)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:112:        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:113:    elseif (CONFIG_ARM_ETHOS_U55_256)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:114:        set(ETHOS_U_NPU_CONFIG_ID "H256")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:116:        set(ETHOS_U_NPU_CONFIG_ID "H128")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:121:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:122:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:123:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:124:set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:127:if (NOT EXISTS ${POLYU_MODEL_PATH})
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:129:        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:132:set(EXTRA_MODEL_CODE
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:142:    MODEL_PATH  ${POLYU_MODEL_PATH}
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:144:    EXPRESSIONS ${EXTRA_MODEL_CODE}
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:181:target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+/home/user/sdk-alif/beeinventor/test_heatstroke/Kconfig:15:config ACTIVATION_BUF_SECTION
+/home/user/sdk-alif/beeinventor/test_heatstroke/Kconfig:19:config ACTIVATION_BUF_SZ
+/home/user/sdk-alif/beeinventor/test_heatstroke/Kconfig:23:config MODEL_IN_EXT_FLASH
+/home/user/sdk-alif/beeinventor/test_heatstroke/Kconfig:31:config MODEL_SECTION
+/home/user/sdk-alif/beeinventor/test_heatstroke/Kconfig:33:	depends on !MODEL_IN_EXT_FLASH
+/home/user/sdk-alif/beeinventor/test_heatstroke/Kconfig:36:config ETHOS_U_AXI0_ONLY
+
+===== CURRENT BUILD DEFINITIONS =====
+126:CONFIG_DT_HAS_ARM_ETHOS_U_ENABLED=y
+194:# CONFIG_ALIF_ETHOSU_SHELL is not set
+195:CONFIG_ALIF_ETHOSU_SHELL_THREAD_PRIORITY=10
+196:CONFIG_ALIF_ETHOSU_SHELL_THREAD_STACKSIZE=1024
+197:CONFIG_ETHOSU_VERBOSE_LEVEL=1
+381:CONFIG_ARM_ETHOS_U=y
+386:# CONFIG_ARM_ETHOS_U55_64 is not set
+387:CONFIG_ARM_ETHOS_U55_128=y
+388:# CONFIG_ARM_ETHOS_U55_256 is not set
+389:# CONFIG_ARM_ETHOS_U65_128 is not set
+390:# CONFIG_ARM_ETHOS_U65_256 is not set
+391:# CONFIG_ARM_ETHOS_U65_512 is not set
+392:# CONFIG_ARM_ETHOS_U85_128 is not set
+393:# CONFIG_ARM_ETHOS_U85_256 is not set
+394:# CONFIG_ARM_ETHOS_U85_512 is not set
+395:# CONFIG_ARM_ETHOS_U85_1024 is not set
+396:# CONFIG_ARM_ETHOS_U85_2048 is not set
+399:CONFIG_ARM_ETHOS_U_NPU_NAME="ethos-u55-128"
+400:# CONFIG_ARM_ETHOS_U_LOG_LEVEL_NONE is not set
+401:# CONFIG_ARM_ETHOS_U_LOG_LEVEL_ERR is not set
+402:CONFIG_ARM_ETHOS_U_LOG_LEVEL_WRN=y
+403:# CONFIG_ARM_ETHOS_U_LOG_LEVEL_INF is not set
+404:# CONFIG_ARM_ETHOS_U_LOG_LEVEL_DBG is not set
+405:# CONFIG_ARM_ETHOS_U_LOG_LEVEL_DEFAULT is not set
+406:CONFIG_ARM_ETHOS_U_LOG_LEVEL=2
+407:CONFIG_ZEPHYR_HAL_ETHOS_U_MODULE=y
+480:CONFIG_MLEK_EXAMPLES_LIB=y
+481:CONFIG_MLEK_EXAMPLES_FWK_TFLM=y
+482:# CONFIG_MLEK_EXAMPLES_LOG_ENABLE is not set
+483:CONFIG_ZEPHYR_MLEK_MODULE=y
+1886:CONFIG_ACTIVATION_BUF_SECTION=".bss.activation_buf"
+1887:CONFIG_ACTIVATION_BUF_SZ=0x120000
+1888:CONFIG_MODEL_IN_EXT_FLASH=y
+1889:# CONFIG_ETHOS_U_AXI0_ONLY is not set
+
+===== CURRENT MODEL ARTIFACTS =====
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/sentencepiece/package_data/nfkc.bin 240008 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/sentencepiece/package_data/nmt_nfkc_cf.bin 247164 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/sentencepiece/package_data/nfkc_cf.bin 247165 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/sentencepiece/package_data/nmt_nfkc.bin 240007 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/xla/tsl/protobuf/distributed_runtime_payloads_proto-descriptor-set.proto.bin 392 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/xla/tsl/protobuf/coordination_config_proto-descriptor-set.proto.bin 1032 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/xla/tsl/protobuf/status_proto-descriptor-set.proto.bin 397 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/compiler/xla/tsl/protobuf/distributed_runtime_payloads_proto-descriptor-set.proto.bin 392 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/compiler/xla/tsl/protobuf/coordination_config_proto-descriptor-set.proto.bin 1032 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/compiler/xla/tsl/protobuf/status_proto-descriptor-set.proto.bin 397 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/tsl/profiler/protobuf/profiler_options_proto-descriptor-set.proto.bin 1582 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/tsl/profiler/protobuf/xplane_proto-descriptor-set.proto.bin 1747 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/framework/protos_all-descriptor-set.proto.bin 0 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/util/protos_all-descriptor-set.proto.bin 0 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/util/test_log_proto-descriptor-set.proto.bin 100 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/profiler/profiler_options_proto-descriptor-set.proto.bin 125 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/lib/core/error_codes_proto-descriptor-set.proto.bin 92 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/protobuf/error_codes_proto_impl-descriptor-set.proto.bin 206 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/protobuf/for_core_protos-descriptor-set.proto.bin 42337 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/example/protos_all-descriptor-set.proto.bin 0 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tensorflow/core/grappler/costs/op_performance_data-descriptor-set.proto.bin 2029 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tsl/profiler/protobuf/profiler_options_proto-descriptor-set.proto.bin 1582 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/tsl/profiler/protobuf/xplane_proto-descriptor-set.proto.bin 1747 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/heatstroke_model1_reg.tflite 45476028 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_conv5_live_debug.tflite 11844344 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_fc_input_debug.tflite 11844336 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/qdq_both_variance_eps_preprocess_fp32_v2_gather_nonnegative.tflite 11844352 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_conv7_live_debug.tflite 11844344 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_pool_debug.tflite 11844344 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_fc_debug.tflite 11844328 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_val390_tanh_debug.tflite 11844320 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_cat4_gelu8_factor_mul_debug.tflite 11844312 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_dequant_debug.tflite 11844328 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_val389_inputs_debug.tflite 11844328 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_layernorm_debug.tflite 11844288 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/combined_static_model_gelu_tanh_int32_indices_fp32.tflite 43534216 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite 11026432 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu_inputs_debug.tflite 11844328 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_stack1_live_debug.tflite 11844344 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_layernorm_input_int8_live_debug.tflite 11844280 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_cat4_inputs_debug.tflite 11844288 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_cat4_gelu_boundaries_debug.tflite 11844304 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_where5_live_debug.tflite 11844352 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_six_gemm_debug.tflite 11844360 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_add373_debug.tflite 11844320 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite 11844288 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu_debug.tflite 11844320 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_conv6_live_debug.tflite 11844344 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_stack1_prerequant_debug.tflite 11844384 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_linear19_stack1_channels_debug.tflite 11844360 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_layernorm_full_debug.tflite 11844312 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite 11026656 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/psi_gelu8_tanh_add_inputs_debug.tflite 11844320 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/heatstroke_model1_cla.tflite 2610488 bytes
+/home/user/sdk-alif/beeinventor/PolyU/ai-models/model1_pipeline_dynamic_range.tflite 17097272 bytes
+/home/user/sdk-alif/beeinventor/PolyU/ai-models/model1_pipeline.tflite 49360548 bytes
+/home/user/sdk-alif/beeinventor/PolyU/ai-models/model1_static_dynamic_range_quant.tflite 16447592 bytes
+/home/user/sdk-alif/beeinventor/PolyU/ai-models/cla_quant_uint8.tflite 2545108 bytes
+/home/user/sdk-alif/beeinventor/PolyU/ai-models/model1_static_quant_int8.tflite 57452840 bytes
+/home/user/sdk-alif/beeinventor/PolyU/ai-models/cla_quant_uint8_vela.tflite 2611152 bytes
+
+===== END OF REVIEW =====
