@@ -1,0 +1,1300 @@
+===== HEATSTROKE MODEL API FOLLOW-UP =====
+Sat Nov  7 10:39:47 AM HKT 2026
+
+===== APPLICATION DIRECTORY =====
+/home/user/sdk-alif/beeinventor/test_heatstroke
+
+===== POLYU MODEL WRAPPER HEADER =====
+#ifndef POLYU_MODEL1_HPP
+#define POLYU_MODEL1_HPP
+
+#include "mlek/fwk/tflm/TflmModel.hpp"
+
+namespace arm::app::asr {
+extern const int g_FrameLength;
+extern const int g_FrameStride;
+extern const float g_ScoreThreshold;
+extern const int g_ctxLen;
+} // namespace arm::app::asr
+
+namespace arm::app::fwk::tflm {
+
+class PolyUModel1 : public TflmModel {
+
+public:
+    /* Indices for the expected model - based on input and output tensor shapes */
+    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    static constexpr uint32_t ms_inputColsIdx  = 2;
+    static constexpr uint32_t ms_outputRowsIdx = 2;
+    static constexpr uint32_t ms_outputColsIdx = 3;
+
+    /* Model specific constants. */
+    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    static constexpr uint32_t ms_numMfccFeatures = 13;
+
+protected:
+    /** @brief   Gets the reference to op resolver interface class. */
+    const tflite::MicroOpResolver& GetOpResolver() override;
+
+    /** @brief   Adds operations to the op resolver instance. */
+    bool EnlistOperations() override;
+
+private:
+    /* Maximum number of individual operations that can be enlisted. */
+    static constexpr int ms_maxOpCnt = 24;
+
+    /* A mutable op resolver instance. */
+    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+};
+
+} /* namespace arm::app::fwk::tflm */
+
+#endif /* POLYU_MODEL1_HPP */
+
+===== POLYU MODEL WRAPPER IMPLEMENTATION =====
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited and/or its affiliates
+ * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "PolyUModel1.hpp"
+#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+
+#include "mlek/log/log_macros.h"
+#include "reverse_v2.h"
+#include "heatstroke_bidirectional_lstm.h"
+
+const tflite::MicroOpResolver& arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+{
+    return this->m_opResolver;
+}
+
+TfLiteStatus ParseReverseV2(const tflite::Operator*, tflite::ErrorReporter*, tflite::BuiltinDataAllocator*,
+                        void**) {
+  return kTfLiteOk;
+}
+
+TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+    const tflite::Operator* op,
+    tflite::ErrorReporter* error_reporter,
+    tflite::BuiltinDataAllocator* allocator,
+    void** builtin_data) {
+    return tflite::ParseOpData(
+        op,
+        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+        error_reporter,
+        allocator,
+        builtin_data);
+}
+
+
+bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+{
+#ifndef ETHOS_U_NPU_ASSUMED
+    
+    this->m_opResolver.AddStridedSlice();
+    this->m_opResolver.AddFullyConnected();
+    this->m_opResolver.AddReshape();
+    this->m_opResolver.AddAveragePool2D();
+    this->m_opResolver.AddUnpack();
+    this->m_opResolver.AddAdd();
+    this->m_opResolver.AddSplit();
+    this->m_opResolver.AddTanh();
+    this->m_opResolver.AddLogistic();
+    this->m_opResolver.AddMul();
+    this->m_opResolver.AddPack();
+    this->m_opResolver.AddConcatenation();
+    this->m_opResolver.AddTranspose();
+    this->m_opResolver.AddGather();
+    this->m_opResolver.AddMean();
+    this->m_opResolver.AddSquaredDifference();
+    this->m_opResolver.AddRsqrt();
+    this->m_opResolver.AddSub();
+    this->m_opResolver.AddPad();
+    this->m_opResolver.AddConv2D();
+    this->m_opResolver.AddSoftmax();
+    //this->m_opResolver.AddCustom("ReverseV2", tflite::Register_REVERSE_V2());
+    const TFLMRegistration& registration = tflite::Register_REVERSE_V2();
+    this->m_opResolver.AddBuiltin(tflite::BuiltinOperator_REVERSE_V2, registration,
+                      ParseReverseV2);
+
+#endif
+
+    
+    {
+        const TFLMRegistration registration =
+            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+
+        if (this->m_opResolver.AddBuiltin(
+                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+                registration, ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+            return false;
+        }
+    }
+
+if (kTfLiteOk == this->m_opResolver.AddEthosU()) {
+        info("Added %s support to op resolver\n", tflite::GetString_ETHOSU());
+    } else {
+        printf_err("Failed to add Arm NPU support to op resolver.");
+        return false;
+    }
+    return true;
+}
+
+===== MAIN LOOP =====
+/* This file was ported to work on Alif Semiconductor devices. */
+
+/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+ * Use, distribution and modification of this code is permitted under the
+ * terms stated in the Alif Semiconductor Software License Agreement
+ *
+ * You should have received a copy of the Alif Semiconductor Software
+ * License Agreement with this file. If not, please write to:
+ * contact@alifsemi.com, or visit: https://alifsemi.com/license
+ *
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+ * affiliates <open-source-office@arm.com>
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "Labels.hpp"               /* For label strings. */
+#include "UseCaseHandler.hpp"       /* Handlers for different user options. */
+#include "BufAttributes.hpp"        /* Buffer attributes to be applied */
+
+/** Based on ML framework, set up the model namespace. */
+#if defined(MLEK_FWK_TFLM)
+//#include "mlek/fwk/tflm/Wav2LetterModel.hpp"    /* Model class for running inference. */
+#include "PolyUModel1.hpp"
+#include "mlek/use_case/asr/AsrClassifier.hpp"  /* Classifier. */
+
+using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+#elif defined(MLEK_FWK_EXECUTORCH)
+#include "ConformerModel.hpp"
+
+using AsrModel = arm::app::fwk::et::ConformerModel;
+#endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+
+#include "power_mgr.h"             /* power management APIs */
+#include <zephyr/logging/log.h>
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
+
+LOG_MODULE_REGISTER(MainLoop);
+
+#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+
+#if LPGPIO_WAKEUP_ENABLED
+/* LPGPIO wake up source is used */
+#define LPGPIO_EWIC_CFG EWIC_VBAT_GPIO
+
+#if CONFIG_LPGPIO_WAKEUP_SOURCE == 4
+#define LPGPIO_WAKEUP_EVENT WE_LPGPIO4
+#elif CONFIG_LPGPIO_WAKEUP_SOURCE == 1
+#define LPGPIO_WAKEUP_EVENT WE_LPGPIO1
+#else
+#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+#endif
+#else
+#define LPGPIO_EWIC_CFG 0
+#define LPGPIO_WAKEUP_EVENT 0
+#endif
+
+namespace arm {
+namespace app {
+    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+
+    namespace asr {
+        extern uint8_t* GetModelPointer();
+        extern size_t GetModelLen();
+    } /* namespace asr */
+
+} /* namespace app */
+} /* namespace arm */
+
+
+#if LPGPIO_WAKEUP_ENABLED
+static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+	DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+#endif
+
+
+extern volatile uint8_t button_pressed;
+static struct gpio_callback button_cb_data;
+static bool por_boot;
+static struct k_sem button_wait_sem;
+
+static void button_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+{
+	ARG_UNUSED(dev);
+	ARG_UNUSED(cb);
+	ARG_UNUSED(pins);
+
+	if (por_boot) {
+		/* Ignore button press event if it's from POR boot, as the button state may be unstable during POR. */
+		return;
+	}
+
+	int val = gpio_pin_get_dt(&lpgpio_config);  // 1 = pressed, 0 = released
+    if (val < 0) {
+        LOG_ERR("Failed to read pin: %d", val);
+        return;
+    }
+
+    button_pressed = (val == 1);
+    LOG_INF("Button %s", button_pressed ? "pressed" : "released");
+
+	if (!k_sem_count_get(&button_wait_sem) && button_pressed) {
+		k_sem_give(&button_wait_sem);
+	}
+}
+
+/**
+ * Configure LPGPIO0 and LPGPIO1 as inputs with interrupts
+ * With B1/E1C need to connect wire between SW5 (P5_7) and P15_0 to use button as Push-to-talk button.
+ * With B1/E1C devkit you need to also remove resistor R64. */
+static int configure_lpgpio(void)
+{
+	int ret;
+	const struct gpio_dt_spec *spec = &lpgpio_config;
+
+	if (!spec || !spec->port) {
+		/* Just ignore */
+		LOG_ERR("lpgpio invalid");
+		return -ENODEV;
+	}
+
+	/* Configure LPGPIO0 for wakeup */
+	if (!gpio_is_ready_dt(spec)) {
+		LOG_ERR("LPGPIO0 device is not ready");
+		return -ENODEV;
+	}
+
+	ret = gpio_pin_configure_dt(spec, GPIO_INPUT | spec->dt_flags);
+	if (ret != 0) {
+		LOG_ERR("Failed to configure LPGPIO as input: %d", ret);
+		return ret;
+	}
+
+	ret = gpio_pin_interrupt_configure_dt(spec,
+					      GPIO_INT_EDGE_BOTH);
+	if (ret != 0) {
+		LOG_ERR("Failed to configure LPGPIO interrupt: %d", ret);
+		return ret;
+	}
+
+	gpio_init_callback(&button_cb_data, button_callback, BIT(spec->pin));
+	ret = gpio_add_callback(spec->port, &button_cb_data);
+	if (ret != 0) {
+		LOG_ERR("Failed to add button callback: %d", ret);
+		return ret;
+	}
+
+	LOG_INF("LPGPIO%d configured", spec->pin);
+
+	return 0;
+}
+
+/** @brief   Verify input and output tensor are of certain min dimensions. */
+static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model);
+
+void MainLoop()
+{
+	por_boot = true;
+	k_sem_init(&button_wait_sem, 0, 1);
+
+	if (configure_lpgpio()) {
+		LOG_ERR("Failed to configure LPGPIO for button input");
+		return;
+	}
+
+    PolyUModel1 model; /* Model wrapper object. */
+
+    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+                                                arm::app::asr::GetModelLen()};
+    arm::app::fwk::iface::MemoryRegion computeMem{arm::app::activationBuf,
+                                                  sizeof(arm::app::activationBuf)};
+	LOG_INF("=====================\n");
+	LOG_INF("Model Ptr: 0x%X", arm::app::asr::GetModelPointer());
+	LOG_INF("Model Size: %d", arm::app::asr::GetModelLen());
+	LOG_INF("Model data pointer: 0x%X", modelMem.data);
+	LOG_INF("Model Subgraph: %d", ::tflite::GetModel(modelMem.data)->subgraphs()->size());
+	const ::tflite::SubGraph* subgraph = ::tflite::GetModel(modelMem.data)->subgraphs()->Get(0);
+	uint32_t operators_size = ::tflite::NumSubgraphOperators(subgraph);
+	LOG_INF("Operators Size : %d", operators_size);
+	#include "tensorflow/lite/micro/micro_allocator.h"
+	LOG_INF("Node&Reg Size : %d (Total: %d)", sizeof(::tflite::NodeAndRegistration), sizeof(::tflite::NodeAndRegistration) * operators_size);
+	
+    /* Load the model. */
+    if (!model.Init(computeMem, modelMem)) {
+        LOG_ERR("Failed to initialise model");
+        return;
+    }
+	LOG_INF("Init model: OK!");
+
+    if (!VerifyTensorDimensions(model)) {
+        LOG_ERR("Model's input or output dimension verification failed");
+        return;
+    }
+
+    /* Instantiate application context. */
+    arm::app::ApplicationContext caseContext;
+    std::vector <std::string> labels;
+    GetLabelsVector(labels);
+
+// #if defined(MLEK_FWK_TFLM)
+//     arm::app::AsrClassifier classifier{
+// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputRowsIdx,
+// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputColsIdx,
+// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputRowsIdx,
+// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputColsIdx}; /* Classifier wrapper object. */
+//     caseContext.Set<uint32_t>("frameLength", arm::app::asr::g_FrameLength);
+//     caseContext.Set<uint32_t>("frameStride", arm::app::asr::g_FrameStride);
+//     caseContext.Set<float>("scoreThreshold", arm::app::asr::g_ScoreThreshold);  /* Score threshold. */
+//     caseContext.Set<uint32_t>("ctxLen", arm::app::asr::g_ctxLen);  /* Left and right context length (MFCC feat vectors). */
+//     caseContext.Set<arm::app::AsrClassifier&>("classifier", classifier);
+// #elif defined(MLEK_FWK_EXECUTORCH)
+//     caseContext.Set<uint32_t>("melSpecWindowSize", arm::app::asr::g_melSpecWindowSize);
+//     caseContext.Set<uint32_t>("melSpecHopSize", arm::app::asr::g_melSpecHopSize);
+//     caseContext.Set<uint32_t>("chunkSize", arm::app::asr::g_chunkSize);
+// #endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+//     caseContext.Set<arm::app::fwk::iface::Model&>("model", model);
+//     caseContext.Set<const std::vector <std::string>&>("labels", labels);
+
+// 	power_mgr_allow_sleep();
+// 	por_boot = false;
+
+// 	while (1) {
+// #if CONFIG_PUSH_TO_TALK
+// 		LOG_INF("Push to talk start by going to STOP mode. Press button to start capturing audio.\n");
+// 		LOG_INF("Release the button to stop capturing audio.\n");
+// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+// 		k_sem_reset(&button_wait_sem);
+// 		k_sem_take(&button_wait_sem, K_FOREVER);
+// #else
+// 		LOG_INF("Press the button to start capturing audio...\n");
+// 		LOG_INF("Release the button to stop capturing audio.\n");
+// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+// #endif
+
+// 		power_mgr_disable_sleep();
+
+// 		// Set button press to false to start capturing audio. In button callback, button_pressed will be set to true once the button is released.
+// 		ClassifyAudioHandler(caseContext);
+// #if CONFIG_PUSH_TO_TALK
+// 		power_mgr_allow_sleep();
+// 		/* In sleep.overlay, min-residency-us is 1s, so sleep for longer than,
+// 		   that to ensure we enter the deepest sleep state. Which in Alif
+// 		   chip is STOP mode. */
+// #endif
+// 	}
+}
+
+static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model)
+{
+    /* Populate tensor related parameters. */
+    auto inputTensor = model.GetInputTensor(0);
+	LOG_ERR("Input tensor size = %d\n", inputTensor->Shape().size());
+    if (inputTensor->Shape().empty()) {
+        LOG_ERR("Invalid input tensor dims\n");
+        return false;
+    }
+    if (inputTensor->Shape().size() < 3) {
+        LOG_ERR("Input tensor dimension should be >= 3\n");
+        return false;
+    }
+
+    auto outputTensor = model.GetOutputTensor(0);
+	LOG_ERR("Output tensor size = %d\n", outputTensor->Shape().size());
+    if (outputTensor->Shape().empty()) {
+        LOG_ERR("Invalid output tensor dims\n");
+        return false;
+    }
+
+    if (outputTensor->Shape().size() < 3) {
+        LOG_ERR("Output tensor dimension should be >= 3\n");
+        return false;
+    }
+
+    return true;
+}
+
+===== USE CASE HANDLER DECLARATION =====
+/* This file was ported to work on Alif Semiconductor devices. */
+
+/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+ * Use, distribution and modification of this code is permitted under the
+ * terms stated in the Alif Semiconductor Software License Agreement
+ *
+ * You should have received a copy of the Alif Semiconductor Software
+ * License Agreement with this file. If not, please write to:
+ * contact@alifsemi.com, or visit: https://alifsemi.com/license
+ *
+ */
+
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2024 Arm Limited and/or its
+ * affiliates <open-source-office@arm.com>
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#ifndef ASR_EVT_HANDLER_HPP
+#define ASR_EVT_HANDLER_HPP
+
+#include "AppContext.hpp"
+
+namespace arm {
+namespace app {
+
+    /**
+     * @brief       Handles the inference event.
+     * @param[in]   ctx         Pointer to the application context.
+     * @return      true or false based on execution success.
+     **/
+    bool ClassifyAudioHandler(ApplicationContext& ctx);
+
+} /* namespace app */
+} /* namespace arm */
+
+#endif /* ASR_EVT_HANDLER_HPP */
+
+===== CUSTOM BIDIRECTIONAL LSTM HEADER =====
+/*
+ * App-local FP32 bidirectional sequence LSTM kernel.
+ * Reuses the TFLM standard FP32 LSTM evaluator.
+ */
+#ifndef HEATSTROKE_BIDIRECTIONAL_LSTM_H_
+#define HEATSTROKE_BIDIRECTIONAL_LSTM_H_
+
+#include "tensorflow/lite/micro/micro_op_resolver.h"
+
+namespace tflite {
+
+TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstm();
+
+}  // namespace tflite
+
+#endif  // HEATSTROKE_BIDIRECTIONAL_LSTM_H_
+
+===== CUSTOM BIDIRECTIONAL LSTM IMPLEMENTATION =====
+#include "heatstroke_bidirectional_lstm.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/kernels/lstm_eval.h"
+#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+#include "tensorflow/lite/micro/micro_log.h"
+
+namespace tflite {
+namespace {
+
+struct HeatstrokeBidirectionalLstmOpData {
+  OpDataLSTM forward;
+  OpDataLSTM backward;
+  TfLiteIntArray* staged_output_dims;
+  int reverse_input_buffer;
+  int stage_output_buffer;
+};
+
+TfLiteEvalTensor* GetInputEvalTensor(TfLiteContext* context,
+                                     TfLiteNode* node,
+                                     int input_position) {
+  if (input_position < 0 || input_position >= node->inputs->size) {
+    return nullptr;
+  }
+
+  const int tensor_index = node->inputs->data[input_position];
+  if (tensor_index < 0) {
+    return nullptr;
+  }
+
+  return context->GetEvalTensor(context, tensor_index);
+}
+
+size_t TensorElementCount(const TfLiteEvalTensor* tensor) {
+  if (tensor == nullptr || tensor->dims == nullptr) {
+    return 0;
+  }
+
+  size_t count = 1;
+  for (int i = 0; i < tensor->dims->size; ++i) {
+    if (tensor->dims->data[i] < 0) {
+      return 0;
+    }
+    count *= static_cast<size_t>(tensor->dims->data[i]);
+  }
+  return count;
+}
+
+bool IsFloatTensor(const TfLiteEvalTensor* tensor) {
+  return tensor != nullptr && tensor->type == kTfLiteFloat32 &&
+         tensor->data.f != nullptr;
+}
+
+bool IsMatrix(const TfLiteEvalTensor* tensor, int rows, int columns) {
+  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+         tensor->dims->size == 2 &&
+         tensor->dims->data[0] == rows &&
+         tensor->dims->data[1] == columns;
+}
+
+bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+         tensor->dims->size == 1 &&
+         tensor->dims->data[0] == length;
+}
+
+bool ValidateDirection(TfLiteContext* context,
+                       TfLiteNode* node,
+                       int parameter_base,
+                       int hidden_state_position,
+                       int cell_state_position,
+                       int input_dimension,
+                       int batch_size,
+                       int* hidden_dimension) {
+  // Four input weights, four recurrent weights, and four biases.
+  TfLiteEvalTensor* first_weight =
+      GetInputEvalTensor(context, node, parameter_base + 1);
+
+  if (first_weight == nullptr || first_weight->dims == nullptr ||
+      first_weight->dims->size != 2) {
+    return false;
+  }
+
+  const int hidden = first_weight->dims->data[0];
+
+  if (hidden <= 0 ||
+      first_weight->dims->data[1] != input_dimension) {
+    return false;
+  }
+
+  for (int gate = 0; gate < 4; ++gate) {
+    TfLiteEvalTensor* input_weight =
+        GetInputEvalTensor(context, node, parameter_base + 1 + gate);
+    TfLiteEvalTensor* recurrent_weight =
+        GetInputEvalTensor(context, node, parameter_base + 5 + gate);
+    TfLiteEvalTensor* bias =
+        GetInputEvalTensor(context, node, parameter_base + 12 + gate);
+
+    if (!IsMatrix(input_weight, hidden, input_dimension) ||
+        !IsMatrix(recurrent_weight, hidden, hidden) ||
+        !IsVector(bias, hidden)) {
+      return false;
+    }
+  }
+
+  // This app-local evaluator currently supports standard LSTM only:
+  // no peephole weights and no projection weights.
+  for (int i = 9; i <= 11; ++i) {
+    if (GetInputEvalTensor(context, node, parameter_base + i) != nullptr) {
+      return false;
+    }
+  }
+
+  for (int i = 16; i <= 17; ++i) {
+    if (GetInputEvalTensor(context, node, parameter_base + i) != nullptr) {
+      return false;
+    }
+  }
+
+  TfLiteEvalTensor* hidden_state =
+      GetInputEvalTensor(context, node, hidden_state_position);
+  TfLiteEvalTensor* cell_state =
+      GetInputEvalTensor(context, node, cell_state_position);
+
+  if (!IsFloatTensor(hidden_state) || !IsFloatTensor(cell_state) ||
+      TensorElementCount(hidden_state) !=
+          static_cast<size_t>(batch_size * hidden) ||
+      TensorElementCount(cell_state) !=
+          static_cast<size_t>(batch_size * hidden)) {
+    return false;
+  }
+
+  *hidden_dimension = hidden;
+  return true;
+}
+
+void InitializeFloatLstmParameters(
+    OpDataLSTM* op_data,
+    bool time_major,
+    int batch_size,
+    int time_steps,
+    int input_dimension,
+    int hidden_dimension,
+    TfLiteFusedActivation activation,
+    float cell_clip) {
+  op_data->size_info.time_major = time_major;
+  op_data->size_info.batch_size = batch_size;
+  op_data->size_info.time_steps = time_steps;
+  op_data->size_info.input_dimension = input_dimension;
+  op_data->size_info.state_dimension = hidden_dimension;
+
+  op_data->cell_gate_nonlinear_type = activation;
+  op_data->cell_state_info = CreateLstmCellStateInfoFloat(cell_clip);
+
+  op_data->forget_gate_parameters = CreateGateParamsFloat();
+  op_data->input_gate_parameters = CreateGateParamsFloat();
+  op_data->cell_gate_parameters = CreateGateParamsFloat();
+  op_data->output_gate_parameters = CreateGateParamsFloat();
+
+  op_data->inter_gate_parameters.forget_cell_mul_params =
+      CreateInterGateMulParamsFloat();
+  op_data->inter_gate_parameters.input_mul_params =
+      CreateInterGateMulParamsFloat();
+  op_data->inter_gate_parameters.output_mul_params =
+      CreateInterGateMulParamsFloat();
+}
+
+void* HeatstrokeBidirectionalLstmInit(TfLiteContext* context,
+                                      const char* buffer,
+                                      size_t length) {
+  (void)buffer;
+  (void)length;
+
+  auto* data = static_cast<HeatstrokeBidirectionalLstmOpData*>(
+      context->AllocatePersistentBuffer(
+          context, sizeof(HeatstrokeBidirectionalLstmOpData)));
+
+  if (data != nullptr) {
+    std::memset(data, 0, sizeof(*data));
+  }
+  return data;
+}
+
+TfLiteStatus HeatstrokeBidirectionalLstmPrepare(TfLiteContext* context,
+                                                TfLiteNode* node) {
+  if (node == nullptr || node->builtin_data == nullptr ||
+      node->inputs == nullptr || node->outputs == nullptr ||
+      node->inputs->size != 48 || node->outputs->size != 1 ||
+      node->user_data == nullptr) {
+    MicroPrintf("Heatstroke BiLSTM: invalid node configuration");
+    return kTfLiteError;
+  }
+
+  auto* op_data =
+      static_cast<HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+
+  const auto* params =
+      static_cast<const TfLiteBidirectionalSequenceLSTMParams*>(
+          node->builtin_data);
+
+  if (!params->time_major || !params->merge_outputs ||
+      params->activation != kTfLiteActTanh) {
+    MicroPrintf("Heatstroke BiLSTM: unsupported LSTM options");
+    return kTfLiteError;
+  }
+
+  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+  TfLiteEvalTensor* output =
+      context->GetEvalTensor(context, node->outputs->data[0]);
+
+  if (!IsFloatTensor(input) || !IsFloatTensor(output) ||
+      input->dims == nullptr || output->dims == nullptr ||
+      input->dims->size != 3 || output->dims->size != 3) {
+    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+    return kTfLiteError;
+  }
+
+  const int time_steps = input->dims->data[0];
+  const int batch_size = input->dims->data[1];
+  const int input_dimension = input->dims->data[2];
+
+  // The supplied heat-stress model uses time-major, single-batch sequences.
+  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+    return kTfLiteError;
+  }
+
+  int forward_hidden = 0;
+  int backward_hidden = 0;
+
+  if (!ValidateDirection(context, node, 0, 35, 36,
+                         input_dimension, batch_size, &forward_hidden) ||
+      !ValidateDirection(context, node, 17, 37, 38,
+                         input_dimension, batch_size, &backward_hidden) ||
+      forward_hidden != backward_hidden) {
+    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+    return kTfLiteError;
+  }
+
+  const int hidden = forward_hidden;
+
+  if (output->dims->data[0] != time_steps ||
+      output->dims->data[1] != batch_size ||
+      output->dims->data[2] != 2 * hidden) {
+    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+    return kTfLiteError;
+  }
+
+  // The directional evaluator must see [time_steps, batch_size, hidden],
+  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+  const size_t staged_dims_bytes =
+      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+  op_data->staged_output_dims =
+      static_cast<TfLiteIntArray*>(
+          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+
+  if (op_data->staged_output_dims == nullptr) {
+    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+    return kTfLiteError;
+  }
+
+  op_data->staged_output_dims->size = 3;
+  op_data->staged_output_dims->data[0] = time_steps;
+  op_data->staged_output_dims->data[1] = batch_size;
+  op_data->staged_output_dims->data[2] = hidden;
+
+  // The supplied model has no auxiliary input tensors.
+  for (int i = 39; i < 48; ++i) {
+    if (GetInputEvalTensor(context, node, i) != nullptr) {
+      MicroPrintf("Heatstroke BiLSTM: auxiliary inputs are unsupported");
+      return kTfLiteError;
+    }
+  }
+
+  InitializeFloatLstmParameters(
+      &op_data->forward, true, batch_size, time_steps,
+      input_dimension, hidden, params->activation, params->cell_clip);
+
+  InitializeFloatLstmParameters(
+      &op_data->backward, true, batch_size, time_steps,
+      input_dimension, hidden, params->activation, params->cell_clip);
+
+  const size_t reverse_bytes =
+      static_cast<size_t>(time_steps) * batch_size *
+      input_dimension * sizeof(float);
+
+  const size_t stage_bytes =
+      static_cast<size_t>(time_steps) * batch_size *
+      hidden * sizeof(float);
+
+  const size_t internal_bytes =
+      static_cast<size_t>(batch_size) * hidden * sizeof(float);
+
+  if (context->RequestScratchBufferInArena(
+          context, reverse_bytes, &op_data->reverse_input_buffer) !=
+          kTfLiteOk ||
+      context->RequestScratchBufferInArena(
+          context, stage_bytes, &op_data->stage_output_buffer) !=
+          kTfLiteOk) {
+    MicroPrintf("Heatstroke BiLSTM: scratch allocation failed");
+    return kTfLiteError;
+  }
+
+  // Match the four scratch buffers requested by TFLM's existing
+  // unidirectional FP32 LSTM implementation.
+  for (int i = 0; i < 4; ++i) {
+    if (context->RequestScratchBufferInArena(
+            context, internal_bytes,
+            &op_data->forward.buffer_indices[i]) != kTfLiteOk) {
+      MicroPrintf("Heatstroke BiLSTM: LSTM scratch allocation failed");
+      return kTfLiteError;
+    }
+
+    // Forward and backward passes execute sequentially, so they can
+    // safely reuse the same four evaluator scratch buffers.
+    op_data->backward.buffer_indices[i] =
+        op_data->forward.buffer_indices[i];
+  }
+
+  return kTfLiteOk;
+}
+
+void PopulateDirectionContents(TfLiteContext* context,
+                               TfLiteNode* node,
+                               int parameter_base,
+                               int hidden_state_position,
+                               int cell_state_position,
+                               const TfLiteEvalTensor* input,
+                               TfLiteEvalTensor* staged_output,
+                               LSTMKernelContents* contents) {
+  for (int i = 0; i < 24; ++i) {
+    contents->internal_tensors[i] = nullptr;
+  }
+
+  contents->internal_tensors[0] =
+      const_cast<TfLiteEvalTensor*>(input);
+
+  for (int i = 1; i <= 17; ++i) {
+    contents->internal_tensors[i] =
+        GetInputEvalTensor(context, node, parameter_base + i);
+  }
+
+  contents->internal_tensors[18] =
+      GetInputEvalTensor(context, node, hidden_state_position);
+  contents->internal_tensors[19] =
+      GetInputEvalTensor(context, node, cell_state_position);
+
+  contents->output_tensor = staged_output;
+}
+
+TfLiteStatus HeatstrokeBidirectionalLstmEval(TfLiteContext* context,
+                                             TfLiteNode* node) {
+  if (node == nullptr || node->user_data == nullptr) {
+    return kTfLiteError;
+  }
+
+  const auto* op_data =
+      static_cast<const HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+
+  const TfLiteEvalTensor* input =
+      GetInputEvalTensor(context, node, 0);
+
+  TfLiteEvalTensor* output =
+      context->GetEvalTensor(context, node->outputs->data[0]);
+
+  if (!IsFloatTensor(input) || !IsFloatTensor(output)) {
+    return kTfLiteError;
+  }
+
+  const int time_steps = op_data->forward.size_info.time_steps;
+  const int input_dimension = op_data->forward.size_info.input_dimension;
+  const int hidden = op_data->forward.size_info.state_dimension;
+
+  auto* reversed_input = static_cast<float*>(
+      context->GetScratchBuffer(
+          context, op_data->reverse_input_buffer));
+
+  auto* staged_output = static_cast<float*>(
+      context->GetScratchBuffer(
+          context, op_data->stage_output_buffer));
+
+  if (reversed_input == nullptr || staged_output == nullptr) {
+    MicroPrintf("Heatstroke BiLSTM: scratch buffer unavailable");
+    return kTfLiteError;
+  }
+
+  const float* input_data = input->data.f;
+  float* output_data = output->data.f;
+
+  // Reverse the time dimension for the backward direction.
+  for (int t = 0; t < time_steps; ++t) {
+    std::memcpy(
+        reversed_input + t * input_dimension,
+        input_data + (time_steps - 1 - t) * input_dimension,
+        input_dimension * sizeof(float));
+  }
+
+  TfLiteEvalTensor reversed_input_tensor = *input;
+  reversed_input_tensor.data.f = reversed_input;
+
+  TfLiteEvalTensor staged_output_tensor = *output;
+  staged_output_tensor.data.f = staged_output;
+  staged_output_tensor.dims = op_data->staged_output_dims;
+
+  LSTMKernelContents forward_contents{};
+  PopulateDirectionContents(
+      context, node, 0, 35, 36,
+      input, &staged_output_tensor, &forward_contents);
+
+  LSTMBuffers<float> buffers =
+      CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+
+  TfLiteStatus forward_status =
+      EvalLstm<float, float, float, float>(
+
+===== REVERSE V2 IMPLEMENTATION =====
+
+#include "reverse_v2.h"
+
+#include <cstdint>
+#include <cstring>
+
+#include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+
+namespace tflite {
+namespace {
+
+struct ReverseV2OpData {
+  // No persistent or temporary memory required.
+};
+
+// Check whether a dimension is included in the axis tensor.
+template <typename AxisType>
+bool IsDimensionReversed(
+    int dimension,
+    int rank,
+    const AxisType* axes,
+    int num_axes) {
+
+  for (int i = 0; i < num_axes; ++i) {
+    int axis = static_cast<int>(axes[i]);
+
+    // Normalize negative axes.
+    if (axis < 0) {
+      axis += rank;
+    }
+
+    if (axis == dimension) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Validate axis values.
+template <typename AxisType>
+bool ValidateAxes(
+    const AxisType* axes,
+    int num_axes,
+    int rank) {
+
+  for (int i = 0; i < num_axes; ++i) {
+    const int64_t axis = static_cast<int64_t>(axes[i]);
+
+    if (axis < -rank || axis >= rank) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+// Generic reverse implementation.
+template <typename T, typename AxisType>
+void ReverseTensor(
+    const T* input,
+    T* output,
+    const TfLiteIntArray* dims,
+    const AxisType* axes,
+    int num_axes,
+    int rank,
+    int num_elements) {
+
+  for (int out_index = 0;
+       out_index < num_elements;
+       ++out_index) {
+
+    int input_index = 0;
+
+    // Calculate the corresponding input offset.
+    for (int d = 0; d < rank; ++d) {
+
+      const int dim_size = dims->data[d];
+
+      int stride = 1;
+
+      for (int j = d + 1; j < rank; ++j) {
+        stride *= dims->data[j];
+      }
+
+      const int coordinate =
+          (out_index / stride) % dim_size;
+
+      const bool reverse = IsDimensionReversed(
+          d, rank, axes, num_axes);
+
+      const int input_coordinate =
+          reverse ? (dim_size - 1 - coordinate)
+                  : coordinate;
+
+      input_index += input_coordinate * stride;
+    }
+
+    output[out_index] = input[input_index];
+  }
+}
+
+TfLiteStatus Prepare(
+    TfLiteContext* context,
+    TfLiteNode* node) {
+      
+  MicroContext* micro_context = GetMicroContext(context);
+
+  TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
+  TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+
+  TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+  TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 1);
+  TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+
+  TF_LITE_ENSURE(context, input != nullptr);
+  TF_LITE_ENSURE(context, axis != nullptr);
+  TF_LITE_ENSURE(context, output != nullptr);
+
+  TF_LITE_ENSURE_EQ(context, input->type, output->type);
+
+  TF_LITE_ENSURE_EQ(
+      context, input->dims->size, output->dims->size);
+
+  for (int i = 0; i < input->dims->size; ++i) {
+    TF_LITE_ENSURE_EQ(
+        context,
+        input->dims->data[i],
+        output->dims->data[i]);
+  }
+
+  TF_LITE_ENSURE(
+      context,
+      axis->type == kTfLiteInt32 ||
+      axis->type == kTfLiteInt64);
+
+  micro_context->DeallocateTempTfLiteTensor(input);
+  micro_context->DeallocateTempTfLiteTensor(axis);
+  micro_context->DeallocateTempTfLiteTensor(output);
+
+  return kTfLiteOk;
+}
+
+template <typename T, typename AxisType>
+TfLiteStatus EvalTyped(
+    TfLiteContext* context,
+    const TfLiteTensor* input,
+    const TfLiteTensor* axis,
+    TfLiteTensor* output) {
+
+  const AxisType* axes =
+      GetTensorData<AxisType>(axis);
+
+  const int rank = input->dims->size;
+  const int num_axes = NumElements(axis);
+  const int num_elements = NumElements(input);
+
+  if (num_axes > 0) {
+    TF_LITE_ENSURE(context, axes != nullptr);
+
+    TF_LITE_ENSURE(
+        context,
+        ValidateAxes(axes, num_axes, rank));
+  }
+
+  const T* input_data = GetTensorData<T>(input);
+  T* output_data = GetTensorData<T>(output);
+
+  if (num_elements == 0) {
+    return kTfLiteOk;
+  }
+
+  TF_LITE_ENSURE(context, input_data != nullptr);
+  TF_LITE_ENSURE(context, output_data != nullptr);
+
+  ReverseTensor(
+      input_data,
+      output_data,
+      input->dims,
+      axes,
+      num_axes,
+      rank,
+      num_elements);
+
+  return kTfLiteOk;
+}
+
+TfLiteStatus Eval(
+    TfLiteContext* context,
+    TfLiteNode* node) {
+
+  const TfLiteTensor* input =
+      GetInput(context, node, 0);
+
+  const TfLiteTensor* axis =
+      GetInput(context, node, 1);
+
+  TfLiteTensor* output =
+      GetOutput(context, node, 0);
+
+  TF_LITE_ENSURE(context, input != nullptr);
+  TF_LITE_ENSURE(context, axis != nullptr);
+  TF_LITE_ENSURE(context, output != nullptr);
+
+  if (axis->type == kTfLiteInt32) {
+
+    switch (input->type) {
+
+      case kTfLiteFloat32:
+        return EvalTyped<float, int32_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt8:
+        return EvalTyped<int8_t, int32_t>(
+            context, input, axis, output);
+
+      case kTfLiteUInt8:
+        return EvalTyped<uint8_t, int32_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt16:
+        return EvalTyped<int16_t, int32_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt32:
+        return EvalTyped<int32_t, int32_t>(
+            context, input, axis, output);
+
+      default:
+        TF_LITE_KERNEL_LOG(
+            context,
+            "REVERSE_V2: Unsupported input type %d",
+            input->type);
+        return kTfLiteError;
+    }
+  }
+
+  if (axis->type == kTfLiteInt64) {
+
+    switch (input->type) {
+
+      case kTfLiteFloat32:
+        return EvalTyped<float, int64_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt8:
+        return EvalTyped<int8_t, int64_t>(
+            context, input, axis, output);
+
+      case kTfLiteUInt8:
+        return EvalTyped<uint8_t, int64_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt16:
+        return EvalTyped<int16_t, int64_t>(
+            context, input, axis, output);
+
+      case kTfLiteInt32:
+        return EvalTyped<int32_t, int64_t>(
+            context, input, axis, output);
+
+      default:
+        TF_LITE_KERNEL_LOG(
+            context,
+            "REVERSE_V2: Unsupported input type %d",
+            input->type);
+        return kTfLiteError;
+    }
+  }
+
+  return kTfLiteError;
+}
+
+}  // namespace
+
+TFLMRegistration Register_REVERSE_V2() {
+  return tflite::micro::RegisterOp(nullptr, Prepare, Eval);
+}
+
+}  // namespace tflite
+
+===== TFLM MODEL BASE CLASS AND API =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/YoloFastestModel.cc:21:const tflite::MicroOpResolver& arm::app::fwk::tflm::YoloFastestModel::GetOpResolver()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/YoloFastestModel.cc:26:bool arm::app::fwk::tflm::YoloFastestModel::EnlistOperations()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroNetKwsModel.hpp:42:    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroNetKwsModel.hpp:45:    bool EnlistOperations() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp:49:    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp:52:    bool EnlistOperations() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/AdModel.hpp:40:    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/AdModel.hpp:43:    bool EnlistOperations() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TestModel.cc:21:const tflite::MicroOpResolver& arm::app::fwk::tflm::TestModel::GetOpResolver()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TestModel.cc:26:bool arm::app::fwk::tflm::TestModel::EnlistOperations()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/VisualWakeWordModel.hpp:35:    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/VisualWakeWordModel.hpp:38:    bool EnlistOperations() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/YoloFastestModel.hpp:44:    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/YoloFastestModel.hpp:47:    bool EnlistOperations() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:40:class TflmModel : public iface::Model {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:58:    std::vector<size_t> GetInputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:61:    std::vector<size_t> GetOutputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:117:    virtual const tflite::MicroOpResolver& GetOpResolver() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:124:    virtual bool EnlistOperations() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/VisualWakeWordModel.cc:20:const tflite::MicroOpResolver& arm::app::fwk::tflm::VisualWakeWordModel::GetOpResolver()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/VisualWakeWordModel.cc:25:bool arm::app::fwk::tflm::VisualWakeWordModel::EnlistOperations()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/Wav2LetterModel.cc:21:const tflite::MicroOpResolver& arm::app::fwk::tflm::Wav2LetterModel::GetOpResolver()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/Wav2LetterModel.cc:26:bool arm::app::fwk::tflm::Wav2LetterModel::EnlistOperations()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TestModel.hpp:28:    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TestModel.hpp:31:    bool EnlistOperations() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MobileNetModel.hpp:34:    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MobileNetModel.hpp:37:    bool EnlistOperations() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:103:TflmModel::TflmModel() {}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:106:bool TflmModel::Init(iface::MemoryRegion& computeBuffer,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:141:    this->EnlistOperations();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:167:        this->m_backendData.m_pModel, this->GetOpResolver(), this->m_backendData.m_pAllocator);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:217:std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:225:std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:233:void TflmModel::LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:254:void TflmModel::LogInterpreterInfo()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:288:        tflite::GetRegistrationFromOpCode(opcode, this->GetOpResolver(), &reg);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:312:bool TflmModel::IsInited() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:317:bool TflmModel::IsDataSigned() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:331:bool TflmModel::ContainsEthosUOperator() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:353:bool TflmModel::RunInference()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:368:size_t TflmModel::GetNumInputs() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:376:size_t TflmModel::GetNumOutputs() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:384:iface::TensorType TflmModel::GetType() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:389:std::vector<size_t> TflmModel::GetInputShape(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:397:std::vector<size_t> TflmModel::GetOutputShape(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:406:const iface::MemoryRegion& TflmModel::GetComputeBuffer() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:412:const iface::MemoryRegion& TflmModel::GetModelBuffer() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:417:const TflmBackendData& TflmModel::GetBackendData() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroNetKwsModel.cc:20:const tflite::MicroOpResolver& arm::app::fwk::tflm::MicroNetKwsModel::GetOpResolver()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroNetKwsModel.cc:25:bool arm::app::fwk::tflm::MicroNetKwsModel::EnlistOperations()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:20:const tflite::MicroOpResolver& arm::app::fwk::tflm::RNNoiseModel::GetOpResolver()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:25:bool arm::app::fwk::tflm::RNNoiseModel::EnlistOperations()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MobileNetModel.cc:20:const tflite::MicroOpResolver& arm::app::fwk::tflm::MobileNetModel::GetOpResolver()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MobileNetModel.cc:25:bool arm::app::fwk::tflm::MobileNetModel::EnlistOperations()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/Wav2LetterModel.hpp:46:    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/Wav2LetterModel.hpp:49:    bool EnlistOperations() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/AdModel.cc:20:const tflite::MicroOpResolver& arm::app::fwk::tflm::AdModel::GetOpResolver()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/AdModel.cc:25:bool arm::app::fwk::tflm::AdModel::EnlistOperations()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:57:    virtual std::vector<size_t> GetInputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:60:    virtual std::vector<size_t> GetOutputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:502:std::vector<size_t> EtModel::GetInputShape(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:508:std::vector<size_t> EtModel::GetOutputShape(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:65:    std::vector<size_t> GetInputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:68:    std::vector<size_t> GetOutputShape(size_t index) const override;
+
+===== MODEL GENERATION REFERENCES =====
+121:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+122:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+123:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+124:set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+127:if (NOT EXISTS ${POLYU_MODEL_PATH})
+129:        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+141:generate_model_code(
+142:    MODEL_PATH  ${POLYU_MODEL_PATH}
+145:    NAMESPACE   "arm" "app" "asr")
+151:set(ASR_LABELS_CPP_FILE Labels)
+188:target_sources(app PRIVATE
+213:    mlek::asr_impl
+
+===== END OF FOLLOW-UP =====
