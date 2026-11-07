@@ -1,0 +1,188 @@
+===== C++ FLATBUFFER STATE INSPECTION =====
+Sat Nov  7 09:00:57 PM HKT 2026
+
+===== MODEL CHECKSUM =====
+60f5c826e709c5e86fe722acc8ec6d8e8e778a1229554223465e8cd016597278  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+
+===== SCHEMA HEADER =====
+-rwxrwxr-x 1 user user 1.1M Oct 30 16:34 /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h
+
+===== FLATBUFFERS HEADER DISCOVERY =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include/flatbuffers/flatbuffers.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/include/flatbuffers/flatbuffers.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/include/flatbuffers/flatbuffers.h
+/home/user/sdk-alif/modules/lib/chre/external/flatbuffers/include/flatbuffers/flatbuffers.h
+/home/user/sdk-alif/modules/lib/executorch/pip-out/temp.linux-x86_64-cpython-312/cmake-out/third-party/flatc_ep/include/flatbuffers/flatbuffers.h
+/home/user/sdk-alif/modules/lib/executorch/third-party/flatcc/test/benchmark/benchflatc/flatbuffers/flatbuffers.h
+/home/user/sdk-alif/modules/lib/executorch/third-party/flatbuffers/include/flatbuffers/flatbuffers.h
+/home/user/sdk-alif/build_kws_ethosu/modules/executorch/executorch/third-party/flatc_ep/include/flatbuffers/flatbuffers.h
+/home/user/sdk-alif/build_kws_ethosu/flatcc_src/test/benchmark/benchflatc/flatbuffers/flatbuffers.h
+
+===== COMPILER =====
+g++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+
+===== C++ SOURCE =====
+#include <cstdint>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <vector>
+
+#include "lite/schema/schema_generated.h"
+
+int main(int argc, char** argv) {
+    if (argc != 2) {
+        std::cerr << "Usage: inspect_bilstm_state MODEL.tflite\n";
+        return 2;
+    }
+
+    std::ifstream file(argv[1], std::ios::binary);
+    if (!file) {
+        std::cerr << "Cannot open model\n";
+        return 3;
+    }
+
+    std::vector<uint8_t> data(
+        (std::istreambuf_iterator<char>(file)),
+        std::istreambuf_iterator<char>());
+
+    const tflite::Model* model = tflite::GetModel(data.data());
+
+    if (!model || !model->subgraphs() ||
+        model->subgraphs()->size() == 0) {
+        std::cerr << "Invalid model or no subgraphs\n";
+        return 4;
+    }
+
+    const tflite::SubGraph* sg = model->subgraphs()->Get(0);
+    const auto* tensors = sg->tensors();
+    const auto* operators = sg->operators();
+    const auto* opcodes = model->operator_codes();
+
+    std::cout << "MODEL_VERSION: " << model->version() << "\n";
+    std::cout << "TENSOR_COUNT: " << tensors->size() << "\n";
+    std::cout << "OPERATOR_COUNT: " << operators->size() << "\n";
+
+    std::cout << "\n===== ALL VARIABLE TENSORS =====\n";
+    int variable_count = 0;
+
+    for (uint32_t i = 0; i < tensors->size(); ++i) {
+        const auto* t = tensors->Get(i);
+
+        if (!t->is_variable()) continue;
+
+        ++variable_count;
+
+        std::cout << "INDEX: " << i
+                  << " NAME: "
+                  << (t->name() ? t->name()->c_str() : "(unnamed)")
+                  << " SHAPE: ";
+
+        if (t->shape()) {
+            for (uint32_t j = 0; j < t->shape()->size(); ++j)
+                std::cout << t->shape()->Get(j) << " ";
+        }
+
+        std::cout << " TYPE: " << static_cast<int>(t->type())
+                  << " IS_VARIABLE: " << t->is_variable() << "\n";
+    }
+
+    std::cout << "VARIABLE_TENSOR_COUNT: "
+              << variable_count << "\n";
+
+    std::cout << "\n===== BIDIRECTIONAL LSTM OPERATORS =====\n";
+
+    int found = 0;
+
+    for (uint32_t oi = 0; oi < operators->size(); ++oi) {
+        const auto* op = operators->Get(oi);
+        const auto* opcode = opcodes->Get(op->opcode_index());
+
+        if (static_cast<int>(opcode->builtin_code()) != 52)
+            continue;
+
+        ++found;
+
+        const auto* inputs = op->inputs();
+
+        std::cout << "\nOPERATOR_INDEX: " << oi << "\n";
+        std::cout << "INPUT_COUNT: " << inputs->size() << "\n";
+
+        for (int slot : {25, 26, 27, 28}) {
+            if (slot >= static_cast<int>(inputs->size())) {
+                std::cout << "ERROR: MISSING SLOT " << slot << "\n";
+                continue;
+            }
+
+            int tensor_index = inputs->Get(slot);
+
+            if (tensor_index < 0 ||
+                tensor_index >= static_cast<int>(tensors->size())) {
+                std::cout << "ERROR: INVALID STATE SLOT "
+                          << slot << " INDEX " << tensor_index << "\n";
+                continue;
+            }
+
+            const auto* t = tensors->Get(tensor_index);
+
+            std::cout << "STATE_SLOT: " << slot
+                      << " TENSOR_INDEX: " << tensor_index
+                      << " NAME: "
+                      << (t->name() ? t->name()->c_str() : "(unnamed)")
+                      << " SHAPE: ";
+
+            if (t->shape()) {
+                for (uint32_t j = 0; j < t->shape()->size(); ++j)
+                    std::cout << t->shape()->Get(j) << " ";
+            }
+
+            std::cout << " TYPE: " << static_cast<int>(t->type())
+                      << " IS_VARIABLE: " << t->is_variable()
+                      << "\n";
+        }
+    }
+
+    std::cout << "\nBIDIRECTIONAL_LSTM_COUNT: " << found << "\n";
+
+    return found == 2 ? 0 : 5;
+}
+
+===== COMPILATION =====
+COMPILE_EXIT_STATUS=0
+
+===== MODEL INSPECTION =====
+MODEL_VERSION: 3
+TENSOR_COUNT: 527
+OPERATOR_COUNT: 307
+
+===== ALL VARIABLE TENSORS =====
+INDEX: 303 NAME: fw_output_state SHAPE: 128  TYPE: 0 IS_VARIABLE: 1
+INDEX: 304 NAME: fw_cell_state SHAPE: 128  TYPE: 0 IS_VARIABLE: 1
+INDEX: 305 NAME: fw_output_state0 SHAPE: 128  TYPE: 0 IS_VARIABLE: 1
+INDEX: 306 NAME: fw_cell_state0 SHAPE: 128  TYPE: 0 IS_VARIABLE: 1
+INDEX: 460 NAME: fw_output_state1 SHAPE: 64  TYPE: 0 IS_VARIABLE: 1
+INDEX: 461 NAME: fw_cell_state1 SHAPE: 64  TYPE: 0 IS_VARIABLE: 1
+INDEX: 462 NAME: fw_output_state2 SHAPE: 64  TYPE: 0 IS_VARIABLE: 1
+INDEX: 463 NAME: fw_cell_state2 SHAPE: 64  TYPE: 0 IS_VARIABLE: 1
+VARIABLE_TENSOR_COUNT: 8
+
+===== BIDIRECTIONAL LSTM OPERATORS =====
+
+OPERATOR_INDEX: 171
+INPUT_COUNT: 29
+STATE_SLOT: 25 TENSOR_INDEX: 303 NAME: fw_output_state SHAPE: 128  TYPE: 0 IS_VARIABLE: 1
+STATE_SLOT: 26 TENSOR_INDEX: 304 NAME: fw_cell_state SHAPE: 128  TYPE: 0 IS_VARIABLE: 1
+STATE_SLOT: 27 TENSOR_INDEX: 305 NAME: fw_output_state0 SHAPE: 128  TYPE: 0 IS_VARIABLE: 1
+STATE_SLOT: 28 TENSOR_INDEX: 306 NAME: fw_cell_state0 SHAPE: 128  TYPE: 0 IS_VARIABLE: 1
+
+OPERATOR_INDEX: 262
+INPUT_COUNT: 29
+STATE_SLOT: 25 TENSOR_INDEX: 460 NAME: fw_output_state1 SHAPE: 64  TYPE: 0 IS_VARIABLE: 1
+STATE_SLOT: 26 TENSOR_INDEX: 461 NAME: fw_cell_state1 SHAPE: 64  TYPE: 0 IS_VARIABLE: 1
+STATE_SLOT: 27 TENSOR_INDEX: 462 NAME: fw_output_state2 SHAPE: 64  TYPE: 0 IS_VARIABLE: 1
+STATE_SLOT: 28 TENSOR_INDEX: 463 NAME: fw_cell_state2 SHAPE: 64  TYPE: 0 IS_VARIABLE: 1
+
+BIDIRECTIONAL_LSTM_COUNT: 2
+INSPECTION_EXIT_STATUS=0
+
+===== END =====
