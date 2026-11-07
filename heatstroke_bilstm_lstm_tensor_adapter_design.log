@@ -1,0 +1,639 @@
+===== BILSTM LSTM TENSOR ADAPTER DESIGN REVIEW =====
+Sat Nov  7 09:04:03 PM HKT 2026
+
+===== SOURCE FILES =====
+-rw-rw-r-- 1 user user 12157 Oct 30 16:34 /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc
+-rw-rw-r-- 1 user user 23757 Oct 30 16:34 /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h
+-rw-rw-r-- 1 user user  5638 Oct 30 16:34 /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h
+
+===== LstmTensors IMPLEMENTATION LOCATIONS =====
+grep: Unmatched ( or \(
+
+===== LSTM TENSOR CONSTRUCTOR / VALIDATION IMPLEMENTATION =====
+LstmTensors::LstmTensors(TfLiteContext* context, TfLiteNode* node) {
+  micro_context_ = GetMicroContext(context);
+  // 24 internal tensors. see lstm_shared.h for tensor names
+  for (size_t i = 0; i < 24; i++) {
+    internal_tensors_[i] = micro_context_->AllocateTempInputTensor(node, i);
+  }
+  output_tensor_ =
+      micro_context_->AllocateTempOutputTensor(node, kLstmOutputTensor);
+}
+
+LstmTensors::~LstmTensors() {
+  for (size_t i = 0; i < 24; i++) {
+    if (internal_tensors_[i] != nullptr) {
+      micro_context_->DeallocateTempTfLiteTensor(internal_tensors_[i]);
+    }
+  }
+  micro_context_->DeallocateTempTfLiteTensor(output_tensor_);
+}
+
+// Verify the LSTM internal tensor properties (e.g., type checks)
+// Input/output/states/fc weights tensors are required for kernel evaulation.
+// The state tensors should be variables. Variants of the standard LSTM
+// are not supported here, therefore their corresponding tensors should be
+// invalid
+TfLiteStatus LstmTensors::ValidateTensorStatus(TfLiteContext* context) const {
+  // Verify certain tensor properties
+  // input tensor
+  TF_LITE_ENSURE(context, internal_tensors_[kLstmInputTensor] != nullptr);
+  // hidden state
+  TF_LITE_ENSURE(context, internal_tensors_[kLstmOutputStateTensor] != nullptr);
+  TF_LITE_ENSURE(context,
+                 internal_tensors_[kLstmOutputStateTensor]->is_variable);
+  // hidden state becomes input so they must have the same type
+  TF_LITE_ENSURE_EQ(context, internal_tensors_[kLstmOutputStateTensor]->type,
+                    internal_tensors_[kLstmInputTensor]->type);
+  // cell state
+  TF_LITE_ENSURE(context, internal_tensors_[kLstmCellStateTensor] != nullptr);
+  TF_LITE_ENSURE(context, internal_tensors_[kLstmCellStateTensor]->is_variable);
+  // output
+  TF_LITE_ENSURE(context, output_tensor_ != nullptr);
+  // output type is the same as the input type (activations)
+  TF_LITE_ENSURE_EQ(context, output_tensor_->type,
+                    internal_tensors_[kLstmInputTensor]->type);
+
+  // weight tensors (1-9, see lstm_shared for index definition)
+  const auto weight_type =
+      internal_tensors_[kLstmInputToForgetWeightsTensor]->type;
+  for (size_t i = 1; i < 9; i++) {
+    TF_LITE_ENSURE(context, internal_tensors_[i] != nullptr);
+    TF_LITE_ENSURE_EQ(context, internal_tensors_[i]->type, weight_type);
+  }
+
+  // bias tensors (12-15, see lstm_shared for index definition)
+  const auto bias_type = internal_tensors_[kLstmForgetGateBiasTensor]->type;
+  for (size_t i = 12; i < 16; i++) {
+    TF_LITE_ENSURE(context, internal_tensors_[i] != nullptr);
+    TF_LITE_ENSURE_EQ(context, internal_tensors_[i]->type, bias_type);
+  }
+  // Tensors from LSTM variants are invalid
+  // No peephole
+  for (size_t i = 9; i < 12; i++) {
+    TF_LITE_ENSURE(context, internal_tensors_[i] == nullptr);
+  }
+  // No projection
+  for (size_t i = 16; i < 18; i++) {
+    TF_LITE_ENSURE(context, internal_tensors_[i] == nullptr);
+  }
+  // No internal layer norm
+  for (size_t i = 20; i < 24; i++) {
+    TF_LITE_ENSURE(context, internal_tensors_[i] == nullptr);
+  }
+  return kTfLiteOk;
+}
+
+namespace lstm_internal {
+
+const int32_t kInt16Max = std::numeric_limits<int16_t>::max();
+const int32_t kInt16Min = std::numeric_limits<int16_t>::min();
+
+void AddElementWise(const int16_t* input_1, const int16_t* input_2, int n_batch,
+                    int n_input, int16_t* output) {
+  for (int batch = 0; batch < n_batch; ++batch) {
+    for (int i = 0; i < n_input; ++i) {
+      const int index = batch * n_input + i;
+      int32_t sum = input_1[index] + input_2[index];
+      const int32_t sum_clamped = std::min(kInt16Max, std::max(kInt16Min, sum));
+      output[index] = static_cast<int16_t>(sum_clamped);
+    }
+  }
+}
+
+void AddElementWise(const float* input_1, const float* input_2, int n_batch,
+                    int n_input, float* output) {
+  for (int batch = 0; batch < n_batch; ++batch) {
+    for (int i = 0; i < n_input; ++i) {
+      const int index = batch * n_input + i;
+      output[index] = input_1[index] + input_2[index];
+    }
+  }
+}
+
+void Sigmoid(const RuntimeShape& data_shape, int16_t* data) {
+  reference_integer_ops::Logistic(
+      0 /*data->input_multiplier*/, 0 /*data->input_left_shift */,
+      data_shape.FlatSize() /*NumElements(input->dims)*/,
+      data /* tflite::micro::GetTensorData<int16_t>(input) */,
+      data /*tflite::micro::GetTensorData<int16_t>(output) */);
+}
+
+void Sigmoid(const RuntimeShape& data_shape, float* data) {
+  reference_ops::Logistic(data_shape, data, data_shape, data);
+}
+
+void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+          int16_t* input_data, const RuntimeShape& output_data_shape,
+          int16_t* output_data) {
+  int32_t tanh_input_left_shift = (15 + cell_state_scale_power) - 3;
+  int32_t input_multiplier = 0;
+  if (tanh_input_left_shift < 0) /* handling negative shift value */
+  {
+    tanh_input_left_shift = -tanh_input_left_shift;
+    input_multiplier = 3;
+  }
+  reference_integer_ops::Tanh(input_multiplier, tanh_input_left_shift,
+                              input_data_shape, input_data, output_data_shape,
+
+===== INTERNAL TENSOR INDEX DEFINITIONS =====
+16-#define TENSORFLOW_LITE_MICRO_KERNELS_LSTM_SHARED_H_
+17-
+18-#include "tensorflow/lite/c/builtin_op_data.h"
+19-#include "tensorflow/lite/kernels/internal/types.h"
+20-
+21-namespace tflite {
+22-
+23-// Input Tensors of size {n_batch, n_input}
+24:constexpr int kLstmInputTensor = 0;
+25-
+26-// Input weight tensors of size: {n_cell, n_input}
+27-constexpr int kLstmInputToInputWeightsTensor = 1;  // Optional
+28-constexpr int kLstmInputToForgetWeightsTensor = 2;
+29-constexpr int kLstmInputToCellWeightsTensor = 3;
+30-constexpr int kLstmInputToOutputWeightsTensor = 4;
+31-
+32-// Recurrent weight tensors of size {n_cell, n_output}
+33-constexpr int kLstmRecurrentToInputWeightsTensor = 5;  // Optional
+34-constexpr int kLstmRecurrentToForgetWeightsTensor = 6;
+35-constexpr int kLstmRecurrentToCellWeightsTensor = 7;
+36-constexpr int kLstmRecurrentToOutputWeightsTensor = 8;
+37-
+38-// Peephole weights tensors of size {n_cell}, representing a diagonal matrix.
+39-constexpr int kLstmCellToInputWeightsTensor = 9;    // Optional
+40-constexpr int kLstmCellToForgetWeightsTensor = 10;  // Optional
+41-constexpr int kLstmCellToOutputWeightsTensor = 11;  // Optional
+42-
+43-// Gates bias tensors of size {n_cell}
+44-constexpr int kLstmInputGateBiasTensor = 12;  // Optional
+45-constexpr int kLstmForgetGateBiasTensor = 13;
+46-constexpr int kLstmCellGateBiasTensor = 14;
+47-constexpr int kLstmOutputGateBiasTensor = 15;
+48-
+49-// Projection weight tensor of size {n_output, n_cell}
+50-constexpr int kLstmProjectionWeightsTensor = 16;  // Optional
+51-// Projection bias tensor of size {n_output}
+52-constexpr int kLstmProjectionBiasTensor = 17;  // Optional
+53-
+54-// These state tensors are defined as variable tensors, and will be modified by
+55-// this op.
+56-constexpr int kLstmOutputStateTensor = 18;
+57-constexpr int kLstmCellStateTensor = 19;
+58-
+59-// Layer norm coefficient tensors of size {n_cell}, representing a diagonal
+60-// matrix.
+61-constexpr int kLstmInputLayerNormCoefficientsTensor = 20;   // Optional
+62-constexpr int kLstmForgetLayerNormCoefficientsTensor = 21;  // Optional
+63-constexpr int kLstmCellLayerNormCoefficientsTensor = 22;    // Optional
+64-constexpr int kLstmOutputLayerNormCoefficientsTensor = 23;  // Optional
+65-
+66-// Output tensors.
+67-constexpr int kLstmOutputTensor = 0;
+68-
+69-// Parameters for the two fully conncted computation inside each gate
+
+===== TEMPORARY TENSOR ALLOCATION / RELEASE API =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-217-  buffer_size = std::min(num_boxes, op_data->max_detections);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-218-  context->RequestScratchBufferInArena(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-219-      context, buffer_size * num_boxes * sizeof(int), &op_data->selected_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-220-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-221-  // Outputs: detection_boxes, detection_scores, detection_classes,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-222-  // num_detections
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-223-  TF_LITE_ENSURE_EQ(context, NumOutputs(node), 4);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-224-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:225:  micro_context->DeallocateTempTfLiteTensor(input_box_encodings);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:226:  micro_context->DeallocateTempTfLiteTensor(input_class_predictions);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:227:  micro_context->DeallocateTempTfLiteTensor(input_anchors);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-228-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-229-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-230-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-231-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-232-class Dequantizer {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-233- public:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-234-  Dequantizer(int zero_point, float scale)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-235-      : zero_point_(zero_point), scale_(scale) {}
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-36-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-37-  output_tensor_ =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-38-      micro_context_->AllocateTempOutputTensor(node, kLstmOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-39-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-40-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-41-LstmTensors::~LstmTensors() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-42-  for (size_t i = 0; i < 24; i++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-43-    if (internal_tensors_[i] != nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc:44:      micro_context_->DeallocateTempTfLiteTensor(internal_tensors_[i]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-45-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-46-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc:47:  micro_context_->DeallocateTempTfLiteTensor(output_tensor_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-48-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-49-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-50-// Verify the LSTM internal tensor properties (e.g., type checks)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-51-// Input/output/states/fc weights tensors are required for kernel evaulation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-52-// The state tensors should be variables. Variants of the standard LSTM
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-53-// are not supported here, therefore their corresponding tensors should be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-54-// invalid
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-55-TfLiteStatus LstmTensors::ValidateTensorStatus(TfLiteContext* context) const {
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-108-                    HaveSameShapes(input_x, input_y);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-109-  if (!same_shape && !possible_mixed_scaler) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-110-    TF_LITE_ENSURE_OK(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-111-        context, CheckBroadcastShape(context, input_condition, input_x, input_y,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-112-                                     output->dims));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-113-    data->requires_broadcast = true;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-114-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-115-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc:116:  micro_context->DeallocateTempTfLiteTensor(input_condition);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc:117:  micro_context->DeallocateTempTfLiteTensor(input_x);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc:118:  micro_context->DeallocateTempTfLiteTensor(input_y);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc:119:  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-120-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-121-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-122-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-123-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-124-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-125-void CallSelect(const TfLiteEvalTensor* input_condition,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-126-                const TfLiteEvalTensor* input_x,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-127-                const TfLiteEvalTensor* input_y, TfLiteEvalTensor* output,
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-31-struct TransposeContext {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-32-  TransposeContext(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-33-    micro_context = GetMicroContext(context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-34-    input = micro_context->AllocateTempInputTensor(node, kInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-35-    perm = micro_context->AllocateTempInputTensor(node, kPermTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-36-    output = micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-37-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-38-  ~TransposeContext() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc:39:    micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc:40:    micro_context->DeallocateTempTfLiteTensor(perm);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc:41:    micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-42-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-43-  MicroContext* micro_context;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-44-  TfLiteTensor* input;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-45-  TfLiteTensor* perm;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-46-  TfLiteTensor* output;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-47-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-48-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc-49-TfLiteStatus TransposePrepare(TfLiteContext* context, TfLiteNode* node) {
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-37-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-38-  output_tensor_ =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-39-      micro_context_->AllocateTempOutputTensor(node, kLstmOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-40-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-41-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-42-LstmTensors::~LstmTensors() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-43-  for (size_t i = 0; i < 24; i++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-44-    if (internal_tensors_[i] != nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc:45:      micro_context_->DeallocateTempTfLiteTensor(internal_tensors_[i]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-46-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-47-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc:48:  micro_context_->DeallocateTempTfLiteTensor(output_tensor_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-49-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-50-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-51-// Verify the LSTM internal tensor properties (e.g., type checks)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-52-// Input/output/states/fc weights tensors are required for kernel evaulation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-53-// The state tensors should be variables. Variants of the standard LSTM
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-54-// are not supported here, therefore their corresponding tensors should be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-55-// invalid
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-56-TfLiteStatus LstmTensors::ValidateTensorStatus(TfLiteContext* context) const {
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-64-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-65-  status = xiReshapeSetContext(data->p_context, data->context_size, inputDims,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-66-                               inputRank);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-67-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-68-  if (status) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-69-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-70-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-71-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc:72:  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-73-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-74-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-75-TfLiteStatus ReshapeEvalVision(const XtensaReshapeData& data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-76-                               const TfLiteEvalTensor* input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-77-                               TfLiteEvalTensor* output) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-78-  const uint32_t input_size = NumElements(input->dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-79-  const uint32_t output_size = NumElements(output->dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-80-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-51-  MicroContext* micro_context = GetMicroContext(context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-52-  TfLiteTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-53-      micro_context->AllocateTempInputTensor(node, kConvInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-54-  TF_LITE_ENSURE(context, input != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-55-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-56-  // For int16 input, only fallback to the reference kernel is used
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-57-  // so there is no need to prepare the Hifi/Vision kernel.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-58-  if (input->type == kTfLiteInt16) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc:59:    micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-60-    return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-61-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc:62:  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-63-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-64-#if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-65-  TF_LITE_ENSURE_OK(context, DepthwiseConvPrepareHifi(context, node));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-66-#endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-67-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-68-#if defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-69-  TF_LITE_ENSURE_OK(context, DepthwiseConvPrepareVision(context, node));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-70-#endif  // VISION_P6
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-208-    micro_context->DeallocateTempBuffer(filter_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-209-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-210-  if (bias_comp_td) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-211-    micro_context->DeallocateTempBuffer(reinterpret_cast<uint8_t*>(bias_data));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-212-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-213-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-214-#endif  // USE_TFLM_COMPRESSION
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-215-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc:216:  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc:217:  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc:218:  micro_context->DeallocateTempTfLiteTensor(filter);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc:219:  micro_context->DeallocateTempTfLiteTensor(bias);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-220-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-221-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-222-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-223-TfLiteStatus ConvEvalVision(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-224-                            const TfLiteConvParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-225-                            const XtensaConvOpData& data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-226-                            const TfLiteEvalTensor* input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-227-                            const TfLiteEvalTensor* filter,
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-80-        data->reference_op_data.padding.height, input->params.zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-81-        output->params.zero_point, data->reference_op_data.activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-82-        data->reference_op_data.activation_max, pool_type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-83-    if (status) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-84-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-85-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-86-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-87-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc:88:  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc:89:  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-90-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-91-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-92-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-93-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-94-TfLiteStatus AvgPoolingPrepareVision(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-95-  return PoolingPrepareVision(context, node, AVG_POOLING);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-96-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_vision.cc-97-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-133-      TFLITE_DCHECK(output->type == kTfLiteInt16);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-134-      if (bias->type == kTfLiteInt16) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-135-        TFLITE_DCHECK(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-136-            context->RequestScratchBufferInArena(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-137-                context, GetTensorShape(bias).FlatSize() * sizeof(std::int64_t),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-138-                &(data->bias_converted_buffer_index)) == kTfLiteOk);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-139-      }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-140-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc:141:    micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc:142:    micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc:143:    micro_context->DeallocateTempTfLiteTensor(filter);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-144-    if (bias != nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc:145:      micro_context->DeallocateTempTfLiteTensor(bias);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-146-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-147-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-148-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-149-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-150-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-151-void* Init(TfLiteContext* context, const char* buffer, size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-152-  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-153-  return context->AllocatePersistentBuffer(context, sizeof(OpData));
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-282-  // These will only be allocated if the tensor is compressed.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-283-  data->filter_scratch_index =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-284-      micro_context->AllocateDecompressionScratchBuffer(node, kFilterTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-285-  data->bias_scratch_index =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-286-      micro_context->AllocateDecompressionScratchBuffer(node, kBiasTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-287-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-288-#endif  // USE_TFLM_COMPRESSION
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-289-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc:290:  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc:291:  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc:292:  micro_context->DeallocateTempTfLiteTensor(filter);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-293-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-294-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-295-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-296-TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-297-  const TfLiteEvalTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-298-      tflite::micro::GetEvalInput(context, node, kInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-299-  const TfLiteEvalTensor* filter =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/transpose_conv.cc-300-      tflite::micro::GetEvalInput(context, node, kFilterTensor);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-111-  TfLiteTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-112-      micro_context->AllocateTempInputTensor(node, kPoolingInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-113-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-114-  if (input->type == kTfLiteInt8) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-115-    const RuntimeShape& input_shape = GetTensorShape(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-116-    TfLiteTensor* output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-117-        micro_context->AllocateTempInputTensor(node, kPoolingOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-118-    const RuntimeShape& output_shape = GetTensorShape(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc:119:    micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-120-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-121-    const int depth = MatchingDim(input_shape, 3, output_shape, 3);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-122-    const int input_height = input_shape.Dims(1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-123-    const int input_width = input_shape.Dims(2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-124-    const int output_height = output_shape.Dims(1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-125-    const int output_width = output_shape.Dims(2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc-126-
+
+===== SYNTHETIC NODE / TFLITE ARRAY ALLOCATION API =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-114-  // Cached tensor scale and zero point values for quantized operations
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-115-  TfLiteQuantizationParams input_box_encodings;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-116-  TfLiteQuantizationParams input_class_predictions;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-117-  TfLiteQuantizationParams input_anchors;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-118-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-119-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-120-void* DetectionPostProcessInit(TfLiteContext* context, const char* buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-121-                               size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:122:  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-123-  OpData* op_data = nullptr;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-124-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-125-  const uint8_t* buffer_t = reinterpret_cast<const uint8_t*>(buffer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-126-  const flexbuffers::Map& m = flexbuffers::GetRoot(buffer_t, length).AsMap();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-127-  op_data = reinterpret_cast<OpData*>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:128:      context->AllocatePersistentBuffer(context, sizeof(OpData)));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-129-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-130-  op_data->max_detections = m["max_detections"].AsInt32();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-131-  op_data->max_classes_per_detection = m["max_classes_per_detection"].AsInt32();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-132-  if (m["detections_per_class"].IsNull())
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-133-    op_data->detections_per_class = kNumDetectionsPerClass;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-134-  else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-135-    op_data->detections_per_class = m["detections_per_class"].AsInt32();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-136-  if (m["use_regular_nms"].IsNull())
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-25-#include "tensorflow/lite/micro/kernels/dequantize.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-26-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-27-#include "tensorflow/lite/micro/micro_log.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-28-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-29-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-30-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-31-void* DequantizeInit(TfLiteContext* context, const char* buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-32-                     size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc:33:  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc:34:  return context->AllocatePersistentBuffer(context, sizeof(DequantizeOpData));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-35-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-36-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-37-TfLiteStatus DequantizeEval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-38-  TFLITE_DCHECK(node->user_data != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-39-  DequantizeOpData* data = static_cast<DequantizeOpData*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-40-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-41-  const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc-42-  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-31-constexpr int kInputTensorY = 2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-32-constexpr int kOutputTensor = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-33-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-34-struct OpData {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-35-  bool requires_broadcast;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-36-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-37-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-38-void* SelectInit(TfLiteContext* context, const char* buffer, size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc:39:  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-40-  auto* data = static_cast<OpData*>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc:41:      context->AllocatePersistentBuffer(context, sizeof(OpData)));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-42-  data->requires_broadcast = false;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-43-  return data;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-44-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-45-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-46-TfLiteStatus CheckBroadcastShape(TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-47-                                 const TfLiteTensor* input1,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-48-                                 const TfLiteTensor* input2,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc-49-                                 const TfLiteTensor* input3,
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-26-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-27-#include "tensorflow/lite/micro/kernels/xtensa/xtensa.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-28-#include "tensorflow/lite/micro/micro_log.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-29-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-30-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-31-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-32-void* DequantizeInit(TfLiteContext* context, const char* buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-33-                     size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc:34:  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc:35:  return context->AllocatePersistentBuffer(context, sizeof(DequantizeOpData));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-36-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-37-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-38-TfLiteStatus DequantizeEval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-39-  TFLITE_DCHECK(node->user_data != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-40-  DequantizeOpData* data = static_cast<DequantizeOpData*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-41-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-42-  const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc-43-  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-49-  uint32_t inputRank = NumDimensions(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-50-  uint32_t inputDims[4] = {1, 1, 1, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-51-  OperandDims4D(inputDims, input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-52-  uint32_t context_size = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-53-  uint32_t status = xiReshapeGetMemReqd_Context(&context_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-54-  TFLITE_DCHECK(status == 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-55-  if (context_size) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-56-    void* context_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc:57:        context->AllocatePersistentBuffer(context, context_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-58-    if (context_data == nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-59-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-60-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-61-    data->p_context = reinterpret_cast<uint8_t*>(context_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-62-    data->context_size = context_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-63-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-64-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-65-  status = xiReshapeSetContext(data->p_context, data->context_size, inputDims,
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-27-#include "tensorflow/lite/micro/kernels/logistic.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-28-#include "tensorflow/lite/micro/kernels/xtensa/xtensa.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-29-#include "tensorflow/lite/micro/micro_log.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-30-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-31-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-32-namespace {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-33-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-34-void* LogisticInit(TfLiteContext* context, const char* buffer, size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc:35:  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc:36:  return context->AllocatePersistentBuffer(context, sizeof(OpDataLogistic));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-37-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-38-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-39-TfLiteStatus LogisticEval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-40-  const TfLiteEvalTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-41-      tflite::micro::GetEvalInput(context, node, kLogisticInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-42-  TfLiteEvalTensor* output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-43-      tflite::micro::GetEvalOutput(context, node, kLogisticOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc-44-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-30-#include "tensorflow/lite/micro/kernels/xtensa/xtensa.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-31-#include "tensorflow/lite/micro/kernels/xtensa/xtensa_depthwise_conv.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-32-#include "tensorflow/lite/micro/micro_log.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-33-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-34-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-35-namespace {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-36-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-37-void* Init(TfLiteContext* context, const char* buffer, size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc:38:  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc:39:  void* data = context->AllocatePersistentBuffer(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-40-      context, sizeof(XtensaDepthwiseConvOpData));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-41-#if defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-42-  if (InitXtensaContext()) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-43-    return nullptr;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-44-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-45-#endif  // defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-46-  return data;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/depthwise_conv.cc-47-}
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-31-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-32-namespace {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-33-/*Helper Functions*/
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-34-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-35-/*Kernel functions*/
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-36-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-37-void* UnidirectionalSequenceLstmInit(TfLiteContext* context, const char* buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-38-                                     size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc:39:  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc:40:  return context->AllocatePersistentBuffer(context, sizeof(OpDataLSTM));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-41-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-42-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-43-TfLiteStatus UnidirectionalSequenceLstmPrepare(TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-44-                                               TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-45-  TF_LITE_ENSURE_EQ(context, node->outputs->size, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-46-  TF_LITE_ENSURE_EQ(context, node->inputs->size, 24);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-47-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-48-  TFLITE_DCHECK(node->builtin_data != nullptr);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-67-  // See http://b/270720625 for more details.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-68-  data->is_per_channel_quantized =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-69-      reinterpret_cast<TfLiteAffineQuantization*>(filter->quantization.params)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-70-          ->scale->size > 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-71-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-72-  // Dynamically allocate per-channel quantization parameters.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-73-  const int num_channels = SizeOfDimension(filter, kConvQuantizedDimension);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-74-  data->per_channel_output_shift_int8 = static_cast<int8_t*>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc:75:      context->AllocatePersistentBuffer(context, num_channels));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-76-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-77-  for (int i = 0; i < num_channels; i++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-78-    data->per_channel_output_shift_int8[i] = static_cast<int8_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-79-        -1 * data->reference_op_data.per_channel_output_shift[i]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-80-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-81-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-82-  uint32_t context_size = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-83-  uint32_t status = xiConvGetMemReqd_Context(&context_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-84-  if (!status && context_size) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-85-    void* context_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc:86:        context->AllocatePersistentBuffer(context, context_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-87-    if (context_data == nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-88-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-89-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-90-    data->p_context = reinterpret_cast<uint8_t*>(context_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-91-    data->context_size = context_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-92-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-93-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-94-  const uint32_t input_depth = SizeOfDimension(input, 3);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-178-  uint32_t coefficient_size = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-179-  status = xiConvGetMemReqd_Coeff(data->p_context, data->context_size,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-180-                                  &coefficient_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-181-  if (status || coefficient_size == 0) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-182-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-183-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-184-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-185-  void* coefficient_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc:186:      context->AllocatePersistentBuffer(context, coefficient_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-187-  if (coefficient_data == nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-188-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-189-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-190-  data->reorder_coefficient_bias = reinterpret_cast<int8_t*>(coefficient_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/conv_vision.cc-191-  data->reorder_coefficient_bias_size = coefficient_size;
+
+===== END =====
