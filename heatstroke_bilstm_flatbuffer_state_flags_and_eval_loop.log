@@ -1,0 +1,466 @@
+===== BILSTM FLATBUFFER STATE FLAGS AND EVALUATOR LOOP =====
+Sat Nov  7 08:50:19 PM HKT 2026
+
+===== MODEL AND SCHEMA =====
+MODEL=/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+SCHEMA=
+ERROR: Model or schema not found.
+
+===== TFLM EVAL LSTM IMPLEMENTATION =====
+
+===== EVALUATOR DECLARATIONS =====
+25-#include "tensorflow/lite/c/builtin_op_data.h"
+26-#include "tensorflow/lite/c/common.h"
+27-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+28-#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+29-#include "tensorflow/lite/micro/micro_log.h"
+30-
+31-namespace tflite {
+32-
+33-// Interface to access all the TempTfLiteTensors of the LSTM kernel during the
+34-// preparation phase. Can only be constructed through the constructor to avoid
+35-// memory leakage. All TempTfLiteTensors will be deallocated through the
+36-// destructor.
+37:class LstmTensors {
+38- public:
+39:  LstmTensors(const LstmTensors& other) = delete;
+40:  LstmTensors& operator=(const LstmTensors& other) = delete;
+41-
+42:  LstmTensors(TfLiteContext* context, TfLiteNode* node);
+43:  ~LstmTensors();
+44-
+45-  // Verify the LSTM internal tensor properties (e.g., type checks)
+46-  // Input/output/states/fc weights tensors are required for kernel evaulation.
+47-  // The state tensors should be variables. Variants of the standard LSTM
+48-  // are not supported here, therefore their corresponding tensors should be
+49-  // invalid
+50-  TfLiteStatus ValidateTensorStatus(TfLiteContext* context) const;
+51-
+52-  // Internal tensors. see lstm_shared.h for tensor names
+53-  const TfLiteTensor* GetInternalTensor(const int tensor_index) const {
+54-    return internal_tensors_[tensor_index];
+55-  }
+56-
+57-  const TfLiteTensor* HiddenStateTensor() const {
+58-    return internal_tensors_[kLstmOutputStateTensor];
+59-  }
+60-  const TfLiteTensor* CellStateTensor() const {
+61-    return internal_tensors_[kLstmCellStateTensor];
+62-  }
+63-  const TfLiteTensor* OutputTensor() const { return output_tensor_; }
+64-
+65- private:
+66-  // see lstm_shared.h for tensor names
+67-  MicroContext* micro_context_;
+68-  TfLiteTensor* internal_tensors_[24];
+69-  TfLiteTensor* output_tensor_;
+70-};
+71-
+72-// Deduce the size information (Batch (B), Time Steps (T), Input dimension (I),
+73-// State dimension (S)) that defines the LSTM using the input and hidden state
+74-// tensor
+75-LstmSizeInfo CreateLstmSizeInfo(
+76-    const bool time_major, const TfLiteIntArray* input_tensor_shape,
+77-    const TfLiteIntArray* hidden_state_tensor_shape);
+78-
+79-TfLiteStatus ValidateWeightTensorSize(TfLiteContext* context,
+80-                                      const TfLiteTensor* tensor, int dim1_size,
+81-                                      int dim2_size);
+82-
+83-TfLiteStatus ValidateBiasTensorSize(TfLiteContext* context,
+84-                                    const TfLiteTensor* tensor, int size);
+85-
+86-// Go through every tensors and make sure their shape match the kernel
+87-// configuration
+88-TfLiteStatus ValidateTensorSize(TfLiteContext* context,
+89:                                const LstmTensors& tensors,
+90-                                const LstmSizeInfo& size_info);
+91-
+92-// Wrapper function to create gate parameters for the four internal LSTM gates
+93-TfLiteStatus CreateGateParams(
+94-    TfLiteContext* context,
+95-    /*Input tensors*/
+96-    const TfLiteTensor* input, const TfLiteTensor* input_weight,
+97-    const TfLiteTensor* input_bias,
+98-    /*Hidden state tensors*/
+99-    const TfLiteTensor* hidden_state, const TfLiteTensor* hidden_state_weight,
+100-    const TfLiteTensor* hidden_state_bias,
+101-    /*Scale of the fc output (input to non-linear activation)*/
+102-    const float nonlinear_activation_input_scale, const TfLiteType cell_type,
+103-    const tflite::GateParameters& gate_params);
+104-
+105-// Create parameters for element wise multiplication that happens in a) cell
+106-// state update ; b) hidden state update
+107-// Note that all the output of gates are symmetrically quantized so only scales
+108-// are required for input. However, during the hidden state update phase, the
+109-// output is the updated hidden state, which is asymmetrically quantized. Thus
+110-// output may require zero point
+111-tflite::ArithmeticParams CreateInterGateMulParams(const float input1_scale,
+112-                                                  const float input2_scale,
+113-                                                  const float output_scale,
+114-                                                  const TfLiteType output_type,
+115-                                                  const int output_zp = 0);
+116-
+117-// Create the additional information about the cell state, which include:
+118-// cell_state_scale_power: used in integer nonlinear function (e.g., tanh)
+119-// quantized_cell_clip: quantized cell clip range
+120-CellStateInfo CreateLstmCellStateInfo(const float cell_state_scale,
+121-                                      const float cell_clip);
+122-
+123-CellStateInfo CreateLstmCellStateInfoFloat(const float cell_clip);
+124-tflite::FullyConnectedParams CreateFCParamsFloat();
+125-
+126-tflite::GateParameters CreateGateParamsFloat();
+127-
+128-tflite::ArithmeticParams CreateInterGateMulParamsFloat();
+129-
+130-TfLiteStatus PrepareGateParametersFloat(TfLiteContext* context,
+131:                                        const LstmTensors& lstm_tensors,
+132-                                        OpDataLSTM* op_data_lstm);
+133-
+134-TfLiteStatus PrepareGateParametersInteger(TfLiteContext* context,
+135:                                          const LstmTensors& lstm_tensors,
+136-                                          OpDataLSTM* op_data_lstm);
+137-
+138-LSTMKernelContents CreateLSTMKernelContent(TfLiteContext* context,
+139-                                           TfLiteNode* node);
+140-
+141-template <typename CellType>
+142-LSTMBuffers<CellType> CreateLSTMBuffers(TfLiteContext* context,
+143-                                        const int* buffer_indices) {
+144-  LSTMBuffers<CellType> buffers;
+145-  buffers.buffer0 = reinterpret_cast<CellType*>(
+146-      context->GetScratchBuffer(context, buffer_indices[0]));
+147-  buffers.buffer1 = reinterpret_cast<CellType*>(
+148-      context->GetScratchBuffer(context, buffer_indices[1]));
+149-  buffers.buffer2 = reinterpret_cast<CellType*>(
+150-      context->GetScratchBuffer(context, buffer_indices[2]));
+151-  buffers.buffer3 = reinterpret_cast<CellType*>(
+152-      context->GetScratchBuffer(context, buffer_indices[3]));
+153-  return buffers;
+154-}
+155-
+156-// Since LSTM includes multiple intermediate stages, introducing the internal
+157-// namespace to expose them for testing
+158-namespace lstm_internal {
+159-
+160-void Sigmoid(const RuntimeShape& data_shape, int16_t* data);
+161-
+162-void Sigmoid(const RuntimeShape& data_shape, float* data);
+163-
+164-void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+165-          int16_t* input_data, const RuntimeShape& output_data_shape,
+166-          int16_t* output_data);
+167-
+168-void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+169-          float* input_data, const RuntimeShape& output_data_shape,
+170-          float* output_data);
+171-
+172-void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+173-         const int16_t* input1_data, const int16_t* input2_data,
+174-         int8_t* output_data);
+175-
+176-void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+177-         const int16_t* input1_data, const int16_t* input2_data,
+178-         int16_t* output_data);
+179-
+180-void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+--
+498-  std::memcpy(output_ptr + step_info.OutputOffset(),
+499-              tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+500-                  step_info.HiddenStateOffset(),
+501-              step_info.StateShape().FlatSize() * sizeof(ActivationType));
+502-}
+503-
+504-}  // namespace lstm_internal
+505-
+506-// Evaulate the LSTM kernel with (potential) multi-steps and multi-batch input
+507-// Since
+508-template <typename ActivationType, typename WeightType, typename CellType,
+509-          typename BiasType>
+510:TfLiteStatus EvalLstm(const OpDataLSTM& op_data,
+511-                      LSTMKernelContents& kernel_content,
+512-                      const LSTMBuffers<CellType>& buffers) {
+513-  lstm_internal::LstmStepManager step_info(&op_data.size_info);
+514-  const auto& size_info = op_data.size_info;
+515-  // time is the first dimention, enable batch computation
+516-  if (size_info.time_major) {
+517-    for (int t = 0; t < size_info.time_steps; t++) {
+518-      lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+519-          step_info, op_data, kernel_content, buffers);
+520-      // prepare for the next time step
+521-      step_info.UpdateTime();
+522-    }
+523-  } else {
+524-    // batch first, unable to size the input data. single batch inference
+525-    for (int b = 0; b < size_info.batch_size; b++) {
+526-      for (int t = 0; t < size_info.time_steps; t++) {
+527-        lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+528-            step_info, op_data, kernel_content, buffers);
+529-        // prepare for the next time step
+530-        step_info.UpdateTime();
+531-      }
+532-      // prepare for the next batch
+533-      step_info.UpdateBatch();
+534-      step_info.ResetTime();
+535-    }
+536-  }
+537-  return kTfLiteOk;
+538-}
+539-}  // namespace tflite
+540-
+541-#endif  // TENSORFLOW_LITE_MICRO_KERNELS_LSTM_EVAL_16ACT_H_
+
+===== CUSTOM KERNEL STATE AND EVALUATION CODE =====
+61-  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+62-         tensor->dims->size == 2 &&
+63-         tensor->dims->data[0] == rows &&
+64-         tensor->dims->data[1] == columns;
+65-}
+66-
+67-bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+68-  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+69-         tensor->dims->size == 1 &&
+70-         tensor->dims->data[0] == length;
+71-}
+72-
+73:bool ValidateDirection(TfLiteContext* context,
+74-                       TfLiteNode* node,
+75-                       int parameter_base,
+76-                       int hidden_state_position,
+77-                       int cell_state_position,
+78-                       int input_dimension,
+79-                       int batch_size,
+80-                       int* hidden_dimension) {
+81-  // Four input weights, four recurrent weights, and four biases.
+82-  TfLiteEvalTensor* first_weight =
+83-      GetInputEvalTensor(context, node, parameter_base + 1);
+84-
+85-  if (first_weight == nullptr || first_weight->dims == nullptr ||
+86-      first_weight->dims->size != 2) {
+87-    return false;
+88-  }
+89-
+90-  const int hidden = first_weight->dims->data[0];
+91-
+92-  if (hidden <= 0 ||
+93-      first_weight->dims->data[1] != input_dimension) {
+94-    return false;
+95-  }
+96-
+97-  for (int gate = 0; gate < 4; ++gate) {
+98-    TfLiteEvalTensor* input_weight =
+99-        GetInputEvalTensor(context, node, parameter_base + 1 + gate);
+100-    TfLiteEvalTensor* recurrent_weight =
+101-        GetInputEvalTensor(context, node, parameter_base + 5 + gate);
+102-    TfLiteEvalTensor* bias =
+103-        GetInputEvalTensor(context, node, parameter_base + 12 + gate);
+104-
+105-    if (!IsMatrix(input_weight, hidden, input_dimension) ||
+106-        !IsMatrix(recurrent_weight, hidden, hidden) ||
+107-        !IsVector(bias, hidden)) {
+108-      return false;
+--
+225-  const int batch_size = input->dims->data[1];
+226-  const int input_dimension = input->dims->data[2];
+227-
+228-  // The supplied heat-stress model uses time-major, single-batch sequences.
+229-  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+230-    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+231-    return kTfLiteError;
+232-  }
+233-
+234-  int forward_hidden = 0;
+235-  int backward_hidden = 0;
+236-
+237:  if (!ValidateDirection(context, node, 0, 35, 36,
+238-                         input_dimension, batch_size, &forward_hidden) ||
+239:      !ValidateDirection(context, node, 17, 37, 38,
+240-                         input_dimension, batch_size, &backward_hidden) ||
+241-      forward_hidden != backward_hidden) {
+242-    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+243-    return kTfLiteError;
+244-  }
+245-
+246-  const int hidden = forward_hidden;
+247-
+248-  if (output->dims->data[0] != time_steps ||
+249-      output->dims->data[1] != batch_size ||
+250-      output->dims->data[2] != 2 * hidden) {
+251-    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+252-    return kTfLiteError;
+253-  }
+254-
+255-  // The directional evaluator must see [time_steps, batch_size, hidden],
+256-  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+257-  const size_t staged_dims_bytes =
+258-      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+259-  op_data->staged_output_dims =
+260-      static_cast<TfLiteIntArray*>(
+261-          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+262-
+263-  if (op_data->staged_output_dims == nullptr) {
+264-    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+265-    return kTfLiteError;
+266-  }
+267-
+268-  op_data->staged_output_dims->size = 3;
+269-  op_data->staged_output_dims->data[0] = time_steps;
+270-  op_data->staged_output_dims->data[1] = batch_size;
+271-  op_data->staged_output_dims->data[2] = hidden;
+272-
+273-  // The supplied model has no auxiliary input tensors.
+274-  for (int i = 39; i < 48; ++i) {
+--
+317-      return kTfLiteError;
+318-    }
+319-
+320-    // Forward and backward passes execute sequentially, so they can
+321-    // safely reuse the same four evaluator scratch buffers.
+322-    op_data->backward.buffer_indices[i] =
+323-        op_data->forward.buffer_indices[i];
+324-  }
+325-
+326-  return kTfLiteOk;
+327-}
+328-
+329:void PopulateDirectionContents(TfLiteContext* context,
+330-                               TfLiteNode* node,
+331-                               int parameter_base,
+332-                               int hidden_state_position,
+333-                               int cell_state_position,
+334-                               const TfLiteEvalTensor* input,
+335-                               TfLiteEvalTensor* staged_output,
+336-                               LSTMKernelContents* contents) {
+337-  for (int i = 0; i < 24; ++i) {
+338-    contents->internal_tensors[i] = nullptr;
+339-  }
+340-
+341-  contents->internal_tensors[0] =
+342-      const_cast<TfLiteEvalTensor*>(input);
+343-
+344-  for (int i = 1; i <= 17; ++i) {
+345-    contents->internal_tensors[i] =
+346-        GetInputEvalTensor(context, node, parameter_base + i);
+347-  }
+348-
+349-  contents->internal_tensors[18] =
+350-      GetInputEvalTensor(context, node, hidden_state_position);
+351-  contents->internal_tensors[19] =
+352-      GetInputEvalTensor(context, node, cell_state_position);
+353-
+354-  contents->output_tensor = staged_output;
+355-}
+356-
+357-TfLiteStatus HeatstrokeBidirectionalLstmEval(TfLiteContext* context,
+358-                                             TfLiteNode* node) {
+359-  if (node == nullptr || node->user_data == nullptr) {
+360-    return kTfLiteError;
+361-  }
+362-
+363-  const auto* op_data =
+364-      static_cast<const HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+--
+368-
+369-  TfLiteEvalTensor* output =
+370-      context->GetEvalTensor(context, node->outputs->data[0]);
+371-
+372-  if (!IsFloatTensor(input) || !IsFloatTensor(output)) {
+373-    return kTfLiteError;
+374-  }
+375-
+376-  const int time_steps = op_data->forward.size_info.time_steps;
+377-  const int input_dimension = op_data->forward.size_info.input_dimension;
+378-  const int hidden = op_data->forward.size_info.state_dimension;
+379-
+380:  auto* reversed_input = static_cast<float*>(
+381-      context->GetScratchBuffer(
+382-          context, op_data->reverse_input_buffer));
+383-
+384-  auto* staged_output = static_cast<float*>(
+385-      context->GetScratchBuffer(
+386-          context, op_data->stage_output_buffer));
+387-
+388:  if (reversed_input == nullptr || staged_output == nullptr) {
+389-    MicroPrintf("Heatstroke BiLSTM: scratch buffer unavailable");
+390-    return kTfLiteError;
+391-  }
+392-
+393-  const float* input_data = input->data.f;
+394-  float* output_data = output->data.f;
+395-
+396-  // Reverse the time dimension for the backward direction.
+397-  for (int t = 0; t < time_steps; ++t) {
+398-    std::memcpy(
+399:        reversed_input + t * input_dimension,
+400-        input_data + (time_steps - 1 - t) * input_dimension,
+401-        input_dimension * sizeof(float));
+402-  }
+403-
+404:  TfLiteEvalTensor reversed_input_tensor = *input;
+405:  reversed_input_tensor.data.f = reversed_input;
+406-
+407-  TfLiteEvalTensor staged_output_tensor = *output;
+408-  staged_output_tensor.data.f = staged_output;
+409-  staged_output_tensor.dims = op_data->staged_output_dims;
+410-
+411-  LSTMKernelContents forward_contents{};
+412:  PopulateDirectionContents(
+413-      context, node, 0, 35, 36,
+414-      input, &staged_output_tensor, &forward_contents);
+415-
+416-  LSTMBuffers<float> buffers =
+417-      CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+418-
+419-  TfLiteStatus forward_status =
+420:      EvalLstm<float, float, float, float>(
+421-          op_data->forward, forward_contents, buffers);
+422-  if (forward_status != kTfLiteOk) {
+423-    return forward_status;
+424-  }
+425-
+426-  // Copy forward outputs into the first half of the merged output.
+427-  for (int t = 0; t < time_steps; ++t) {
+428-    std::memcpy(
+429-        output_data + t * (2 * hidden),
+430-        staged_output + t * hidden,
+431-        hidden * sizeof(float));
+432-  }
+433-
+434-  LSTMKernelContents backward_contents{};
+435:  PopulateDirectionContents(
+436-      context, node, 17, 37, 38,
+437:      &reversed_input_tensor, &staged_output_tensor,
+438-      &backward_contents);
+439-
+440-  TfLiteStatus backward_status =
+441:      EvalLstm<float, float, float, float>(
+442-          op_data->backward, backward_contents, buffers);
+443-  if (backward_status != kTfLiteOk) {
+444-    return backward_status;
+445-  }
+446-
+447-  // Restore backward outputs to original time order and copy them
+448-  // into the second half of the merged output.
+449-  for (int t = 0; t < time_steps; ++t) {
+450-    std::memcpy(
+451-        output_data + t * (2 * hidden) + hidden,
+452-        staged_output + (time_steps - 1 - t) * hidden,
+453-        hidden * sizeof(float));
+454-  }
+455-
+456-  return kTfLiteOk;
+457-}
+458-
+459-}  // namespace
+460-
+461-TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstm() {
+462-  return micro::RegisterOp(
+463-      HeatstrokeBidirectionalLstmInit,
+464-      HeatstrokeBidirectionalLstmPrepare,
+465-      HeatstrokeBidirectionalLstmEval);
+466-}
+467-
+468-}  // namespace tflite
+
+===== END =====
