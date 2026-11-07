@@ -1,0 +1,167 @@
+===== INPUT VALIDATION SOURCE =====
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-252-// 		// Set button press to false to start capturing audio. In button callback, button_pressed will be set to true once the button is released.
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-253-// 		ClassifyAudioHandler(caseContext);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-254-// #if CONFIG_PUSH_TO_TALK
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-255-// 		power_mgr_allow_sleep();
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-256-// 		/* In sleep.overlay, min-residency-us is 1s, so sleep for longer than,
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-257-// 		   that to ensure we enter the deepest sleep state. Which in Alif
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-258-// 		   chip is STOP mode. */
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-259-// #endif
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-260-// 	}
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-261-}
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-262-
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-263-static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model)
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-264-{
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-265-    /* Populate tensor related parameters. */
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-266-    auto inputTensor = model.GetInputTensor(0);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:267:	LOG_ERR("Input tensor size = %d\n", inputTensor->Shape().size());
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-268-    if (inputTensor->Shape().empty()) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-269-        LOG_ERR("Invalid input tensor dims\n");
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-270-        return false;
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-271-    }
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-272-    if (inputTensor->Shape().size() < 3) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:273:        LOG_ERR("Input tensor dimension should be >= 3\n");
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-274-        return false;
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-275-    }
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-276-
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-277-    auto outputTensor = model.GetOutputTensor(0);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-278-	LOG_ERR("Output tensor size = %d\n", outputTensor->Shape().size());
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-279-    if (outputTensor->Shape().empty()) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-280-        LOG_ERR("Invalid output tensor dims\n");
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-281-        return false;
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-282-    }
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-283-
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-284-    if (outputTensor->Shape().size() < 3) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-285-        LOG_ERR("Output tensor dimension should be >= 3\n");
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-286-        return false;
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-287-    }
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-288-
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-289-    return true;
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-290-}
+
+===== MODEL SELECTION IN CMAKE =====
+37-# Ethos-U NPU selection
+38-# ---------------------------------------------------------------------------
+39-# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+40-# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+41-# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+42-# the build and the Ethos-U driver targets the requested NPU. This overrides the
+43-# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+44-#
+45:# The parsed value is also used to pick the correct Vela-compiled model below.
+46-# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+47-if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+48-    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+49-    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+50-        set(_npu_arch "${CMAKE_MATCH_1}")
+51-        set(_npu_macs "${CMAKE_MATCH_2}")
+52-        if (_npu_arch STREQUAL "u55")
+53-            set(_npu_prefix "H")
+54-        elseif (_npu_arch STREQUAL "u65")
+55-            set(_npu_prefix "Y")
+56-        elseif (_npu_arch STREQUAL "u85")
+57-            set(_npu_prefix "Z")
+58-        else()
+59-            message(FATAL_ERROR
+60-                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+--
+63-        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+64-
+65-        # Feed the matching Kconfig choice into the Zephyr configuration.
+66-        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+67-        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+68-            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+69-        message(STATUS
+70-            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+71:            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+72-    else()
+73-        message(FATAL_ERROR
+74-            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+75-            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+76-    endif()
+77-endif()
+78-
+79-find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+80-
+81-project(alif_asr)
+82-
+83-# Silence "changed in GCC 7.1" warnigns from C++ headers
+84-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+85-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+86-
+87-set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+88-
+89-set(ML_FRAMEWORK TensorFlowLiteMicro)
+90-
+91-# ---------------------------------------------------------------------------
+92:# Build-time model and labels generation from MLEK resources
+93-# ---------------------------------------------------------------------------
+94-set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+95-set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+96:    "Path to MLEK resources (models compiled with Vela)")
+97-setup_source_generator()
+98-
+99-# Source generation output directories
+100-set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+101-set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+102-file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+103-
+104-message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+105-message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+106-
+107-# Determine NPU config ID based on Zephyr Kconfig.
+108-# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+109-# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+110-if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+111-    if (CONFIG_ARM_ETHOS_U85_256)
+--
+113-    elseif (CONFIG_ARM_ETHOS_U55_256)
+114-        set(ETHOS_U_NPU_CONFIG_ID "H256")
+115-    else()
+116-        set(ETHOS_U_NPU_CONFIG_ID "H128")
+117-    endif()
+118-endif()
+119-
+120-# Model file path
+121:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+122:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+123:# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+124:set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+125:    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+126-
+127:if (NOT EXISTS ${POLYU_MODEL_PATH})
+128-    message(FATAL_ERROR
+129:        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+130-endif()
+131-
+132-set(EXTRA_MODEL_CODE
+133-	"/* Model parameters for ${use_case} */"
+134-	"extern const int   g_FrameLength    = 512"
+135-	"extern const int   g_FrameStride    = 160"
+136-	"extern const int   g_ctxLen         = 98"
+137-	"extern const float g_ScoreThreshold = 0.5"
+138-	)
+139-
+140:# Generate model file
+141:generate_model_code(
+142:    MODEL_PATH  ${POLYU_MODEL_PATH}
+143-    DESTINATION ${SRC_GEN_DIR}
+144-    EXPRESSIONS ${EXTRA_MODEL_CODE}
+145-    NAMESPACE   "arm" "app" "asr")
+146-
+147-# Generate labels C++ code
+148-set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+149-
+150-# Generate labels file
+151-set(ASR_LABELS_CPP_FILE Labels)
+152-generate_labels_code(
+153-    INPUT           "${ASR_LABELS_FILE}"
+154-    DESTINATION_SRC ${SRC_GEN_DIR}
+155-    DESTINATION_HDR ${INC_GEN_DIR}
+156-    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+157-)
+
+===== CURRENT MODEL FILE =====
+-rw-rw-r-- 1 user user  12M Nov  4 22:44 beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite
+-rw-rw-r-- 1 user user  11M Nov  5 21:04 beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+-rw-rw-r-- 1 user user 2.5M Oct 29 22:48 beeinventor/PolyU/ai-models/cla_quant_uint8_vela.tflite
