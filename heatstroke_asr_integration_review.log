@@ -1,0 +1,384 @@
+===== MAINLOOP.CC: COMPLETE SOURCE =====
+     1	/* This file was ported to work on Alif Semiconductor devices. */
+     2	
+     3	/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+     4	 * Use, distribution and modification of this code is permitted under the
+     5	 * terms stated in the Alif Semiconductor Software License Agreement
+     6	 *
+     7	 * You should have received a copy of the Alif Semiconductor Software
+     8	 * License Agreement with this file. If not, please write to:
+     9	 * contact@alifsemi.com, or visit: https://alifsemi.com/license
+    10	 *
+    11	 */
+    12	
+    13	/*
+    14	 * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+    15	 * affiliates <open-source-office@arm.com>
+    16	 * SPDX-License-Identifier: Apache-2.0
+    17	 *
+    18	 * Licensed under the Apache License, Version 2.0 (the "License");
+    19	 * you may not use this file except in compliance with the License.
+    20	 * You may obtain a copy of the License at
+    21	 *
+    22	 *     http://www.apache.org/licenses/LICENSE-2.0
+    23	 *
+    24	 * Unless required by applicable law or agreed to in writing, software
+    25	 * distributed under the License is distributed on an "AS IS" BASIS,
+    26	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    27	 * See the License for the specific language governing permissions and
+    28	 * limitations under the License.
+    29	 */
+    30	#include "Labels.hpp"               /* For label strings. */
+    31	#include "UseCaseHandler.hpp"       /* Handlers for different user options. */
+    32	#include "BufAttributes.hpp"        /* Buffer attributes to be applied */
+    33	
+    34	/** Based on ML framework, set up the model namespace. */
+    35	#if defined(MLEK_FWK_TFLM)
+    36	//#include "mlek/fwk/tflm/Wav2LetterModel.hpp"    /* Model class for running inference. */
+    37	#include "PolyUModel1.hpp"
+    38	#include "mlek/use_case/asr/AsrClassifier.hpp"  /* Classifier. */
+    39	
+    40	using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+    41	#elif defined(MLEK_FWK_EXECUTORCH)
+    42	#include "ConformerModel.hpp"
+    43	
+    44	using AsrModel = arm::app::fwk::et::ConformerModel;
+    45	#endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+    46	
+    47	#include "power_mgr.h"             /* power management APIs */
+    48	#include <zephyr/logging/log.h>
+    49	#include <zephyr/kernel.h>
+    50	#include <zephyr/drivers/gpio.h>
+    51	
+    52	LOG_MODULE_REGISTER(MainLoop);
+    53	
+    54	#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+    55	#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+    56	
+    57	#if LPGPIO_WAKEUP_ENABLED
+    58	/* LPGPIO wake up source is used */
+    59	#define LPGPIO_EWIC_CFG EWIC_VBAT_GPIO
+    60	
+    61	#if CONFIG_LPGPIO_WAKEUP_SOURCE == 4
+    62	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO4
+    63	#elif CONFIG_LPGPIO_WAKEUP_SOURCE == 1
+    64	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO1
+    65	#else
+    66	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+    67	#endif
+    68	#else
+    69	#define LPGPIO_EWIC_CFG 0
+    70	#define LPGPIO_WAKEUP_EVENT 0
+    71	#endif
+    72	
+    73	namespace arm {
+    74	namespace app {
+    75	    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+    76	
+    77	    namespace asr {
+    78	        extern uint8_t* GetModelPointer();
+    79	        extern size_t GetModelLen();
+    80	    } /* namespace asr */
+    81	
+    82	} /* namespace app */
+    83	} /* namespace arm */
+    84	
+    85	
+    86	#if LPGPIO_WAKEUP_ENABLED
+    87	static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+    88		DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+    89	#endif
+    90	
+    91	
+    92	extern volatile uint8_t button_pressed;
+    93	static struct gpio_callback button_cb_data;
+    94	static bool por_boot;
+    95	static struct k_sem button_wait_sem;
+    96	
+    97	static void button_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+    98	{
+    99		ARG_UNUSED(dev);
+   100		ARG_UNUSED(cb);
+   101		ARG_UNUSED(pins);
+   102	
+   103		if (por_boot) {
+   104			/* Ignore button press event if it's from POR boot, as the button state may be unstable during POR. */
+   105			return;
+   106		}
+   107	
+   108		int val = gpio_pin_get_dt(&lpgpio_config);  // 1 = pressed, 0 = released
+   109	    if (val < 0) {
+   110	        LOG_ERR("Failed to read pin: %d", val);
+   111	        return;
+   112	    }
+   113	
+   114	    button_pressed = (val == 1);
+   115	    LOG_INF("Button %s", button_pressed ? "pressed" : "released");
+   116	
+   117		if (!k_sem_count_get(&button_wait_sem) && button_pressed) {
+   118			k_sem_give(&button_wait_sem);
+   119		}
+   120	}
+   121	
+   122	/**
+   123	 * Configure LPGPIO0 and LPGPIO1 as inputs with interrupts
+   124	 * With B1/E1C need to connect wire between SW5 (P5_7) and P15_0 to use button as Push-to-talk button.
+   125	 * With B1/E1C devkit you need to also remove resistor R64. */
+   126	static int configure_lpgpio(void)
+   127	{
+   128		int ret;
+   129		const struct gpio_dt_spec *spec = &lpgpio_config;
+   130	
+   131		if (!spec || !spec->port) {
+   132			/* Just ignore */
+   133			LOG_ERR("lpgpio invalid");
+   134			return -ENODEV;
+   135		}
+   136	
+   137		/* Configure LPGPIO0 for wakeup */
+   138		if (!gpio_is_ready_dt(spec)) {
+   139			LOG_ERR("LPGPIO0 device is not ready");
+   140			return -ENODEV;
+   141		}
+   142	
+   143		ret = gpio_pin_configure_dt(spec, GPIO_INPUT | spec->dt_flags);
+   144		if (ret != 0) {
+   145			LOG_ERR("Failed to configure LPGPIO as input: %d", ret);
+   146			return ret;
+   147		}
+   148	
+   149		ret = gpio_pin_interrupt_configure_dt(spec,
+   150						      GPIO_INT_EDGE_BOTH);
+   151		if (ret != 0) {
+   152			LOG_ERR("Failed to configure LPGPIO interrupt: %d", ret);
+   153			return ret;
+   154		}
+   155	
+   156		gpio_init_callback(&button_cb_data, button_callback, BIT(spec->pin));
+   157		ret = gpio_add_callback(spec->port, &button_cb_data);
+   158		if (ret != 0) {
+   159			LOG_ERR("Failed to add button callback: %d", ret);
+   160			return ret;
+   161		}
+   162	
+   163		LOG_INF("LPGPIO%d configured", spec->pin);
+   164	
+   165		return 0;
+   166	}
+   167	
+   168	/** @brief   Verify input and output tensor are of certain min dimensions. */
+   169	static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model);
+   170	
+   171	void MainLoop()
+   172	{
+   173		por_boot = true;
+   174		k_sem_init(&button_wait_sem, 0, 1);
+   175	
+   176		if (configure_lpgpio()) {
+   177			LOG_ERR("Failed to configure LPGPIO for button input");
+   178			return;
+   179		}
+   180	
+   181	    PolyUModel1 model; /* Model wrapper object. */
+   182	
+   183	    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+   184	                                                arm::app::asr::GetModelLen()};
+   185	    arm::app::fwk::iface::MemoryRegion computeMem{arm::app::activationBuf,
+   186	                                                  sizeof(arm::app::activationBuf)};
+   187		LOG_INF("=====================\n");
+   188		LOG_INF("Model Ptr: 0x%X", arm::app::asr::GetModelPointer());
+   189		LOG_INF("Model Size: %d", arm::app::asr::GetModelLen());
+   190		LOG_INF("Model data pointer: 0x%X", modelMem.data);
+   191		LOG_INF("Model Subgraph: %d", ::tflite::GetModel(modelMem.data)->subgraphs()->size());
+   192		const ::tflite::SubGraph* subgraph = ::tflite::GetModel(modelMem.data)->subgraphs()->Get(0);
+   193		uint32_t operators_size = ::tflite::NumSubgraphOperators(subgraph);
+   194		LOG_INF("Operators Size : %d", operators_size);
+   195		#include "tensorflow/lite/micro/micro_allocator.h"
+   196		LOG_INF("Node&Reg Size : %d (Total: %d)", sizeof(::tflite::NodeAndRegistration), sizeof(::tflite::NodeAndRegistration) * operators_size);
+   197		
+   198	    /* Load the model. */
+   199	    if (!model.Init(computeMem, modelMem)) {
+   200	        LOG_ERR("Failed to initialise model");
+   201	        return;
+   202	    }
+   203		LOG_INF("Init model: OK!");
+   204	
+   205	    if (!VerifyTensorDimensions(model)) {
+   206	        LOG_ERR("Model's input or output dimension verification failed");
+   207	        return;
+   208	    }
+   209	
+   210	    /* Instantiate application context. */
+   211	    arm::app::ApplicationContext caseContext;
+   212	    std::vector <std::string> labels;
+   213	    GetLabelsVector(labels);
+   214	
+   215	// #if defined(MLEK_FWK_TFLM)
+   216	//     arm::app::AsrClassifier classifier{
+   217	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputRowsIdx,
+   218	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputColsIdx,
+   219	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputRowsIdx,
+   220	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputColsIdx}; /* Classifier wrapper object. */
+   221	//     caseContext.Set<uint32_t>("frameLength", arm::app::asr::g_FrameLength);
+   222	//     caseContext.Set<uint32_t>("frameStride", arm::app::asr::g_FrameStride);
+   223	//     caseContext.Set<float>("scoreThreshold", arm::app::asr::g_ScoreThreshold);  /* Score threshold. */
+   224	//     caseContext.Set<uint32_t>("ctxLen", arm::app::asr::g_ctxLen);  /* Left and right context length (MFCC feat vectors). */
+   225	//     caseContext.Set<arm::app::AsrClassifier&>("classifier", classifier);
+   226	// #elif defined(MLEK_FWK_EXECUTORCH)
+   227	//     caseContext.Set<uint32_t>("melSpecWindowSize", arm::app::asr::g_melSpecWindowSize);
+   228	//     caseContext.Set<uint32_t>("melSpecHopSize", arm::app::asr::g_melSpecHopSize);
+   229	//     caseContext.Set<uint32_t>("chunkSize", arm::app::asr::g_chunkSize);
+   230	// #endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+   231	//     caseContext.Set<arm::app::fwk::iface::Model&>("model", model);
+   232	//     caseContext.Set<const std::vector <std::string>&>("labels", labels);
+   233	
+   234	// 	power_mgr_allow_sleep();
+   235	// 	por_boot = false;
+   236	
+   237	// 	while (1) {
+   238	// #if CONFIG_PUSH_TO_TALK
+   239	// 		LOG_INF("Push to talk start by going to STOP mode. Press button to start capturing audio.\n");
+   240	// 		LOG_INF("Release the button to stop capturing audio.\n");
+   241	// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+   242	// 		k_sem_reset(&button_wait_sem);
+   243	// 		k_sem_take(&button_wait_sem, K_FOREVER);
+   244	// #else
+   245	// 		LOG_INF("Press the button to start capturing audio...\n");
+   246	// 		LOG_INF("Release the button to stop capturing audio.\n");
+   247	// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+   248	// #endif
+   249	
+   250	// 		power_mgr_disable_sleep();
+   251	
+   252	// 		// Set button press to false to start capturing audio. In button callback, button_pressed will be set to true once the button is released.
+   253	// 		ClassifyAudioHandler(caseContext);
+   254	// #if CONFIG_PUSH_TO_TALK
+   255	// 		power_mgr_allow_sleep();
+   256	// 		/* In sleep.overlay, min-residency-us is 1s, so sleep for longer than,
+   257	// 		   that to ensure we enter the deepest sleep state. Which in Alif
+   258	// 		   chip is STOP mode. */
+   259	// #endif
+   260	// 	}
+   261	}
+   262	
+   263	static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model)
+   264	{
+   265	    /* Populate tensor related parameters. */
+   266	    auto inputTensor = model.GetInputTensor(0);
+   267		LOG_ERR("Input tensor size = %d\n", inputTensor->Shape().size());
+   268	    if (inputTensor->Shape().empty()) {
+   269	        LOG_ERR("Invalid input tensor dims\n");
+   270	        return false;
+   271	    }
+   272	    if (inputTensor->Shape().size() < 3) {
+   273	        LOG_ERR("Input tensor dimension should be >= 3\n");
+   274	        return false;
+   275	    }
+   276	
+   277	    auto outputTensor = model.GetOutputTensor(0);
+   278		LOG_ERR("Output tensor size = %d\n", outputTensor->Shape().size());
+   279	    if (outputTensor->Shape().empty()) {
+   280	        LOG_ERR("Invalid output tensor dims\n");
+   281	        return false;
+   282	    }
+   283	
+   284	    if (outputTensor->Shape().size() < 3) {
+   285	        LOG_ERR("Output tensor dimension should be >= 3\n");
+   286	        return false;
+   287	    }
+   288	
+   289	    return true;
+   290	}
+
+===== APPLICATION MAINLOOP HEADER =====
+
+===== MODEL INTERFACE AND TENSOR API =====
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:266:    auto inputTensor = model.GetInputTensor(0);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:267:	LOG_ERR("Input tensor size = %d\n", inputTensor->Shape().size());
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:268:    if (inputTensor->Shape().empty()) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:272:    if (inputTensor->Shape().size() < 3) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:277:    auto outputTensor = model.GetOutputTensor(0);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:278:	LOG_ERR("Output tensor size = %d\n", outputTensor->Shape().size());
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:279:    if (outputTensor->Shape().empty()) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:284:    if (outputTensor->Shape().size() < 3) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:146:static bool PresentInferenceResult(std::vector<asr::AsrResult> &results);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:162:	const auto inputTensor = model.GetInputTensor(0);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:163:	const auto outputTensor = model.GetOutputTensor(0);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:377:		LOG_INF("Inference %zu/%zu\n", audioDataSlider.Index() + 1,
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:386:		if (!model.RunInference()) {
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:387:			LOG_ERR("Inference failed.");
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:408:	PresentInferenceResult(finalResults);
+beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:414:static bool PresentInferenceResult(std::vector<asr::AsrResult> &results)
+
+===== MODEL GENERATION CONFIGURATION =====
+   120	# Model file path
+   121	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+   122	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+   123	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+   124	set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+   125	    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+   126	
+   127	if (NOT EXISTS ${POLYU_MODEL_PATH})
+   128	    message(FATAL_ERROR
+   129	        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+   130	endif()
+   131	
+   132	set(EXTRA_MODEL_CODE
+   133		"/* Model parameters for ${use_case} */"
+   134		"extern const int   g_FrameLength    = 512"
+   135		"extern const int   g_FrameStride    = 160"
+   136		"extern const int   g_ctxLen         = 98"
+   137		"extern const float g_ScoreThreshold = 0.5"
+   138		)
+   139	
+   140	# Generate model file
+   141	generate_model_code(
+   142	    MODEL_PATH  ${POLYU_MODEL_PATH}
+   143	    DESTINATION ${SRC_GEN_DIR}
+   144	    EXPRESSIONS ${EXTRA_MODEL_CODE}
+   145	    NAMESPACE   "arm" "app" "asr")
+   146	
+   147	# Generate labels C++ code
+   148	set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+   149	
+   150	# Generate labels file
+   151	set(ASR_LABELS_CPP_FILE Labels)
+   152	generate_labels_code(
+   153	    INPUT           "${ASR_LABELS_FILE}"
+   154	    DESTINATION_SRC ${SRC_GEN_DIR}
+   155	    DESTINATION_HDR ${INC_GEN_DIR}
+   156	    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+   157	)
+   158	
+   159	# Collect the generated source files
+   160	file(GLOB ASR_GENERATED_SOURCES ${SRC_GEN_DIR}/*.cc)
+   161	
+   162	# Create static library
+   163	add_library(asr_iface INTERFACE)
+   164	
+   165	## Common include directories - public
+   166	target_include_directories(asr_iface
+   167	    INTERFACE
+   168		src/application/main/include)
+   169	
+   170	
+   171	target_include_directories(app PRIVATE
+   172	    src/application/main/include
+   173	    src/use_case/alif_asr/include
+   174		src/power
+   175		~/sdk-alif/alif/samples/modules/alif_common
+   176		~/sdk-alif/alif/samples/modules/alif_common/audio
+   177		~/sdk-alif/alif/samples/modules/alif_common/audio/include
+   178		 ${INC_GEN_DIR}
+   179	)
+   180	
+   181	target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+   182	
+   183	
+   184	if (CONFIG_USE_APP_MENU)
+   185	target_compile_definitions(app PRIVATE USE_APP_MENU)
+   186	endif()
+   187	
+   188	target_sources(app PRIVATE
+   189	    src/application/main/Main.cc
+   190	    src/use_case/alif_asr/src/MainLoop.cc
