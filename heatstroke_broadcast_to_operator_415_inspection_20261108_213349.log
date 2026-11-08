@@ -1,0 +1,139 @@
+===== BROADCAST_TO OPERATOR 415 INSPECTION =====
+Sun Nov  8 09:33:49 PM HKT 2026
+===== MODEL ARTIFACT =====
+-rw-rw-r-- 1 user user 11M Nov  5 21:13 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+60f5c826e709c5e86fe722acc8ec6d8e8e778a1229554223465e8cd016597278  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+===== FIND PYTHON TFLITE SCHEMA PACKAGE =====
+SELECTED_PYTHON=python3
+===== FLATBUFFER OPERATOR AND TENSOR INSPECTION =====
+SCHEMA_MODULE: tflite
+Traceback (most recent call last):
+  File "<stdin>", line 15, in <module>
+AttributeError: module 'tflite' has no attribute 'Model'
+FLATBUFFER_INSPECTION_EXIT_STATUS=1
+===== LOCAL TFLM BROADCAST_TO SOURCE =====
+--- SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/broadcast_to.cc
+1-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+2-
+3-Licensed under the Apache License, Version 2.0 (the "License");
+4-you may not use this file except in compliance with the License.
+5-You may obtain a copy of the License at
+6-
+7-    http://www.apache.org/licenses/LICENSE-2.0
+8-
+9-Unless required by applicable law or agreed to in writing, software
+10-distributed under the License is distributed on an "AS IS" BASIS,
+11-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+12-See the License for the specific language governing permissions and
+13-limitations under the License.
+14-==============================================================================*/
+15-#include "tensorflow/lite/kernels/internal/reference/broadcast_to.h"
+16-
+17-#include <stdint.h>
+18-
+19-#include "tensorflow/lite/c/common.h"
+20-#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+21-#include "tensorflow/lite/kernels/kernel_util.h"
+22-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+23-#include "tensorflow/lite/micro/micro_context.h"
+24-
+25-namespace tflite {
+26-
+27-namespace {
+28-constexpr int kInputTensor = 0;
+29-constexpr int kShapeTensor = 1;
+30-constexpr int kOutputTensor = 0;
+31-// Support a maximum of 5 dimensions in TFLM.
+32-constexpr int kMaxDims = 5;
+33-
+34-TfLiteStatus ValidateOutputTensor(TfLiteContext* context, TfLiteTensor* input,
+35-                                  TfLiteTensor* shape, TfLiteTensor* output) {
+36-  // Ensures the shape is 1D tensor.
+37-  TF_LITE_ENSURE_EQ(context, NumDimensions(shape), 1);
+38-
+39-  // Ensure output dims is not less than input dims.
+40-  int input_num_dims = NumDimensions(input);
+41-  int output_num_dims = NumDimensions(output);
+42-  int shape_num_dims = SizeOfDimension(shape, 0);
+43-  TF_LITE_ENSURE_MSG(context, output_num_dims == shape_num_dims,
+44-                     "Output must match with the expected shape dimension.");
+45-  TF_LITE_ENSURE_MSG(context, input_num_dims <= output_num_dims,
+46:                     "Output shape must be broadcastable from input shape.");
+47-  TF_LITE_ENSURE_MSG(context, output_num_dims <= kMaxDims,
+48-                     "BroadcastTo only supports 1-5D tensor.");
+49-
+50:  // Check if output shape is broadcastable from input shape.
+51-  auto get_shape_data = [shape](int i) -> int32_t {
+52-    if (shape->type == kTfLiteInt32) {
+53-      return GetTensorData<int32_t>(shape)[i];
+54-    } else {
+55-      return GetTensorData<int64_t>(shape)[i];
+56-    }
+57-  };
+58-
+59-  int extending_dims = output_num_dims - input_num_dims;
+60-  for (int idx = 0; idx < input_num_dims; ++idx) {
+61-    TF_LITE_ENSURE_MSG(
+62-        context,
+63-        (SizeOfDimension(input, idx) == 1 ||
+64-         SizeOfDimension(input, idx) == get_shape_data(extending_dims + idx)),
+65:        "Output shape must be broadcastable from input shape.");
+66-  }
+67-
+68-  // Validating the shape of the output tensor.
+69-  tflite::RuntimeShape output_shape = tflite::GetTensorShape(output);
+70-  for (int idx = 0; idx < output_num_dims; ++idx) {
+71-    TF_LITE_ENSURE(context, output_shape.Dims(idx) == get_shape_data(idx));
+72-  }
+73-  return kTfLiteOk;
+74-}
+75-
+76:TfLiteStatus BroadcastToPrepare(TfLiteContext* context, TfLiteNode* node) {
+77-  TF_LITE_ENSURE(context, NumInputs(node) == 2);
+78-  TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+79-  MicroContext* micro_context = GetMicroContext(context);
+80-  TfLiteTensor* input =
+81-      micro_context->AllocateTempInputTensor(node, kInputTensor);
+82-  TfLiteTensor* shape =
+83-      micro_context->AllocateTempInputTensor(node, kShapeTensor);
+84-  TfLiteTensor* output =
+85-      micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+86-
+87-  TF_LITE_ENSURE_MSG(context, (NumDimensions(input) <= kMaxDims),
+88-                     "BroadcastTo only supports 1-5D tensor.");
+89-
+90-  TF_LITE_ENSURE(context,
+91-                 shape->type == kTfLiteInt32 || shape->type == kTfLiteInt64);
+92-  TF_LITE_ENSURE_EQ(context, input->type, output->type);
+93-
+94-  // Does not support String type due to its variable size. This limitation is
+95-  // the same as TFLite.
+96-  TF_LITE_ENSURE(context, input->type != kTfLiteString);
+97-
+98-  TF_LITE_ENSURE_STATUS(ValidateOutputTensor(context, input, shape, output));
+99-  micro_context->DeallocateTempTfLiteTensor(input);
+100-  micro_context->DeallocateTempTfLiteTensor(shape);
+101-  micro_context->DeallocateTempTfLiteTensor(output);
+102-  return kTfLiteOk;
+103-}
+104-
+105-TfLiteStatus BroadcastToEval(TfLiteContext* context, TfLiteNode* node) {
+106-  const TfLiteEvalTensor* input =
+107-      micro::GetEvalInput(context, node, kInputTensor);
+108-  TfLiteEvalTensor* output = micro::GetEvalOutput(context, node, kOutputTensor);
+109-
+110-  // BroadcastTo op support up to 5 dims, different from 8 dims in TFLite.
+111-  reference_ops::BroadcastTo<kMaxDims>(
+112-      micro::GetTensorShape(input), input->data.raw,
+113-      micro::GetTensorShape(output), output->data.raw, input->type);
+114-  return kTfLiteOk;
+115-}
+116-}  // namespace
+117-
+118-TFLMRegistration Register_BROADCAST_TO() {
+119:  return tflite::micro::RegisterOp(nullptr, BroadcastToPrepare,
+120-                                   BroadcastToEval);
+121-}
+122-
+123-}  // namespace tflite
+===== END =====
