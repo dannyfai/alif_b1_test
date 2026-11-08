@@ -1,0 +1,623 @@
+===== HEAT-STRESS POST-PATCH SOURCE VERIFICATION =====
+Sun Nov  8 07:38:56 PM HKT 2026
+
+===== PATCHED FILES AND BACKUPS =====
+-rw-rw-r-- 1 user user 1.4K Nov  8 19:37 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+-rw-rw-r-- 1 user user 9.1K Nov  8 19:37 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+-rw-rw-r-- 1 user user 1.4K Nov  5 16:47 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp.bak_20261108_193718
+-rw-rw-r-- 1 user user 3.3K Nov  5 17:42 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_20261108_193718
+
+===== SHA256 OF PATCHED FILES AND BACKUPS =====
+4035b46cc8da6da3b556f9751a6e414f997ee243982c87e15511eea184b3d377  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+a49ca5b50454f5132079355c62217f1d821131c74de5051e33dc85837056347c  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+74dada1d794bfe565c5e9f1ae21286d10d0daccb6274ff553f1f7c3bcbc3479c  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp.bak_20261108_193718
+c9f9927e53411425f5800e0513e83c8ef57df58744b876ab4e465deb64534ed8  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_20261108_193718
+
+===== COMPLETE PATCHED HEADER =====
+     1	#ifndef POLYU_MODEL1_HPP
+     2	#define POLYU_MODEL1_HPP
+     3	
+     4	#include "mlek/fwk/tflm/TflmModel.hpp"
+     5	
+     6	namespace arm::app::asr {
+     7	extern const int g_FrameLength;
+     8	extern const int g_FrameStride;
+     9	extern const float g_ScoreThreshold;
+    10	extern const int g_ctxLen;
+    11	} // namespace arm::app::asr
+    12	
+    13	namespace arm::app::fwk::tflm {
+    14	
+    15	class PolyUModel1 : public TflmModel {
+    16	
+    17	public:
+    18	    /* Indices for the expected model - based on input and output tensor shapes */
+    19	    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    20	    static constexpr uint32_t ms_inputColsIdx  = 2;
+    21	    static constexpr uint32_t ms_outputRowsIdx = 2;
+    22	    static constexpr uint32_t ms_outputColsIdx = 3;
+    23	
+    24	    /* Model specific constants. */
+    25	    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    26	    static constexpr uint32_t ms_numMfccFeatures = 13;
+    27	
+    28	protected:
+    29	    /** @brief   Gets the reference to op resolver interface class. */
+    30	    const tflite::MicroOpResolver& GetOpResolver() override;
+    31	
+    32	    /** @brief   Adds operations to the op resolver instance. */
+    33	    bool EnlistOperations() override;
+    34	
+    35	private:
+    36	    /* Maximum number of individual operations that can be enlisted. */
+    37	    static constexpr int ms_maxOpCnt = 32;
+    38	
+    39	    /* A mutable op resolver instance. */
+    40	    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+    41	};
+    42	
+    43	} /* namespace arm::app::fwk::tflm */
+    44	
+    45	#endif /* POLYU_MODEL1_HPP */
+
+===== COMPLETE PATCHED IMPLEMENTATION =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+     3	 * SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Application-local heat-stress TFLM operator registrations.
+     6	 */
+     7	
+     8	#include "PolyUModel1.hpp"
+     9	
+    10	#include <cstdint>
+    11	
+    12	#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+    13	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    14	#include "tensorflow/lite/micro/micro_log.h"
+    15	
+    16	#include "mlek/log/log_macros.h"
+    17	#include "heatstroke_bidirectional_lstm.h"
+    18	
+    19	const tflite::MicroOpResolver&
+    20	arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    21	{
+    22	    return this->m_opResolver;
+    23	}
+    24	
+    25	namespace
+    26	{
+    27	
+    28	/*
+    29	 * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+    30	 * required by this implementation. Validate its options type and leave
+    31	 * builtin_data null.
+    32	 */
+    33	TfLiteStatus ParseHeatstrokeSign(
+    34	    const tflite::Operator* op,
+    35	    tflite::ErrorReporter*,
+    36	    tflite::BuiltinDataAllocator*,
+    37	    void** builtin_data)
+    38	{
+    39	    if (builtin_data != nullptr) {
+    40	        *builtin_data = nullptr;
+    41	    }
+    42	
+    43	    if (op == nullptr ||
+    44	        op->builtin_options_type() !=
+    45	            tflite::BuiltinOptions_SignOptions) {
+    46	        return kTfLiteError;
+    47	    }
+    48	
+    49	    return kTfLiteOk;
+    50	}
+    51	
+    52	/*
+    53	 * Application-local INT32 SIGN implementation.
+    54	 *
+    55	 * y = -1 when x < 0
+    56	 * y =  0 when x = 0
+    57	 * y =  1 when x > 0
+    58	 *
+    59	 * No temporary buffer or scratch allocation is required.
+    60	 */
+    61	TfLiteStatus HeatstrokeSignEval(
+    62	    TfLiteContext* context,
+    63	    TfLiteNode* node)
+    64	{
+    65	    if (context == nullptr || node == nullptr) {
+    66	        return kTfLiteError;
+    67	    }
+    68	
+    69	    const TfLiteEvalTensor* input =
+    70	        tflite::micro::GetEvalInput(context, node, 0);
+    71	
+    72	    TfLiteEvalTensor* output =
+    73	        tflite::micro::GetEvalOutput(context, node, 0);
+    74	
+    75	    if (input == nullptr || output == nullptr) {
+    76	        return kTfLiteError;
+    77	    }
+    78	
+    79	    if (input->type != kTfLiteInt32 ||
+    80	        output->type != kTfLiteInt32) {
+    81	        MicroPrintf(
+    82	            "Heatstroke SIGN requires INT32 input/output. "
+    83	            "Input=%d Output=%d",
+    84	            input->type,
+    85	            output->type);
+    86	        return kTfLiteError;
+    87	    }
+    88	
+    89	    const auto input_shape =
+    90	        tflite::micro::GetTensorShape(input);
+    91	
+    92	    const auto output_shape =
+    93	        tflite::micro::GetTensorShape(output);
+    94	
+    95	    const int input_count = input_shape.FlatSize();
+    96	    const int output_count = output_shape.FlatSize();
+    97	
+    98	    if (input_count < 0 || input_count != output_count) {
+    99	        MicroPrintf(
+   100	            "Heatstroke SIGN tensor element-count mismatch.");
+   101	        return kTfLiteError;
+   102	    }
+   103	
+   104	    const int32_t* input_data =
+   105	        tflite::micro::GetTensorData<int32_t>(input);
+   106	
+   107	    int32_t* output_data =
+   108	        tflite::micro::GetTensorData<int32_t>(output);
+   109	
+   110	    if (input_count > 0 &&
+   111	        (input_data == nullptr || output_data == nullptr)) {
+   112	        MicroPrintf(
+   113	            "Heatstroke SIGN received a null tensor data pointer.");
+   114	        return kTfLiteError;
+   115	    }
+   116	
+   117	    for (int i = 0; i < input_count; ++i) {
+   118	        const int32_t value = input_data[i];
+   119	
+   120	        output_data[i] =
+   121	            (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+   122	    }
+   123	
+   124	    return kTfLiteOk;
+   125	}
+   126	
+   127	TFLMRegistration RegisterHeatstrokeSignKernel()
+   128	{
+   129	    return tflite::micro::RegisterOp(
+   130	        nullptr,
+   131	        nullptr,
+   132	        HeatstrokeSignEval);
+   133	}
+   134	
+   135	} // namespace
+   136	
+   137	/*
+   138	 * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+   139	 * Keep its existing parser and implementation unchanged.
+   140	 */
+   141	TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+   142	    const tflite::Operator* op,
+   143	    tflite::ErrorReporter* error_reporter,
+   144	    tflite::BuiltinDataAllocator* allocator,
+   145	    void** builtin_data)
+   146	{
+   147	    return tflite::ParseOpData(
+   148	        op,
+   149	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   150	        error_reporter,
+   151	        allocator,
+   152	        builtin_data);
+   153	}
+   154	
+   155	bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+   156	{
+   157	#define HS_ADD_REQUIRED(method)                                      \
+   158	    do {                                                              \
+   159	        const TfLiteStatus status = this->m_opResolver.method();      \
+   160	        if (status != kTfLiteOk) {                                    \
+   161	            printf_err(                                               \
+   162	                "Failed to register heat-stress operator: %s\n",     \
+   163	                #method);                                             \
+   164	            return false;                                             \
+   165	        }                                                             \
+   166	    } while (0)
+   167	
+   168	    /*
+   169	     * 29 ordinary built-in operators required by the exact Vela model.
+   170	     * These CPU registrations must remain available with Ethos-U enabled.
+   171	     */
+   172	    HS_ADD_REQUIRED(AddAdd);
+   173	    HS_ADD_REQUIRED(AddBroadcastArgs);
+   174	    HS_ADD_REQUIRED(AddBroadcastTo);
+   175	    HS_ADD_REQUIRED(AddCast);
+   176	    HS_ADD_REQUIRED(AddConcatenation);
+   177	    HS_ADD_REQUIRED(AddCumSum);
+   178	    HS_ADD_REQUIRED(AddDequantize);
+   179	    HS_ADD_REQUIRED(AddDiv);
+   180	    HS_ADD_REQUIRED(AddEqual);
+   181	    HS_ADD_REQUIRED(AddFloorMod);
+   182	    HS_ADD_REQUIRED(AddGather);
+   183	    HS_ADD_REQUIRED(AddGreater);
+   184	    HS_ADD_REQUIRED(AddLogicalAnd);
+   185	    HS_ADD_REQUIRED(AddLogicalNot);
+   186	    HS_ADD_REQUIRED(AddMaximum);
+   187	    HS_ADD_REQUIRED(AddMean);
+   188	    HS_ADD_REQUIRED(AddMul);
+   189	    HS_ADD_REQUIRED(AddNeg);
+   190	    HS_ADD_REQUIRED(AddQuantize);
+   191	    HS_ADD_REQUIRED(AddReshape);
+   192	    HS_ADD_REQUIRED(AddRsqrt);
+   193	    HS_ADD_REQUIRED(AddSelectV2);
+   194	    HS_ADD_REQUIRED(AddSoftmax);
+   195	    HS_ADD_REQUIRED(AddSplitV);
+   196	    HS_ADD_REQUIRED(AddSqrt);
+   197	    HS_ADD_REQUIRED(AddSquare);
+   198	    HS_ADD_REQUIRED(AddSub);
+   199	    HS_ADD_REQUIRED(AddSum);
+   200	    HS_ADD_REQUIRED(AddTopKV2);
+   201	
+   202	#undef HS_ADD_REQUIRED
+   203	
+   204	    /*
+   205	     * Custom SIGN registration under the built-in SIGN opcode.
+   206	     */
+   207	    {
+   208	        const TFLMRegistration registration =
+   209	            RegisterHeatstrokeSignKernel();
+   210	
+   211	        if (this->m_opResolver.AddBuiltin(
+   212	                tflite::BuiltinOperator_SIGN,
+   213	                registration,
+   214	                ParseHeatstrokeSign) != kTfLiteOk) {
+   215	            printf_err("Failed to register heat-stress SIGN.\n");
+   216	            return false;
+   217	        }
+   218	    }
+   219	
+   220	    /*
+   221	     * Custom compact bidirectional LSTM registration.
+   222	     */
+   223	    {
+   224	        const TFLMRegistration registration =
+   225	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+   226	
+   227	        if (this->m_opResolver.AddBuiltin(
+   228	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   229	                registration,
+   230	                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+   231	            printf_err(
+   232	                "Failed to register heat-stress bidirectional LSTM.\n");
+   233	            return false;
+   234	        }
+   235	    }
+   236	
+   237	    /*
+   238	     * Ethos-U registration.
+   239	     *
+   240	     * AddEthosU() in this SDK can report success even when the hardware
+   241	     * registration is null. Therefore, explicitly verify FindOp().
+   242	     */
+   243	    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+   244	        printf_err("Failed to add Ethos-U to the resolver.\n");
+   245	        return false;
+   246	    }
+   247	
+   248	    const char* ethos_name = tflite::GetString_ETHOSU();
+   249	
+   250	    if (ethos_name == nullptr ||
+   251	        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+   252	        printf_err(
+   253	            "Ethos-U registration is missing from the resolver.\n");
+   254	        return false;
+   255	    }
+   256	
+   257	    /*
+   258	     * Verify all built-in registrations and parser callbacks.
+   259	     */
+   260	    const tflite::BuiltinOperator required_ops[] = {
+   261	        tflite::BuiltinOperator_ADD,
+   262	        tflite::BuiltinOperator_BROADCAST_ARGS,
+   263	        tflite::BuiltinOperator_BROADCAST_TO,
+   264	        tflite::BuiltinOperator_CAST,
+   265	        tflite::BuiltinOperator_CONCATENATION,
+   266	        tflite::BuiltinOperator_CUMSUM,
+   267	        tflite::BuiltinOperator_DEQUANTIZE,
+   268	        tflite::BuiltinOperator_DIV,
+   269	        tflite::BuiltinOperator_EQUAL,
+   270	        tflite::BuiltinOperator_FLOOR_MOD,
+   271	        tflite::BuiltinOperator_GATHER,
+   272	        tflite::BuiltinOperator_GREATER,
+   273	        tflite::BuiltinOperator_LOGICAL_AND,
+   274	        tflite::BuiltinOperator_LOGICAL_NOT,
+   275	        tflite::BuiltinOperator_MAXIMUM,
+   276	        tflite::BuiltinOperator_MEAN,
+   277	        tflite::BuiltinOperator_MUL,
+   278	        tflite::BuiltinOperator_NEG,
+   279	        tflite::BuiltinOperator_QUANTIZE,
+   280	        tflite::BuiltinOperator_RESHAPE,
+   281	        tflite::BuiltinOperator_RSQRT,
+   282	        tflite::BuiltinOperator_SELECT_V2,
+   283	        tflite::BuiltinOperator_SIGN,
+   284	        tflite::BuiltinOperator_SOFTMAX,
+   285	        tflite::BuiltinOperator_SPLIT_V,
+   286	        tflite::BuiltinOperator_SQRT,
+   287	        tflite::BuiltinOperator_SQUARE,
+   288	        tflite::BuiltinOperator_SUB,
+   289	        tflite::BuiltinOperator_SUM,
+   290	        tflite::BuiltinOperator_TOPK_V2,
+   291	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+   292	    };
+   293	
+   294	    for (const auto op : required_ops) {
+   295	        if (this->m_opResolver.FindOp(op) == nullptr) {
+   296	            printf_err(
+   297	                "Required heat-stress builtin registration is missing: %d\n",
+   298	                static_cast<int>(op));
+   299	            return false;
+   300	        }
+   301	
+   302	        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+   303	            printf_err(
+   304	                "Required heat-stress builtin parser is missing: %d\n",
+   305	                static_cast<int>(op));
+   306	            return false;
+   307	        }
+   308	    }
+   309	
+   310	    info(
+   311	        "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+   312	        ethos_name);
+   313	
+   314	    return true;
+   315	}
+
+===== REGISTRATION COUNTS =====
+Ordinary Add registrations: 29
+Custom AddBuiltin registrations: 2
+Ethos-U registrations: 1
+Built-in verification entries: 31
+
+===== RESOLVER API VERIFICATION =====
+grep: Unmatched ( or \(
+
+===== REQUIRED METHOD DECLARATION CHECK =====
+Methods used: 29
+Unique methods: 29
+Missing method declarations: []
+PASS: 29 unique ordinary registration calls found.
+PASS: All ordinary registration methods exist in the resolver header.
+Builtin verification entries: 31
+Unique builtin verification entries: 31
+PASS: 31 unique builtin verification entries found.
+SIGN parser present: True
+SIGN kernel present: True
+BiLSTM parser present: True
+Ethos-U lookup present: True
+ReverseV2 references present: False
+
+===== SIGN OPTIONS ENUM DECLARATION =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:1810:  BuiltinOptions_SignOptions = 123,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:1943:    BuiltinOptions_SignOptions,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:2584:  static const BuiltinOptions enum_value = BuiltinOptions_SignOptions;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:3092:  static const BuiltinOptions enum_value = BuiltinOptions_SignOptions;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:4114:    return type == BuiltinOptions_SignOptions ?
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:4118:    return type == BuiltinOptions_SignOptions ?
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:15421:    return builtin_options_type() == tflite::BuiltinOptions_SignOptions ? static_cast<const tflite::SignOptions *>(builtin_options()) : nullptr;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:22509:    case BuiltinOptions_SignOptions: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:23032:    case BuiltinOptions_SignOptions: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:23543:    case BuiltinOptions_SignOptions: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:24053:    case BuiltinOptions_SignOptions: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:24686:    case BuiltinOptions_SignOptions: {
+
+===== SIGN KERNEL HELPER API =====
+64-                                      const TfLiteNode* node, int index);
+65-
+66-// Returns the TfLiteEvalTensor struct for a given input index in a node.
+67:const TfLiteEvalTensor* GetEvalInput(const TfLiteContext* context,
+68-                                     const TfLiteNode* node, int index);
+69-
+70-// Returns the TfLiteEvalTensor struct for a given output index in a node.
+71:TfLiteEvalTensor* GetEvalOutput(const TfLiteContext* context,
+72-                                const TfLiteNode* node, int index);
+73-
+74-// Returns data for a TfLiteEvalTensor struct that are expected to exist.
+75-template <typename T>
+76:T* GetTensorData(TfLiteEvalTensor* tensor) {
+77-  TFLITE_DCHECK(tensor != nullptr);
+78-  return reinterpret_cast<T*>(tensor->data.raw);
+79-}
+80-
+81-// Returns const data for a TfLiteEvalTensor struct that are expected to exist.
+82-template <typename T>
+83:const T* GetTensorData(const TfLiteEvalTensor* tensor) {
+84-  TFLITE_DCHECK(tensor != nullptr);
+85-  return reinterpret_cast<const T*>(tensor->data.raw);
+86-}
+87-
+88-// Returns data for a TfLiteEvalTensor struct that could be null.
+--
+128-  return reinterpret_cast<const T*>(uncompressed_data);
+129-}
+130-
+131:// Overloads existing GetTensorData. If not compressed, this will return
+132-// tensor->data.
+133-template <typename T>
+134:const T* GetTensorData(MicroContext* micro_context,
+135-                       const TfLiteEvalTensor* tensor,
+136-                       const CompressionTensorData* compression_data,
+137-                       int scratch_buffer_handle) {
+138-  TFLITE_DCHECK(tensor != nullptr);
+139-  return GetOptionalTensorData<T>(micro_context, tensor, compression_data,
+--
+143-#endif  // USE_TFLM_COMPRESSION
+144-
+145-// Returns the shape of a TfLiteEvalTensor struct.
+146:const RuntimeShape GetTensorShape(const TfLiteEvalTensor* tensor);
+147-
+148-// Return true if the given tensors have the same shape.
+149-bool HaveSameShapes(const TfLiteEvalTensor* input1,
+150-                    const TfLiteEvalTensor* input2);
+151-
+
+===== REGISTEROP IMPLEMENTATION =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-33-      return tensor_index;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-34-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-35-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-36-  return -1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-37-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-38-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-39-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-40-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc:41:TFLMRegistration RegisterOp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-42-    void* (*init)(TfLiteContext* context, const char* buffer, size_t length),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-43-    TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-44-    TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-45-    void (*free)(TfLiteContext* context, void* buffer),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-46-    void (*reset)(TfLiteContext* context, void* buffer)) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-47-  return {/*init=*/init,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-48-          /*free=*/free,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-49-          /*prepare=*/prepare,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-50-          /*invoke=*/invoke,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-51-          /*reset*/ reset,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-52-          /*builtin_code=*/0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-53-          /*custom_name=*/nullptr};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-54-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-55-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc:56:TFLMInferenceRegistration RegisterOp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-57-    TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-58-    void (*reset)(TfLiteContext* context, void* buffer)) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-59-  return {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-60-      /*invoke=*/invoke,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-61-      /*reset*/ reset,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-62-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-63-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-64-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-65-// Returns a mutable tensor for a given input index. is_variable must be checked
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-66-// during prepare when the full TfLiteTensor is available.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-67-TfLiteEvalTensor* GetMutableEvalInput(const TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc-68-                                      const TfLiteNode* node, int index) {
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-30-#include "tensorflow/lite/micro/micro_arena_constants.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-31-#include "tensorflow/lite/micro/micro_utils.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-32-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-33-#endif  // USE_TFLM_COMPRESSION
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-34-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-35-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-36-namespace micro {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-37-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h:38:TFLMRegistration RegisterOp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-39-    void* (*init)(TfLiteContext* context, const char* buffer, size_t length),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-40-    TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-41-    TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-42-    void (*free)(TfLiteContext* context, void* buffer) = nullptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-43-    void (*reset)(TfLiteContext* context, void* buffer) = nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-44-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h:45:TFLMInferenceRegistration RegisterOp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-46-    TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-47-    void (*reset)(TfLiteContext* context, void* buffer) = nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-48-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-49-// Prints out n bytes in a int8_t buffer as hex
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-50-void PrintNBytes(const int8_t* tensor_data, int n_bytes,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-51-                 const char* prefix = nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-52-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-53-// Prints out the n bytes in a TfLiteEvalTensor as hex
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-54-void PrintNBytes(const TfLiteEvalTensor* tensor, int n_bytes,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-55-                 const char* prefix = nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-56-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h-57-// Prints out n bytes in a TfLiteTensor as hex
+
+===== ETHOS-U LOOKUP AND PARSER CHECK COMPLETENESS =====
+230-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+231-            printf_err(
+232-                "Failed to register heat-stress bidirectional LSTM.\n");
+233-            return false;
+234-        }
+235-    }
+236-
+237-    /*
+238-     * Ethos-U registration.
+239-     *
+240:     * AddEthosU() in this SDK can report success even when the hardware
+241-     * registration is null. Therefore, explicitly verify FindOp().
+242-     */
+243:    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+244-        printf_err("Failed to add Ethos-U to the resolver.\n");
+245-        return false;
+246-    }
+247-
+248-    const char* ethos_name = tflite::GetString_ETHOSU();
+249-
+250-    if (ethos_name == nullptr ||
+251-        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+252-        printf_err(
+253-            "Ethos-U registration is missing from the resolver.\n");
+254-        return false;
+255-    }
+256-
+257-    /*
+258-     * Verify all built-in registrations and parser callbacks.
+259-     */
+260-    const tflite::BuiltinOperator required_ops[] = {
+261-        tflite::BuiltinOperator_ADD,
+262-        tflite::BuiltinOperator_BROADCAST_ARGS,
+263-        tflite::BuiltinOperator_BROADCAST_TO,
+264-        tflite::BuiltinOperator_CAST,
+265-        tflite::BuiltinOperator_CONCATENATION,
+266-        tflite::BuiltinOperator_CUMSUM,
+267-        tflite::BuiltinOperator_DEQUANTIZE,
+268-        tflite::BuiltinOperator_DIV,
+269-        tflite::BuiltinOperator_EQUAL,
+270-        tflite::BuiltinOperator_FLOOR_MOD,
+271-        tflite::BuiltinOperator_GATHER,
+272-        tflite::BuiltinOperator_GREATER,
+273-        tflite::BuiltinOperator_LOGICAL_AND,
+274-        tflite::BuiltinOperator_LOGICAL_NOT,
+275-        tflite::BuiltinOperator_MAXIMUM,
+276-        tflite::BuiltinOperator_MEAN,
+277-        tflite::BuiltinOperator_MUL,
+278-        tflite::BuiltinOperator_NEG,
+279-        tflite::BuiltinOperator_QUANTIZE,
+280-        tflite::BuiltinOperator_RESHAPE,
+281-        tflite::BuiltinOperator_RSQRT,
+282-        tflite::BuiltinOperator_SELECT_V2,
+283-        tflite::BuiltinOperator_SIGN,
+284-        tflite::BuiltinOperator_SOFTMAX,
+285-        tflite::BuiltinOperator_SPLIT_V,
+286-        tflite::BuiltinOperator_SQRT,
+287-        tflite::BuiltinOperator_SQUARE,
+288-        tflite::BuiltinOperator_SUB,
+289-        tflite::BuiltinOperator_SUM,
+290-        tflite::BuiltinOperator_TOPK_V2,
+291-        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+292-    };
+293-
+294-    for (const auto op : required_ops) {
+295-        if (this->m_opResolver.FindOp(op) == nullptr) {
+296-            printf_err(
+297-                "Required heat-stress builtin registration is missing: %d\n",
+298-                static_cast<int>(op));
+299-            return false;
+300-        }
+301-
+302:        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+303-            printf_err(
+304-                "Required heat-stress builtin parser is missing: %d\n",
+305-                static_cast<int>(op));
+306-            return false;
+307-        }
+308-    }
+309-
+310-    info(
+311-        "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+312-        ethos_name);
+313-
+314-    return true;
+315-}
+
+===== END =====
