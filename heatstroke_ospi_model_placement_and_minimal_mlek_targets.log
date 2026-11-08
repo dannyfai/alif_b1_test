@@ -1,0 +1,2039 @@
+===== OSPI MODEL PLACEMENT AND MINIMAL MLEK TARGETS =====
+Sun Nov  8 07:48:14 PM HKT 2026
+
+===== TARGET MODEL HASH AND SIZE =====
+-rw-rw-r-- 1 user user 11M Nov  5 21:13 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+60f5c826e709c5e86fe722acc8ec6d8e8e778a1229554223465e8cd016597278  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+
+===== MODEL GENERATOR TEMPLATE =====
+Template: /home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/templates/tflite.cc.template
+     1	{#
+     2	 SPDX-FileCopyrightText: Copyright 2021 Arm Limited and/or its affiliates <open-source-office@arm.com>
+     3	 SPDX-License-Identifier: Apache-2.0
+     4	
+     5	 Licensed under the Apache License, Version 2.0 (the "License");
+     6	 you may not use this file except in compliance with the License.
+     7	 You may obtain a copy of the License at
+     8	
+     9	     http://www.apache.org/licenses/LICENSE-2.0
+    10	
+    11	 Unless required by applicable law or agreed to in writing, software
+    12	 distributed under the License is distributed on an "AS IS" BASIS,
+    13	 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 See the License for the specific language governing permissions and
+    15	 limitations under the License.
+    16	#}
+    17	{{common_template_header}}
+    18	
+    19	#include "BufAttributes.hpp"
+    20	
+    21	#include <cstddef>
+    22	#include <cstdint>
+    23	
+    24	{% for header in additional_headers %}
+    25	#include "{{header}}"
+    26	{% endfor %}
+    27	
+    28	{% for namespace in namespaces %}
+    29	namespace {{namespace}} {
+    30	{% endfor %}
+    31	
+    32	{% for expression in expressions %}
+    33	{{expression}};
+    34	{% endfor %}
+    35	
+    36	static const uint8_t nn_model[] MODEL_SECTION_ATTRIBUTE =
+    37	{% for model_hex_line in model_data %}
+    38	{{model_hex_line}}
+    39	{% endfor %}
+    40	
+    41	const uint8_t * GetModelPointer()
+    42	{
+    43	    return nn_model;
+    44	}
+    45	
+    46	size_t GetModelLen()
+    47	{
+    48	    return sizeof(nn_model);
+    49	}
+    50	
+    51	{% for namespace in namespaces %}
+    52	} /* namespace {{namespace}} */
+    53	{% endfor %}
+
+===== MODEL GENERATOR: MODEL ATTRIBUTE AND OUTPUT LOGIC =====
+Generator: /home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py
+8-#
+9-#      http://www.apache.org/licenses/LICENSE-2.0
+10-#
+11-#  Unless required by applicable law or agreed to in writing, software
+12-#  distributed under the License is distributed on an "AS IS" BASIS,
+13-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14-#  See the License for the specific language governing permissions and
+15-#  limitations under the License.
+16-
+17-"""
+18-Utility script to generate model c file that can be included in the
+19-project directly. This should be called as part of CMake framework
+20-should the models need to be generated at configuration stage.
+21-
+22-This script is intentionally thin: it delegates validation to
+23:format-specific modules and focuses on producing the .cc output.
+24-"""
+25-import binascii
+26-from argparse import ArgumentParser
+27-from pathlib import Path
+28-
+29-from jinja2 import Environment, FileSystemLoader
+30-
+31-from mlek_tools.gen.gen_utils import gen_header
+32-from mlek_tools.validation.npu_validation import NpuValidationArgs
+33-from mlek_tools.validation.pte_validator import validate_pte_model
+34-from mlek_tools.validation.tflite_validator import validate_tflite_model
+35-
+36-
+37-def get_model_data(model_path: str) -> list:
+38-    """
+39-    Reads a binary file and returns a C style array as a
+40-    list of strings.
+41-
+42-    Argument:
+43-        model_path:    path to the model.
+44-
+45-    Returns:
+46-        list of strings
+47-    """
+48-    # Read raw bytes so we can emit a C array initializer.
+--
+65-
+66-def main():
+67-    """
+68-    Generate models .cpp
+69-    """
+70-    # pylint: disable=duplicate-code
+71-    parser = ArgumentParser()
+72-
+73-    parser.add_argument(
+74-        "--model_path",
+75-        help="Model path (.tflite or .pte)",
+76-        required=True
+77-    )
+78-
+79-    parser.add_argument(
+80:        "--output_dir",
+81-        help="Output directory",
+82-        required=True
+83-    )
+84-
+85-    parser.add_argument(
+86-        '-e',
+87-        '--expression',
+88-        action='append',
+89-        default=[],
+90-        dest="expr"
+91-    )
+92-
+93-    parser.add_argument(
+94-        '--header',
+95-        action='append',
+96-        default=[],
+97-        dest="headers"
+98-    )
+99-
+100-    parser.add_argument(
+101-        '-ns',
+102:        '--namespaces',
+103-        action='append',
+104-        default=[],
+105:        dest="namespaces"
+106-    )
+107-
+108-    parser.add_argument(
+109:        "--license_template",
+110-        type=str,
+111:        help="Header template file",
+112:        default="header_template.txt"
+113-    )
+114-
+115-    parser.add_argument(
+116-        "--ethos_u_memory_mode",
+117-        type=str,
+118-        help="Arm Ethos-U NPU Vela memory mode (Shared_Sram, Sram_Only, Dedicated_Sram). "
+119-             "If provided, model must be Arm Ethos-U NPU optimized.",
+120-        default=None
+121-    )
+122-
+123-    parser.add_argument(
+124-        "--ethos_u_config",
+125-        type=str,
+126-        help="Arm Ethos-U NPU accelerator config (e.g. ethos-u55-128). "
+127-             "If provided, model must be Arm Ethos-U NPU optimized.",
+128-        default=None
+129-    )
+130-
+131-    args = parser.parse_args()
+132-    # pylint: enable=duplicate-code
+133-
+134:    env = Environment(loader=FileSystemLoader(Path(__file__).parent / 'templates'),
+135-                      trim_blocks=True,
+136-                      lstrip_blocks=True)
+137-
+138-    # Resolve and validate input path early to fail fast.
+139-    model_path = Path(args.model_path)
+140-    if not model_path.is_file():
+141-        raise ValueError(f"{model_path} not found")
+142-
+143-    suffix = model_path.suffix.lower()
+144-
+145-    # Only validate Arm Ethos-U NPU metadata when those args are explicitly provided.
+146-    validation_args = NpuValidationArgs(
+147-        memory_mode=args.ethos_u_memory_mode,
+148-        config=args.ethos_u_config,
+149-    )
+150-    if suffix == ".tflite":
+151-        # TFLite validation runs only when args are set (it will early-return otherwise).
+152-        validate_tflite_model(model_path, validation_args)
+153-    elif suffix == ".pte":
+154-        # PTE validation runs only when args are set (it will early-return otherwise).
+155-        validate_pte_model(model_path, validation_args)
+156-    else:
+157-        raise ValueError(
+158-            f"Unsupported model type for {model_path}. Expected .tflite or .pte."
+159-        )
+160-
+161-    # Output filename mirrors the input model name with a .cc suffix.
+162:    cpp_filename = (Path(args.output_dir) / (model_path.name + ".cc")).resolve()
+163-    print(f"++ Converting {model_path.name} to\
+164-    {cpp_filename.name}")
+165-
+166-    cpp_filename.parent.mkdir(exist_ok=True)
+167-
+168:    hdr = gen_header(env, args.license_template, model_path.name)
+169-
+170-    env \
+171:        .get_template('tflite.cc.template') \
+172:        .stream(common_template_header=hdr,
+173-                model_data=get_model_data(str(model_path)),
+174-                expressions=args.expr,
+175-                additional_headers=args.headers,
+176:                namespaces=args.namespaces).dump(str(cpp_filename))
+177-
+178-
+179-if __name__ == '__main__':
+180-    main()
+
+===== EXISTING GENERATED MODEL SOURCE =====
+/home/user/sdk-alif/build/generated/src/cla_quant_uint8_vela.tflite.cc 15749426 bytes
+
+--- Generated source header and model declaration ---
+     1	
+     2	/*********************    Autogenerated file. DO NOT EDIT *******************
+     3	 * Generated from Arm ML Embedded Evaluation Kit (MLEK) project.
+     4	 * Script:          gen_utils.py
+     5	 * Original file:   cla_quant_uint8_vela.tflite * Date:            2026-11-08 19:40:31.844842
+     6	 ***************************************************************************/
+     7	
+     8	#include "BufAttributes.hpp"
+     9	
+    10	#include <cstddef>
+    11	#include <cstdint>
+    12	
+    13	
+    14	namespace arm {
+    15	namespace app {
+    16	namespace asr {
+    17	
+    18	/* Model parameters for  */;
+    19	extern const int   g_FrameLength    = 512;
+    20	extern const int   g_FrameStride    = 160;
+    21	extern const int   g_ctxLen         = 98;
+    22	extern const float g_ScoreThreshold = 0.5;
+    23	
+    24	static const uint8_t nn_model[] MODEL_SECTION_ATTRIBUTE =
+    25	{
+    26	0x1c, 0x00, 0x00, 0x00, 0x54, 0x46, 0x4c, 0x33, 0x14, 0x00, 0x20, 0x00, 0x04, 0x00, 0x08, 0x00, 0x0c, 0x00, 0x10, 0x00, 0x14, 0x00, 0x00, 0x00, 0x18, 0x00, 0x1c, 0x00, 0x14, 0x00, 0x00, 0x00, 
+    27	0x03, 0x00, 0x00, 0x00, 0x5c, 0x01, 0x00, 0x00, 0x50, 0x01, 0x00, 0x00, 0x38, 0x01, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 
+    28	0xa8, 0x0e, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x60, 0x0e, 0x00, 0x00, 0xcc, 0x0d, 0x00, 0x00, 0x8c, 0x01, 0x00, 0x00, 0x43, 0x00, 0x00, 0x00, 0x74, 0xd7, 0x27, 0x00, 0x48, 0xd7, 0x27, 0x00, 
+    29	0x24, 0xd7, 0x27, 0x00, 0x00, 0xd7, 0x27, 0x00, 0xec, 0xd6, 0x26, 0x00, 0xc8, 0xd6, 0x26, 0x00, 0xa4, 0xd6, 0x26, 0x00, 0x90, 0xbe, 0x26, 0x00, 0x7c, 0xbe, 0x26, 0x00, 0x68, 0xbd, 0x26, 0x00, 
+    30	0x54, 0xbc, 0x26, 0x00, 0x40, 0xbb, 0x26, 0x00, 0x2c, 0xba, 0x26, 0x00, 0x08, 0xba, 0x26, 0x00, 0xf4, 0xb9, 0x26, 0x00, 0xd0, 0xb9, 0x26, 0x00, 0xac, 0xb9, 0x26, 0x00, 0x88, 0xb9, 0x26, 0x00, 
+    31	0x74, 0xb9, 0x25, 0x00, 0x60, 0xa1, 0x25, 0x00, 0x4c, 0xa0, 0x25, 0x00, 0x38, 0x9f, 0x25, 0x00, 0x24, 0x9e, 0x25, 0x00, 0x10, 0x9d, 0x25, 0x00, 0xec, 0x9c, 0x25, 0x00, 0xc8, 0x9c, 0x25, 0x00, 
+    32	0xb4, 0x9c, 0x25, 0x00, 0xa0, 0x9c, 0x24, 0x00, 0x8c, 0x9a, 0x24, 0x00, 0x78, 0x9a, 0x24, 0x00, 0x64, 0x98, 0x24, 0x00, 0x50, 0x96, 0x24, 0x00, 0x1c, 0x96, 0x24, 0x00, 0xf8, 0x95, 0x24, 0x00, 
+    33	0x64, 0x91, 0x24, 0x00, 0x10, 0x91, 0x24, 0x00, 0xec, 0x90, 0x24, 0x00, 0xc8, 0x90, 0x24, 0x00, 0xa4, 0x90, 0x24, 0x00, 0x90, 0x78, 0x24, 0x00, 0xfc, 0x77, 0x24, 0x00, 0xd8, 0x77, 0x24, 0x00, 
+    34	0xb4, 0x77, 0x24, 0x00, 0x90, 0x77, 0x24, 0x00, 0x7c, 0x17, 0x24, 0x00, 0x68, 0x16, 0x24, 0x00, 0x44, 0x16, 0x24, 0x00, 0x20, 0x16, 0x24, 0x00, 0x0c, 0x16, 0x14, 0x00, 0xf8, 0x13, 0x14, 0x00, 
+    35	0xe4, 0x11, 0x14, 0x00, 0xd0, 0x0f, 0x14, 0x00, 0xbc, 0x1f, 0x0b, 0x00, 0xa8, 0x17, 0x0b, 0x00, 0x94, 0x0f, 0x0b, 0x00, 0x80, 0x07, 0x0b, 0x00, 0x6c, 0xe7, 0x0a, 0x00, 0x48, 0xe7, 0x0a, 0x00, 
+    36	0x34, 0xd7, 0x01, 0x00, 0x20, 0xcf, 0x01, 0x00, 0x0c, 0xc7, 0x01, 0x00, 0xf8, 0xbe, 0x01, 0x00, 0xe4, 0x9e, 0x01, 0x00, 0xc0, 0x9e, 0x01, 0x00, 0x74, 0x0d, 0x00, 0x00, 0xe0, 0x0c, 0x00, 0x00, 
+    37	0xa4, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x56, 0x65, 0x6c, 0x61, 0x20, 0x4f, 0x70, 0x74, 0x69, 0x6d, 0x69, 0x73, 0x65, 0x64, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x64, 0x0e, 0x00, 0x00, 
+    38	0x16, 0x00, 0x00, 0x00, 0x84, 0x9e, 0x01, 0x00, 0x60, 0x9c, 0x01, 0x00, 0x4c, 0x9b, 0x01, 0x00, 0x08, 0x9a, 0x01, 0x00, 0x4c, 0x98, 0x01, 0x00, 0xdc, 0x92, 0x01, 0x00, 0x44, 0x92, 0x01, 0x00, 
+    39	0x7c, 0x8f, 0x01, 0x00, 0x24, 0x8e, 0x01, 0x00, 0x90, 0x8d, 0x01, 0x00, 0x0c, 0xf9, 0x00, 0x00, 0x8c, 0xf7, 0x00, 0x00, 0xa0, 0x5e, 0x00, 0x00, 0x08, 0x5e, 0x00, 0x00, 0x5c, 0x5a, 0x00, 0x00, 
+    40	0x14, 0x58, 0x00, 0x00, 0x6c, 0x57, 0x00, 0x00, 0x64, 0x55, 0x00, 0x00, 0x54, 0x53, 0x00, 0x00, 0x1c, 0x51, 0x00, 0x00, 0x50, 0x4f, 0x00, 0x00, 0xa0, 0x2d, 0x00, 0x00, 0x30, 0xf2, 0xff, 0xff, 
+    41	0x08, 0x00, 0x00, 0x00, 0x42, 0x00, 0x00, 0x00, 0x17, 0x00, 0x00, 0x00, 0x4f, 0x66, 0x66, 0x6c, 0x69, 0x6e, 0x65, 0x4d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x41, 0x6c, 0x6c, 0x6f, 0x63, 0x61, 0x74, 
+    42	0x69, 0x6f, 0x6e, 0x00, 0x66, 0x2a, 0xd8, 0xff, 0x04, 0x00, 0x00, 0x00, 0x04, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xfe, 0x02, 0x00, 0x00, 0xe0, 0x56, 0x00, 0x00, 
+    43	0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x5c, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x58, 0x00, 0x00, 0x80, 0x02, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 
+    44	0xe0, 0x5c, 0x00, 0x00, 0x40, 0xb1, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x5c, 0x00, 0x00, 0x60, 0x68, 0x00, 0x00, 0x40, 0x68, 0x00, 0x00, 0x20, 0x68, 0x00, 0x00, 0x00, 0x68, 0x00, 0x00, 
+    45	0xe0, 0x67, 0x00, 0x00, 0xe0, 0x68, 0x00, 0x00, 0xe0, 0x69, 0x00, 0x00, 0xe0, 0x6a, 0x00, 0x00, 0xe0, 0x74, 0x00, 0x00, 0xe0, 0x75, 0x00, 0x00, 0xe0, 0x76, 0x00, 0x00, 0xe0, 0x77, 0x00, 0x00, 
+    46	0xe0, 0x78, 0x00, 0x00, 0xe0, 0x79, 0x00, 0x00, 0xe0, 0x7a, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x5a, 0x00, 0x00, 
+    47	0xe0, 0x59, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 0xe0, 0x58, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x5c, 0x00, 0x00, 
+    48	0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5a, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x59, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 
+    49	0xe0, 0x59, 0x00, 0x00, 0xe0, 0x5a, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x5b, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x58, 0x00, 0x00, 0xe0, 0x5a, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 
+    50	0xe0, 0x62, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5a, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 
+    51	0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5a, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5a, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x59, 0x00, 0x00, 
+    52	0xe0, 0x5b, 0x00, 0x00, 0xe0, 0x59, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 
+    53	0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 
+    54	0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5a, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5a, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 
+    55	0x00, 0x6b, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 
+    56	0xe0, 0x61, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 
+    57	0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5b, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 
+    58	0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 
+    59	0xe0, 0x60, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x5c, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 
+    60	0x00, 0x6b, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 
+    61	0xe0, 0x63, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 
+    62	0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x5d, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 
+    63	0xe0, 0x60, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 
+    64	0xe0, 0x62, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x5e, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 
+    65	0x00, 0x6f, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 
+    66	0xe0, 0x65, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 
+    67	0xe0, 0x61, 0x00, 0x00, 0xe0, 0x5f, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 
+    68	0xe0, 0x62, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 
+    69	0xe0, 0x64, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x60, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 
+    70	0x00, 0x6f, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 
+    71	0x00, 0x6b, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 
+    72	0xe0, 0x63, 0x00, 0x00, 0xe0, 0x61, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 
+    73	0xe0, 0x64, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 
+    74	0xe0, 0x66, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x62, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 
+    75	0x00, 0x7b, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+    76	0x00, 0x6d, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 
+    77	0xe0, 0x65, 0x00, 0x00, 0xe0, 0x63, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+    78	0xe0, 0x66, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 
+    79	0x00, 0x6c, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0xe0, 0x64, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 
+    80	0x00, 0x7b, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 
+    81	0x00, 0x6f, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 
+    82	0x00, 0x6b, 0x00, 0x00, 0xe0, 0x65, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 
+    83	0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+    84	0x00, 0x6e, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x66, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 
+    85	0xe0, 0x58, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x7b, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xe0, 0x58, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x6f, 0x00, 0x00, 
+    86	0xff, 0xff, 0xff, 0xff, 0x00, 0x6b, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+    87	0xe0, 0x56, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 
+    88	0x00, 0x6c, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x80, 0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 
+    89	0x80, 0x00, 0x00, 0x00, 0xe0, 0x56, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x56, 0x00, 0x00, 
+    90	0x00, 0x6c, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+    91	0xe0, 0x56, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xe0, 0x56, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x80, 0x01, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0x80, 0x01, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 
+    92	0x00, 0x6f, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 
+    93	0x00, 0x6e, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+    94	0xe0, 0x56, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0xe0, 0x56, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 
+    95	0x00, 0x6e, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 
+    96	0x00, 0x6b, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0xe0, 0x57, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+    97	0x00, 0x70, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0xe0, 0x67, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 
+    98	0x00, 0x6f, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6b, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+    99	0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0xe0, 0x67, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x7b, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 
+   100	0x00, 0x6e, 0x00, 0x00, 0xe0, 0x68, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00, 0x00, 0x6d, 0x00, 0x00, 0x00, 0x6e, 0x00, 0x00, 
+
+--- Model attributes and accessors ---
+grep: Unmatched ( or \(
+
+===== ACTIVE MODEL AND ACTIVATION CONFIGURATION =====
+--- /home/user/sdk-alif/build/zephyr/.config ---
+12:CONFIG_FLASH_SIZE=1824
+13:CONFIG_FLASH_BASE_ADDRESS=0x80000000
+51:CONFIG_FLASH_LOAD_OFFSET=0
+57:CONFIG_FLASH_FILL_BUFFER_SIZE=32
+87:CONFIG_FLASH_INIT_PRIORITY=50
+927:CONFIG_FLASH=y
+1004:CONFIG_FLASH_HAS_DRIVER_ENABLED=y
+1005:CONFIG_FLASH_HAS_EXPLICIT_ERASE=y
+1006:CONFIG_FLASH_HAS_NO_EXPLICIT_ERASE=y
+1007:CONFIG_FLASH_HAS_PAGE_LAYOUT=y
+1008:CONFIG_FLASH_PAGE_LAYOUT=y
+1019:CONFIG_FLASH_ADDRESS_IN_SINGLE_FIFO_LOCATION=y
+1020:CONFIG_FLASH_PREPARE_CMD_LEN=3
+1022:# CONFIG_FLASH_LOG_LEVEL_OFF is not set
+1023:# CONFIG_FLASH_LOG_LEVEL_ERR is not set
+1024:# CONFIG_FLASH_LOG_LEVEL_WRN is not set
+1025:# CONFIG_FLASH_LOG_LEVEL_INF is not set
+1026:# CONFIG_FLASH_LOG_LEVEL_DBG is not set
+1027:CONFIG_FLASH_LOG_LEVEL_DEFAULT=y
+1028:CONFIG_FLASH_LOG_LEVEL=3
+1744:# CONFIG_FLASH_MAP is not set
+1785:CONFIG_FLASH_LOAD_SIZE=0
+1886:CONFIG_ACTIVATION_BUF_SECTION=".bss.activation_buf"
+1887:CONFIG_ACTIVATION_BUF_SZ=0x120000
+1888:CONFIG_MODEL_IN_EXT_FLASH=y
+--- /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h ---
+8:#define CONFIG_FLASH_SIZE 1824
+9:#define CONFIG_FLASH_BASE_ADDRESS 0x80000000
+37:#define CONFIG_FLASH_LOAD_OFFSET 0x0
+40:#define CONFIG_FLASH_FILL_BUFFER_SIZE 32
+58:#define CONFIG_FLASH_INIT_PRIORITY 50
+358:#define CONFIG_FLASH 1
+379:#define CONFIG_FLASH_HAS_DRIVER_ENABLED 1
+380:#define CONFIG_FLASH_HAS_EXPLICIT_ERASE 1
+381:#define CONFIG_FLASH_HAS_NO_EXPLICIT_ERASE 1
+382:#define CONFIG_FLASH_HAS_PAGE_LAYOUT 1
+383:#define CONFIG_FLASH_PAGE_LAYOUT 1
+388:#define CONFIG_FLASH_ADDRESS_IN_SINGLE_FIFO_LOCATION 1
+389:#define CONFIG_FLASH_PREPARE_CMD_LEN 3
+391:#define CONFIG_FLASH_LOG_LEVEL_DEFAULT 1
+392:#define CONFIG_FLASH_LOG_LEVEL 3
+529:#define CONFIG_FLASH_LOAD_SIZE 0x0
+557:#define CONFIG_ACTIVATION_BUF_SECTION ".bss.activation_buf"
+558:#define CONFIG_ACTIVATION_BUF_SZ 0x120000
+559:#define CONFIG_MODEL_IN_EXT_FLASH 1
+
+===== EXTERNAL FLASH DEVICETREE MEMORY REGION =====
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-211-#define CONFIG_BOARD_QUALIFIERS "ab1c1f4m51820ph0/rtss_he"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-212-#define CONFIG_SOC "ab1c1f4m51820ph0"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-213-#define CONFIG_SOC_SERIES "b1"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-214-#define CONFIG_SOC_FAMILY "balletto"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-215-#define CONFIG_SYSTEM_HEAP_ZEPHYR_DEFAULT 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h:216:#define CONFIG_OSPI0_XIP_REGION "ospi0"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-217-#define CONFIG_SOC_SERIES_B1 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-218-#define CONFIG_SOC_AB1C1F4M51820PH0 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-219-#define CONFIG_SOC_AB1C1F4M51820PH0_RTSS_HE 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-220-#define CONFIG_GPIO_INIT_PRIORITY 40
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-221-#define CONFIG_RTSS_HE 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-222-#define CONFIG_SOC_SUPPORT_ARM_MHUV2 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-223-#define CONFIG_USE_ALIF_HAL_OSPI 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-224-#define CONFIG_SOC_FAMILY_BALLETTO 1
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-554-#define CONFIG_WARN_DEPRECATED 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-555-#define CONFIG_ENFORCE_ZEPHYR_STDINT 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-556-#define CONFIG_LEGACY_GENERATED_INCLUDE_PATH 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-557-#define CONFIG_ACTIVATION_BUF_SECTION ".bss.activation_buf"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-558-#define CONFIG_ACTIVATION_BUF_SZ 0x120000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h:559:#define CONFIG_MODEL_IN_EXT_FLASH 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-560-#define CONFIG_AUDIO_SAMPLES 16000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-561-#define CONFIG_AUDIO_STRIDE 8000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-562-#define CONFIG_RESULTS_MEMORY 8
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-563-#define CONFIG_AUDIO_CHANNELS 2
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-564-#define CONFIG_SAMPLE_CNT 400
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-565-#define CONFIG_NUM_BUFFERS 4
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-566-#define CONFIG_I2S_GAIN 20
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h-567-#define CONFIG_THREAD_STACK_SIZE 1024
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-764-/*
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-765- * Devicetree node: /memory@b0000000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-766- *
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-767- * Node identifier: DT_N_S_memory_b0000000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-768- *
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:769: * Binding (compatible = zephyr,memory-region):
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:770: *   $ZEPHYR_BASE/dts/bindings/base/zephyr,memory-region.yaml
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-771- *
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-772- * (Descriptions have moved to the Devicetree Bindings Index
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-773- * in the documentation.)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-774- */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-775-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-776-/* Node's full path: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-777-#define DT_N_S_memory_b0000000_PATH "/memory@b0000000"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-778-
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-788-/* Node's index in its parent's list of children: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-789-#define DT_N_S_memory_b0000000_CHILD_IDX 19
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-790-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-791-/* Helpers for dealing with node labels: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-792-#define DT_N_S_memory_b0000000_NODELABEL_NUM 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:793:#define DT_N_S_memory_b0000000_FOREACH_NODELABEL(fn) fn(ext_flash_xip)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:794:#define DT_N_S_memory_b0000000_FOREACH_NODELABEL_VARGS(fn, ...) fn(ext_flash_xip, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-795-#define DT_N_S_memory_b0000000_FOREACH_ANCESTOR(fn) fn(DT_N)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-796-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-797-/* Helper macros for child nodes of this node. */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-798-#define DT_N_S_memory_b0000000_CHILD_NUM 0
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-799-#define DT_N_S_memory_b0000000_CHILD_NUM_STATUS_OKAY 0
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-800-#define DT_N_S_memory_b0000000_FOREACH_CHILD(fn) 
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-801-#define DT_N_S_memory_b0000000_FOREACH_CHILD_SEP(fn, sep) 
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-802-#define DT_N_S_memory_b0000000_FOREACH_CHILD_VARGS(fn, ...) 
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-821-#define DT_N_S_memory_b0000000_SUPPORTS_ORDS /* nothing */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-822-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-823-/* Existence and alternate IDs: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-824-#define DT_N_S_memory_b0000000_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-825-#define DT_N_INST_3_zephyr_memory_region DT_N_S_memory_b0000000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:826:#define DT_N_NODELABEL_ext_flash_xip     DT_N_S_memory_b0000000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-827-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-828-/* Macros for properties that are special in the specification: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-829-#define DT_N_S_memory_b0000000_REG_NUM 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-830-#define DT_N_S_memory_b0000000_REG_IDX_0_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-831-#define DT_N_S_memory_b0000000_REG_IDX_0_VAL_ADDRESS 2952790016 /* 0xb0000000 */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-832-#define DT_N_S_memory_b0000000_REG_IDX_0_VAL_SIZE 67108864 /* 0x4000000 */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-833-#define DT_N_S_memory_b0000000_RANGES_NUM 0
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-834-#define DT_N_S_memory_b0000000_FOREACH_RANGE(fn) 
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-843-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-844-/* Pin control (pinctrl-<i>, pinctrl-names) properties: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-845-#define DT_N_S_memory_b0000000_PINCTRL_NUM 0
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-846-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-847-/* Generic property macros: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:848:#define DT_N_S_memory_b0000000_P_zephyr_memory_region "OSPI0"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:849:#define DT_N_S_memory_b0000000_P_zephyr_memory_region_STRING_UNQUOTED OSPI0
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:850:#define DT_N_S_memory_b0000000_P_zephyr_memory_region_STRING_TOKEN OSPI0
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:851:#define DT_N_S_memory_b0000000_P_zephyr_memory_region_STRING_UPPER_TOKEN OSPI0
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:852:#define DT_N_S_memory_b0000000_P_zephyr_memory_region_IDX_0 "OSPI0"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-853-#define DT_N_S_memory_b0000000_P_zephyr_memory_region_IDX_0_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-854-#define DT_N_S_memory_b0000000_P_zephyr_memory_region_FOREACH_PROP_ELEM(fn) fn(DT_N_S_memory_b0000000, zephyr_memory_region, 0)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-855-#define DT_N_S_memory_b0000000_P_zephyr_memory_region_FOREACH_PROP_ELEM_SEP(fn, sep) fn(DT_N_S_memory_b0000000, zephyr_memory_region, 0)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-856-#define DT_N_S_memory_b0000000_P_zephyr_memory_region_FOREACH_PROP_ELEM_VARGS(fn, ...) fn(DT_N_S_memory_b0000000, zephyr_memory_region, 0, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-857-#define DT_N_S_memory_b0000000_P_zephyr_memory_region_FOREACH_PROP_ELEM_SEP_VARGS(fn, sep, ...) fn(DT_N_S_memory_b0000000, zephyr_memory_region, 0, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-858-#define DT_N_S_memory_b0000000_P_zephyr_memory_region_LEN 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-859-#define DT_N_S_memory_b0000000_P_zephyr_memory_region_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:860:#define DT_N_S_memory_b0000000_P_compatible {"zephyr,memory-region"}
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-861-#define DT_N_S_memory_b0000000_P_compatible_IDX_0_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:862:#define DT_N_S_memory_b0000000_P_compatible_IDX_0 "zephyr,memory-region"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:863:#define DT_N_S_memory_b0000000_P_compatible_IDX_0_STRING_UNQUOTED zephyr,memory-region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-864-#define DT_N_S_memory_b0000000_P_compatible_IDX_0_STRING_TOKEN zephyr_memory_region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-865-#define DT_N_S_memory_b0000000_P_compatible_IDX_0_STRING_UPPER_TOKEN ZEPHYR_MEMORY_REGION
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-866-#define DT_N_S_memory_b0000000_P_compatible_FOREACH_PROP_ELEM(fn) fn(DT_N_S_memory_b0000000, compatible, 0)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-867-#define DT_N_S_memory_b0000000_P_compatible_FOREACH_PROP_ELEM_SEP(fn, sep) fn(DT_N_S_memory_b0000000, compatible, 0)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-868-#define DT_N_S_memory_b0000000_P_compatible_FOREACH_PROP_ELEM_VARGS(fn, ...) fn(DT_N_S_memory_b0000000, compatible, 0, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-869-#define DT_N_S_memory_b0000000_P_compatible_FOREACH_PROP_ELEM_SEP_VARGS(fn, sep, ...) fn(DT_N_S_memory_b0000000, compatible, 0, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-870-#define DT_N_S_memory_b0000000_P_compatible_LEN 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-871-#define DT_N_S_memory_b0000000_P_compatible_EXISTS 1
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10800-#define DT_N_S_soc_S_dtcm_20000000_P_reg_IDX_1_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10801-#define DT_N_S_soc_S_dtcm_20000000_P_reg_IDX_1 40960
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10802-#define DT_N_S_soc_S_dtcm_20000000_P_reg_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10803-#define DT_N_S_soc_S_dtcm_20000000_P_global_base 1484783616
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10804-#define DT_N_S_soc_S_dtcm_20000000_P_global_base_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:10805:#define DT_N_S_soc_S_dtcm_20000000_P_compatible {"alif,dtcm", "zephyr,memory-region"}
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10806-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_0_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10807-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_0 "alif,dtcm"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10808-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_0_STRING_UNQUOTED alif,dtcm
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10809-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_0_STRING_TOKEN alif_dtcm
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10810-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_0_STRING_UPPER_TOKEN ALIF_DTCM
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10811-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_1_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:10812:#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_1 "zephyr,memory-region"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:10813:#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_1_STRING_UNQUOTED zephyr,memory-region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10814-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_1_STRING_TOKEN zephyr_memory_region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10815-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_IDX_1_STRING_UPPER_TOKEN ZEPHYR_MEMORY_REGION
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10816-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_FOREACH_PROP_ELEM(fn) fn(DT_N_S_soc_S_dtcm_20000000, compatible, 0) \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10817-	fn(DT_N_S_soc_S_dtcm_20000000, compatible, 1)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10818-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_FOREACH_PROP_ELEM_SEP(fn, sep) fn(DT_N_S_soc_S_dtcm_20000000, compatible, 0) DT_DEBRACKET_INTERNAL sep \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10819-	fn(DT_N_S_soc_S_dtcm_20000000, compatible, 1)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10820-#define DT_N_S_soc_S_dtcm_20000000_P_compatible_FOREACH_PROP_ELEM_VARGS(fn, ...) fn(DT_N_S_soc_S_dtcm_20000000, compatible, 0, __VA_ARGS__) \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10821-	fn(DT_N_S_soc_S_dtcm_20000000, compatible, 1, __VA_ARGS__)
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10938-#define DT_N_S_soc_S_dtcm_2000a000_P_reg_IDX_1_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10939-#define DT_N_S_soc_S_dtcm_2000a000_P_reg_IDX_1 1531904
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10940-#define DT_N_S_soc_S_dtcm_2000a000_P_reg_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10941-#define DT_N_S_soc_S_dtcm_2000a000_P_global_base 1484824576
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10942-#define DT_N_S_soc_S_dtcm_2000a000_P_global_base_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:10943:#define DT_N_S_soc_S_dtcm_2000a000_P_compatible {"alif,dtcm", "zephyr,memory-region"}
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10944-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_0_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10945-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_0 "alif,dtcm"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10946-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_0_STRING_UNQUOTED alif,dtcm
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10947-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_0_STRING_TOKEN alif_dtcm
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10948-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_0_STRING_UPPER_TOKEN ALIF_DTCM
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10949-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_1_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:10950:#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_1 "zephyr,memory-region"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:10951:#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_1_STRING_UNQUOTED zephyr,memory-region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10952-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_1_STRING_TOKEN zephyr_memory_region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10953-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_IDX_1_STRING_UPPER_TOKEN ZEPHYR_MEMORY_REGION
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10954-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_FOREACH_PROP_ELEM(fn) fn(DT_N_S_soc_S_dtcm_2000a000, compatible, 0) \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10955-	fn(DT_N_S_soc_S_dtcm_2000a000, compatible, 1)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10956-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_FOREACH_PROP_ELEM_SEP(fn, sep) fn(DT_N_S_soc_S_dtcm_2000a000, compatible, 0) DT_DEBRACKET_INTERNAL sep \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10957-	fn(DT_N_S_soc_S_dtcm_2000a000, compatible, 1)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10958-#define DT_N_S_soc_S_dtcm_2000a000_P_compatible_FOREACH_PROP_ELEM_VARGS(fn, ...) fn(DT_N_S_soc_S_dtcm_2000a000, compatible, 0, __VA_ARGS__) \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-10959-	fn(DT_N_S_soc_S_dtcm_2000a000, compatible, 1, __VA_ARGS__)
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14404-#define DT_N_S_soc_S_itcm_0_P_reg_IDX_1_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14405-#define DT_N_S_soc_S_itcm_0_P_reg_IDX_1 524288
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14406-#define DT_N_S_soc_S_itcm_0_P_reg_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14407-#define DT_N_S_soc_S_itcm_0_P_global_base 1476395008
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14408-#define DT_N_S_soc_S_itcm_0_P_global_base_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:14409:#define DT_N_S_soc_S_itcm_0_P_compatible {"alif,itcm", "zephyr,memory-region"}
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14410-#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_0_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14411-#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_0 "alif,itcm"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14412-#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_0_STRING_UNQUOTED alif,itcm
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14413-#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_0_STRING_TOKEN alif_itcm
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14414-#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_0_STRING_UPPER_TOKEN ALIF_ITCM
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14415-#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_1_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:14416:#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_1 "zephyr,memory-region"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:14417:#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_1_STRING_UNQUOTED zephyr,memory-region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14418-#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_1_STRING_TOKEN zephyr_memory_region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14419-#define DT_N_S_soc_S_itcm_0_P_compatible_IDX_1_STRING_UPPER_TOKEN ZEPHYR_MEMORY_REGION
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14420-#define DT_N_S_soc_S_itcm_0_P_compatible_FOREACH_PROP_ELEM(fn) fn(DT_N_S_soc_S_itcm_0, compatible, 0) \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14421-	fn(DT_N_S_soc_S_itcm_0, compatible, 1)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14422-#define DT_N_S_soc_S_itcm_0_P_compatible_FOREACH_PROP_ELEM_SEP(fn, sep) fn(DT_N_S_soc_S_itcm_0, compatible, 0) DT_DEBRACKET_INTERNAL sep \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14423-	fn(DT_N_S_soc_S_itcm_0, compatible, 1)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14424-#define DT_N_S_soc_S_itcm_0_P_compatible_FOREACH_PROP_ELEM_VARGS(fn, ...) fn(DT_N_S_soc_S_itcm_0, compatible, 0, __VA_ARGS__) \
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-14425-	fn(DT_N_S_soc_S_itcm_0, compatible, 1, __VA_ARGS__)
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16789-/*
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16790- * Devicetree node: /soc/ns@20040000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16791- *
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16792- * Node identifier: DT_N_S_soc_S_ns_20040000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16793- *
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:16794: * Binding (compatible = zephyr,memory-region):
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:16795: *   $ZEPHYR_BASE/dts/bindings/base/zephyr,memory-region.yaml
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16796- *
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16797- * (Descriptions have moved to the Devicetree Bindings Index
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16798- * in the documentation.)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16799- */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16800-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16801-/* Node's full path: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16802-#define DT_N_S_soc_S_ns_20040000_PATH "/soc/ns@20040000"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16803-
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16894-#define DT_N_S_soc_S_ns_20040000_P_status_FOREACH_PROP_ELEM_SEP(fn, sep) fn(DT_N_S_soc_S_ns_20040000, status, 0)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16895-#define DT_N_S_soc_S_ns_20040000_P_status_FOREACH_PROP_ELEM_VARGS(fn, ...) fn(DT_N_S_soc_S_ns_20040000, status, 0, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16896-#define DT_N_S_soc_S_ns_20040000_P_status_FOREACH_PROP_ELEM_SEP_VARGS(fn, sep, ...) fn(DT_N_S_soc_S_ns_20040000, status, 0, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16897-#define DT_N_S_soc_S_ns_20040000_P_status_LEN 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16898-#define DT_N_S_soc_S_ns_20040000_P_status_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:16899:#define DT_N_S_soc_S_ns_20040000_P_compatible {"zephyr,memory-region"}
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16900-#define DT_N_S_soc_S_ns_20040000_P_compatible_IDX_0_EXISTS 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:16901:#define DT_N_S_soc_S_ns_20040000_P_compatible_IDX_0 "zephyr,memory-region"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:16902:#define DT_N_S_soc_S_ns_20040000_P_compatible_IDX_0_STRING_UNQUOTED zephyr,memory-region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16903-#define DT_N_S_soc_S_ns_20040000_P_compatible_IDX_0_STRING_TOKEN zephyr_memory_region
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16904-#define DT_N_S_soc_S_ns_20040000_P_compatible_IDX_0_STRING_UPPER_TOKEN ZEPHYR_MEMORY_REGION
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16905-#define DT_N_S_soc_S_ns_20040000_P_compatible_FOREACH_PROP_ELEM(fn) fn(DT_N_S_soc_S_ns_20040000, compatible, 0)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16906-#define DT_N_S_soc_S_ns_20040000_P_compatible_FOREACH_PROP_ELEM_SEP(fn, sep) fn(DT_N_S_soc_S_ns_20040000, compatible, 0)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16907-#define DT_N_S_soc_S_ns_20040000_P_compatible_FOREACH_PROP_ELEM_VARGS(fn, ...) fn(DT_N_S_soc_S_ns_20040000, compatible, 0, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16908-#define DT_N_S_soc_S_ns_20040000_P_compatible_FOREACH_PROP_ELEM_SEP_VARGS(fn, sep, ...) fn(DT_N_S_soc_S_ns_20040000, compatible, 0, __VA_ARGS__)
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16909-#define DT_N_S_soc_S_ns_20040000_P_compatible_LEN 1
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-16910-#define DT_N_S_soc_S_ns_20040000_P_compatible_EXISTS 1
+--
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25986-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25987-/* Node's name with unit-address: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25988-#define DT_N_S_soc_S_ospi0_83000000_FULL_NAME "ospi0@83000000"
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25989-#define DT_N_S_soc_S_ospi0_83000000_FULL_NAME_UNQUOTED ospi0@83000000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25990-#define DT_N_S_soc_S_ospi0_83000000_FULL_NAME_TOKEN ospi0_83000000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h:25991:#define DT_N_S_soc_S_ospi0_83000000_FULL_NAME_UPPER_TOKEN OSPI0_83000000
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25992-
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25993-/* Node parent (/soc) identifier: */
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25994-#define DT_N_S_soc_S_ospi0_83000000_PARENT DT_N_S_soc
+/home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h-25995-
+
+===== LINKER SCRIPT MODEL SECTION SUPPORT =====
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-214-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_BOARD_TARGET, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-215-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_BOARD_ALIF_B1_DK, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-216-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_BOARD_ALIF_B1_DK_AB1C1F4M51820PH0_RTSS_HE, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-217-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_BOARD_QUALIFIERS, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-218-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SOC, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-219-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SOC_SERIES, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-220-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SOC_FAMILY, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-221-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SYSTEM_HEAP_ZEPHYR_DEFAULT, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c:222:GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_OSPI0_XIP_REGION, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-223-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SOC_SERIES_B1, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-224-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SOC_AB1C1F4M51820PH0, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-225-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SOC_AB1C1F4M51820PH0_RTSS_HE, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-226-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_GPIO_INIT_PRIORITY, 40);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-227-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_RTSS_HE, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-228-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SOC_SUPPORT_ARM_MHUV2, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-229-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_USE_ALIF_HAL_OSPI, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-230-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_SOC_FAMILY_BALLETTO, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-231-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_HAS_ALIF_BLE_802154_LINK_LAYER, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-232-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_HAS_ALIF_BLE_ROM_IMAGE, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-233-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_ALIF_BLE_ROM_IMAGE_V1_2, 1);
+/home/user/sdk-alif/build/zephyr/misc/generated/configs.c-234-GEN_ABSOLUTE_SYM_KCONFIG(CONFIG_HAS_ALIF_POWER_MANAGER, 1);
+--
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-1- OUTPUT_FORMAT("elf32-littlearm")
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-2-_region_min_align = 32;
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-3-MEMORY
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-4-    {
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-5-    FLASH (rx) : ORIGIN = (0x80000000 + 0x0), LENGTH = (1824 * 1024 - 0x0 - 0x0)
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-6-    RAM (wx) : ORIGIN = 0x2000a000, LENGTH = (1496 * 1K)
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd:7:    ITCM ( rw ) : ORIGIN = (0), LENGTH = (524288) RESERVED_DTCM ( rw ) : ORIGIN = (536870912), LENGTH = (40960) DTCM ( rw ) : ORIGIN = (536911872), LENGTH = (1531904) OSPI0 ( rw ) : ORIGIN = (2952790016), LENGTH = (67108864)
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-8-    IDT_LIST (wx) : ORIGIN = 0xFFFF7FFF, LENGTH = 32K
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-9-    }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-10-ENTRY("__start")
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-11-SECTIONS
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-12-    {
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-13- .rel.plt :
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-14- {
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-15- *(.rel.plt)
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-16- PROVIDE_HIDDEN (__rel_iplt_start = .);
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-17- *(.rel.iplt)
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-18- PROVIDE_HIDDEN (__rel_iplt_end = .);
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-19- }
+--
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-363-  *(".dtcm_data.*")
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-364-  __dtcm_data_end = .;
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-365- } > DTCM AT> FLASH
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-366- __dtcm_end = .;
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-367- __dtcm_data_load_start = LOADADDR(.dtcm_data);
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-368-
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-369-"ospi0" 2952790016 : ALIGN(8)
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-370-{
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd:371: KEEP(*(.alif_extflash_OSPI0))
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd:372: KEEP(*(".alif_extflash_OSPI0.*"))
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd:373:} > OSPI0
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-374-.intList :
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-375-{
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-376- KEEP(*(.irq_info*))
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-377- KEEP(*(.intList*))
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-378-} > IDT_LIST
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-379- .stab 0 : { *(.stab) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-380- .stabstr 0 : { *(.stabstr) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-381- .stab.excl 0 : { *(.stab.excl) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-382- .stab.exclstr 0 : { *(.stab.exclstr) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-383- .stab.index 0 : { *(.stab.index) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-384- .stab.indexstr 0 : { *(.stab.indexstr) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-385- .gnu.build.attributes 0 : { *(.gnu.build.attributes .gnu.build.attributes.*) }
+--
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-412- .debug_str_offsets 0 : { *(.debug_str_offsets) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-413- .debug_sup 0 : { *(.debug_sup) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-414-    /DISCARD/ : { *(.note.GNU-stack) }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-415-    .ARM.attributes 0 :
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-416- {
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-417- KEEP(*(.ARM.attributes))
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-418- KEEP(*(.gnu.attributes))
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-419- }
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd:420:    ITCM (NOLOAD) : { __ITCM_start = .; KEEP(*(ITCM)) KEEP(*(ITCM.*)) __ITCM_end = .; } > ITCM __ITCM_size = __ITCM_end - __ITCM_start; __ITCM_load_start = LOADADDR(ITCM); RESERVED_DTCM (NOLOAD) : { __RESERVED_DTCM_start = .; KEEP(*(RESERVED_DTCM)) KEEP(*(RESERVED_DTCM.*)) __RESERVED_DTCM_end = .; } > RESERVED_DTCM __RESERVED_DTCM_size = __RESERVED_DTCM_end - __RESERVED_DTCM_start; __RESERVED_DTCM_load_start = LOADADDR(RESERVED_DTCM); DTCM (NOLOAD) : { __DTCM_start = .; KEEP(*(DTCM)) KEEP(*(DTCM.*)) __DTCM_end = .; } > DTCM __DTCM_size = __DTCM_end - __DTCM_start; __DTCM_load_start = LOADADDR(DTCM); OSPI0 (NOLOAD) : { __OSPI0_start = .; KEEP(*(OSPI0)) KEEP(*(OSPI0.*)) __OSPI0_end = .; } > OSPI0 __OSPI0_size = __OSPI0_end - __OSPI0_start; __OSPI0_load_start = LOADADDR(OSPI0);
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-421-.last_section :
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-422-{
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-423-  LONG(0xE015E015)
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-424-} > FLASH
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-425-_flash_used = LOADADDR(.last_section) + SIZEOF(.last_section) - __rom_region_start;
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-426-    bss (NOLOAD) : ALIGN_WITH_INPUT
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-427- {
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-428-        . = ALIGN(4);
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-429- __bss_start = .;
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-430- __kernel_ram_start = .;
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-431- *(.bss)
+/home/user/sdk-alif/build/zephyr/linker_zephyr_pre0.cmd-432- *(".bss.*")
+--
+/home/user/sdk-alif/build/zephyr/linker.cmd-1- OUTPUT_FORMAT("elf32-littlearm")
+/home/user/sdk-alif/build/zephyr/linker.cmd-2-_region_min_align = 32;
+/home/user/sdk-alif/build/zephyr/linker.cmd-3-MEMORY
+/home/user/sdk-alif/build/zephyr/linker.cmd-4-    {
+/home/user/sdk-alif/build/zephyr/linker.cmd-5-    FLASH (rx) : ORIGIN = (0x80000000 + 0x0), LENGTH = (1824 * 1024 - 0x0 - 0x0)
+/home/user/sdk-alif/build/zephyr/linker.cmd-6-    RAM (wx) : ORIGIN = 0x2000a000, LENGTH = (1496 * 1K)
+/home/user/sdk-alif/build/zephyr/linker.cmd:7:    ITCM ( rw ) : ORIGIN = (0), LENGTH = (524288) RESERVED_DTCM ( rw ) : ORIGIN = (536870912), LENGTH = (40960) DTCM ( rw ) : ORIGIN = (536911872), LENGTH = (1531904) OSPI0 ( rw ) : ORIGIN = (2952790016), LENGTH = (67108864)
+/home/user/sdk-alif/build/zephyr/linker.cmd-8-    IDT_LIST (wx) : ORIGIN = 0xFFFF7FFF, LENGTH = 32K
+/home/user/sdk-alif/build/zephyr/linker.cmd-9-    }
+/home/user/sdk-alif/build/zephyr/linker.cmd-10-ENTRY("__start")
+/home/user/sdk-alif/build/zephyr/linker.cmd-11-SECTIONS
+/home/user/sdk-alif/build/zephyr/linker.cmd-12-    {
+/home/user/sdk-alif/build/zephyr/linker.cmd-13- .rel.plt :
+/home/user/sdk-alif/build/zephyr/linker.cmd-14- {
+/home/user/sdk-alif/build/zephyr/linker.cmd-15- *(.rel.plt)
+/home/user/sdk-alif/build/zephyr/linker.cmd-16- PROVIDE_HIDDEN (__rel_iplt_start = .);
+/home/user/sdk-alif/build/zephyr/linker.cmd-17- *(.rel.iplt)
+/home/user/sdk-alif/build/zephyr/linker.cmd-18- PROVIDE_HIDDEN (__rel_iplt_end = .);
+/home/user/sdk-alif/build/zephyr/linker.cmd-19- }
+--
+/home/user/sdk-alif/build/zephyr/linker.cmd-363-  *(".dtcm_data.*")
+/home/user/sdk-alif/build/zephyr/linker.cmd-364-  __dtcm_data_end = .;
+/home/user/sdk-alif/build/zephyr/linker.cmd-365- } > DTCM AT> FLASH
+/home/user/sdk-alif/build/zephyr/linker.cmd-366- __dtcm_end = .;
+/home/user/sdk-alif/build/zephyr/linker.cmd-367- __dtcm_data_load_start = LOADADDR(.dtcm_data);
+/home/user/sdk-alif/build/zephyr/linker.cmd-368-
+/home/user/sdk-alif/build/zephyr/linker.cmd-369-"ospi0" 2952790016 : ALIGN(8)
+/home/user/sdk-alif/build/zephyr/linker.cmd-370-{
+/home/user/sdk-alif/build/zephyr/linker.cmd:371: KEEP(*(.alif_extflash_OSPI0))
+/home/user/sdk-alif/build/zephyr/linker.cmd:372: KEEP(*(".alif_extflash_OSPI0.*"))
+/home/user/sdk-alif/build/zephyr/linker.cmd:373:} > OSPI0
+/home/user/sdk-alif/build/zephyr/linker.cmd-374-/DISCARD/ :
+/home/user/sdk-alif/build/zephyr/linker.cmd-375-{
+/home/user/sdk-alif/build/zephyr/linker.cmd-376- KEEP(*(.irq_info*))
+/home/user/sdk-alif/build/zephyr/linker.cmd-377- KEEP(*(.intList*))
+/home/user/sdk-alif/build/zephyr/linker.cmd-378-}
+/home/user/sdk-alif/build/zephyr/linker.cmd-379- .stab 0 : { *(.stab) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-380- .stabstr 0 : { *(.stabstr) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-381- .stab.excl 0 : { *(.stab.excl) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-382- .stab.exclstr 0 : { *(.stab.exclstr) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-383- .stab.index 0 : { *(.stab.index) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-384- .stab.indexstr 0 : { *(.stab.indexstr) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-385- .gnu.build.attributes 0 : { *(.gnu.build.attributes .gnu.build.attributes.*) }
+--
+/home/user/sdk-alif/build/zephyr/linker.cmd-412- .debug_str_offsets 0 : { *(.debug_str_offsets) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-413- .debug_sup 0 : { *(.debug_sup) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-414-    /DISCARD/ : { *(.note.GNU-stack) }
+/home/user/sdk-alif/build/zephyr/linker.cmd-415-    .ARM.attributes 0 :
+/home/user/sdk-alif/build/zephyr/linker.cmd-416- {
+/home/user/sdk-alif/build/zephyr/linker.cmd-417- KEEP(*(.ARM.attributes))
+/home/user/sdk-alif/build/zephyr/linker.cmd-418- KEEP(*(.gnu.attributes))
+/home/user/sdk-alif/build/zephyr/linker.cmd-419- }
+/home/user/sdk-alif/build/zephyr/linker.cmd:420:    ITCM (NOLOAD) : { __ITCM_start = .; KEEP(*(ITCM)) KEEP(*(ITCM.*)) __ITCM_end = .; } > ITCM __ITCM_size = __ITCM_end - __ITCM_start; __ITCM_load_start = LOADADDR(ITCM); RESERVED_DTCM (NOLOAD) : { __RESERVED_DTCM_start = .; KEEP(*(RESERVED_DTCM)) KEEP(*(RESERVED_DTCM.*)) __RESERVED_DTCM_end = .; } > RESERVED_DTCM __RESERVED_DTCM_size = __RESERVED_DTCM_end - __RESERVED_DTCM_start; __RESERVED_DTCM_load_start = LOADADDR(RESERVED_DTCM); DTCM (NOLOAD) : { __DTCM_start = .; KEEP(*(DTCM)) KEEP(*(DTCM.*)) __DTCM_end = .; } > DTCM __DTCM_size = __DTCM_end - __DTCM_start; __DTCM_load_start = LOADADDR(DTCM); OSPI0 (NOLOAD) : { __OSPI0_start = .; KEEP(*(OSPI0)) KEEP(*(OSPI0.*)) __OSPI0_end = .; } > OSPI0 __OSPI0_size = __OSPI0_end - __OSPI0_start; __OSPI0_load_start = LOADADDR(OSPI0);
+/home/user/sdk-alif/build/zephyr/linker.cmd-421-.last_section :
+/home/user/sdk-alif/build/zephyr/linker.cmd-422-{
+/home/user/sdk-alif/build/zephyr/linker.cmd-423-  LONG(0xE015E015)
+/home/user/sdk-alif/build/zephyr/linker.cmd-424-} > FLASH
+/home/user/sdk-alif/build/zephyr/linker.cmd-425-_flash_used = LOADADDR(.last_section) + SIZEOF(.last_section) - __rom_region_start;
+/home/user/sdk-alif/build/zephyr/linker.cmd-426-    bss (NOLOAD) : ALIGN_WITH_INPUT
+/home/user/sdk-alif/build/zephyr/linker.cmd-427- {
+/home/user/sdk-alif/build/zephyr/linker.cmd-428-        . = ALIGN(4);
+/home/user/sdk-alif/build/zephyr/linker.cmd-429- __bss_start = .;
+/home/user/sdk-alif/build/zephyr/linker.cmd-430- __kernel_ram_start = .;
+/home/user/sdk-alif/build/zephyr/linker.cmd-431- *(.bss)
+/home/user/sdk-alif/build/zephyr/linker.cmd-432- *(".bss.*")
+
+===== LINKER MAP: CURRENT MODEL OBJECT AND MODEL SECTIONS =====
+11-                              (--whole-archive)
+12-app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+13-                              (--whole-archive)
+14-app/libapp.a(power_mgr.c.obj)
+15-                              (--whole-archive)
+16-app/libapp.a(AudioBackend.cpp.obj)
+17-                              (--whole-archive)
+18-app/libapp.a(Labels.cc.obj)   (--whole-archive)
+19:app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+20-                              (--whole-archive)
+21-zephyr/libzephyr.a(cpp_dtors.c.obj)
+22-                              (--whole-archive)
+23-zephyr/libzephyr.a(heap.c.obj)
+24-                              (--whole-archive)
+25-zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+26-                              (--whole-archive)
+27-zephyr/libzephyr.a(printk.c.obj)
+28-                              (--whole-archive)
+29-zephyr/libzephyr.a(sem.c.obj)
+--
+1641- .group         0x0000000000000000        0xc app/libapp.a(Labels.cc.obj)
+1642- .text          0x0000000000000000        0x0 app/libapp.a(Labels.cc.obj)
+1643- .data          0x0000000000000000        0x0 app/libapp.a(Labels.cc.obj)
+1644- .bss           0x0000000000000000        0x0 app/libapp.a(Labels.cc.obj)
+1645- .rodata._ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC2IS3_EEPKcRKS3_.str1.1
+1646-                0x0000000000000000       0x32 app/libapp.a(Labels.cc.obj)
+1647- .text._ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC2IS3_EEPKcRKS3_
+1648-                0x0000000000000000       0x54 app/libapp.a(Labels.cc.obj)
+1649: .text          0x0000000000000000        0x0 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+1650: .data          0x0000000000000000        0x0 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+1651: .bss           0x0000000000000000        0x0 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+1652- .rodata._ZN3arm3app3asr16g_ScoreThresholdE
+1653:                0x0000000000000000        0x4 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+1654- .rodata._ZN3arm3app3asr8g_ctxLenE
+1655:                0x0000000000000000        0x4 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+1656- .rodata._ZN3arm3app3asr13g_FrameStrideE
+1657:                0x0000000000000000        0x4 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+1658- .rodata._ZN3arm3app3asr13g_FrameLengthE
+1659:                0x0000000000000000        0x4 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+1660- .text          0x0000000000000000        0x0 zephyr/libzephyr.a(cpp_dtors.c.obj)
+1661- .data          0x0000000000000000        0x0 zephyr/libzephyr.a(cpp_dtors.c.obj)
+1662- .bss           0x0000000000000000        0x0 zephyr/libzephyr.a(cpp_dtors.c.obj)
+1663- .text          0x0000000000000000        0x0 zephyr/libzephyr.a(heap.c.obj)
+1664- .data          0x0000000000000000        0x0 zephyr/libzephyr.a(heap.c.obj)
+1665- .bss           0x0000000000000000        0x0 zephyr/libzephyr.a(heap.c.obj)
+1666- .text.sys_heap_usable_size
+1667-                0x0000000000000000       0x1e zephyr/libzephyr.a(heap.c.obj)
+1668- .text.sys_heap_aligned_realloc
+1669-                0x0000000000000000      0x160 zephyr/libzephyr.a(heap.c.obj)
+--
+17407-Memory Configuration
+17408-
+17409-Name             Origin             Length             Attributes
+17410-FLASH            0x0000000080000000 0x00000000001c8000 xr
+17411-RAM              0x000000002000a000 0x0000000000176000 xw
+17412-ITCM             0x0000000000000000 0x0000000000080000 rw
+17413-RESERVED_DTCM    0x0000000020000000 0x000000000000a000 rw
+17414-DTCM             0x000000002000a000 0x0000000000176000 rw
+17415:OSPI0            0x00000000b0000000 0x0000000004000000 rw
+17416-IDT_LIST         0x00000000ffff7fff 0x0000000000008000 xw
+17417-*default*        0x0000000000000000 0xffffffffffffffff
+17418-
+17419-Linker script and memory map
+17420-
+17421-LOAD zephyr/CMakeFiles/zephyr_final.dir/misc/empty_file.c.obj
+17422-LOAD zephyr/CMakeFiles/zephyr_final.dir/isr_tables.c.obj
+17423-LOAD zephyr/CMakeFiles/offsets.dir/./arch/arm/core/offsets/offsets.c.obj
+17424-LOAD app/libapp.a
+17425-LOAD zephyr/libzephyr.a
+--
+17666- .text.app_pre_kernel_init
+17667-                0x0000000080005f04       0x1c app/libapp.a(power_mgr.c.obj)
+17668- .text._ZNSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EE17_M_realloc_insertIJRPKcEEEvN9__gnu_cxx17__normal_iteratorIPS5_S7_EEDpOT_
+17669-                0x0000000080005f20       0xa8 app/libapp.a(Labels.cc.obj)
+17670-                0x0000000080005f20                void std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > >::_M_realloc_insert<char const*&>(__gnu_cxx::__normal_iterator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >*, std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > >, char const*&)
+17671- .text._Z15GetLabelsVectorRSt6vectorINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEESaIS5_EE
+17672-                0x0000000080005fc8       0x94 app/libapp.a(Labels.cc.obj)
+17673-                0x0000000080005fc8                GetLabelsVector(std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > >&)
+17674: .text._ZN3arm3app3asr15GetModelPointerEv
+17675:                0x000000008000605c        0x8 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+17676:                0x000000008000605c                arm::app::asr::GetModelPointer()
+17677: .text._ZN3arm3app3asr11GetModelLenEv
+17678:                0x0000000080006064        0x8 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+17679:                0x0000000080006064                arm::app::asr::GetModelLen()
+17680- .text.sys_heap_free
+17681-                0x000000008000606c       0x8c zephyr/libzephyr.a(heap.c.obj)
+17682-                0x000000008000606c                sys_heap_free
+17683- .text.sys_heap_aligned_alloc
+17684-                0x00000000800060f8      0x104 zephyr/libzephyr.a(heap.c.obj)
+17685-                0x00000000800060f8                sys_heap_aligned_alloc
+17686- .text.sys_heap_init
+17687-                0x00000000800061fc      0x11c zephyr/libzephyr.a(heap.c.obj)
+17688-                0x00000000800061fc                sys_heap_init
+17689- .text.cbvprintf_package
+--
+23804-.dtcm_data      0x000000002000a000        0x0 load address 0x000000008003754c
+23805-                0x000000002000a000                __dtcm_data_start = .
+23806- *(SORT_BY_ALIGNMENT(.dtcm_data))
+23807- *(SORT_BY_ALIGNMENT(.dtcm_data.*))
+23808-                0x000000002000a000                __dtcm_data_end = .
+23809-                0x000000002000a000                __dtcm_end = .
+23810-                0x000000008003754c                __dtcm_data_load_start = LOADADDR (.dtcm_data)
+23811-
+23812:ospi0           0x00000000b0000000   0x27d7d0
+23813: *(SORT_BY_ALIGNMENT(.alif_extflash_OSPI0))
+23814: .alif_extflash_OSPI0
+23815:                0x00000000b0000000   0x27d7d0 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+23816: *(SORT_BY_ALIGNMENT(.alif_extflash_OSPI0.*))
+23817-
+23818-/DISCARD/
+23819- *(SORT_BY_ALIGNMENT(.irq_info*))
+23820- *(SORT_BY_ALIGNMENT(.intList*))
+23821-
+23822-.stab
+23823- *(SORT_BY_ALIGNMENT(.stab))
+23824-
+23825-.stabstr
+23826- *(SORT_BY_ALIGNMENT(.stabstr))
+--
+23848- .comment       0x0000000000000020       0x21 app/libapp.a(Main.cc.obj)
+23849- .comment       0x0000000000000020       0x21 app/libapp.a(MainLoop.cc.obj)
+23850- .comment       0x0000000000000020       0x21 app/libapp.a(UseCaseHandlerTflm.cc.obj)
+23851- .comment       0x0000000000000020       0x21 app/libapp.a(PolyUModel1.cc.obj)
+23852- .comment       0x0000000000000020       0x21 app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+23853- .comment       0x0000000000000020       0x21 app/libapp.a(power_mgr.c.obj)
+23854- .comment       0x0000000000000020       0x21 app/libapp.a(AudioBackend.cpp.obj)
+23855- .comment       0x0000000000000020       0x21 app/libapp.a(Labels.cc.obj)
+23856: .comment       0x0000000000000020       0x21 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+23857- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(cpp_dtors.c.obj)
+23858- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(heap.c.obj)
+23859- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+23860- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(printk.c.obj)
+23861- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(thread_entry.c.obj)
+23862- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(cbprintf_complete.c.obj)
+23863- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(assert.c.obj)
+23864- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(configs.c.obj)
+23865- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(power.c.obj)
+23866- .comment       0x0000000000000020       0x21 zephyr/libzephyr.a(soc_common.c.obj)
+--
+24062-                0x0000000000000320       0x90 app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+24063- .debug_aranges
+24064-                0x00000000000003b0       0x68 app/libapp.a(power_mgr.c.obj)
+24065- .debug_aranges
+24066-                0x0000000000000418       0x50 app/libapp.a(AudioBackend.cpp.obj)
+24067- .debug_aranges
+24068-                0x0000000000000468       0x38 app/libapp.a(Labels.cc.obj)
+24069- .debug_aranges
+24070:                0x00000000000004a0       0x28 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+24071- .debug_aranges
+24072-                0x00000000000004c8       0x20 zephyr/libzephyr.a(cpp_dtors.c.obj)
+24073- .debug_aranges
+24074-                0x00000000000004e8       0x88 zephyr/libzephyr.a(heap.c.obj)
+24075- .debug_aranges
+24076-                0x0000000000000570       0x48 zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+24077- .debug_aranges
+24078-                0x00000000000005b8       0x60 zephyr/libzephyr.a(printk.c.obj)
+24079- .debug_aranges
+24080-                0x0000000000000618       0x20 zephyr/libzephyr.a(thread_entry.c.obj)
+--
+24409- .debug_info    0x0000000000000276     0x35dd app/libapp.a(Main.cc.obj)
+24410- .debug_info    0x0000000000003853    0x5f537 app/libapp.a(MainLoop.cc.obj)
+24411- .debug_info    0x0000000000062d8a    0x20ce7 app/libapp.a(UseCaseHandlerTflm.cc.obj)
+24412- .debug_info    0x0000000000083a71    0x577f9 app/libapp.a(PolyUModel1.cc.obj)
+24413- .debug_info    0x00000000000db26a     0x742e app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+24414- .debug_info    0x00000000000e2698     0x1aa3 app/libapp.a(power_mgr.c.obj)
+24415- .debug_info    0x00000000000e413b     0x253f app/libapp.a(AudioBackend.cpp.obj)
+24416- .debug_info    0x00000000000e667a     0xcb48 app/libapp.a(Labels.cc.obj)
+24417: .debug_info    0x00000000000f31c2   0x27dd25 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+24418- .debug_info    0x0000000000370ee7       0x9d zephyr/libzephyr.a(cpp_dtors.c.obj)
+24419- .debug_info    0x0000000000370f84     0x340e zephyr/libzephyr.a(heap.c.obj)
+24420- .debug_info    0x0000000000374392     0x18e1 zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+24421- .debug_info    0x0000000000375c73      0x647 zephyr/libzephyr.a(printk.c.obj)
+24422- .debug_info    0x00000000003762ba      0x803 zephyr/libzephyr.a(thread_entry.c.obj)
+24423- .debug_info    0x0000000000376abd     0x158f zephyr/libzephyr.a(cbprintf_complete.c.obj)
+24424- .debug_info    0x000000000037804c      0x24e zephyr/libzephyr.a(assert.c.obj)
+24425- .debug_info    0x000000000037829a       0x38 zephyr/libzephyr.a(configs.c.obj)
+24426- .debug_info    0x00000000003782d2     0x1257 zephyr/libzephyr.a(power.c.obj)
+24427- .debug_info    0x0000000000379529       0x23 zephyr/libzephyr.a(startup.S.obj)
+--
+24594- .debug_abbrev  0x000000000000017a      0x7c6 app/libapp.a(Main.cc.obj)
+24595- .debug_abbrev  0x0000000000000940     0x142f app/libapp.a(MainLoop.cc.obj)
+24596- .debug_abbrev  0x0000000000001d6f     0x12c6 app/libapp.a(UseCaseHandlerTflm.cc.obj)
+24597- .debug_abbrev  0x0000000000003035     0x122e app/libapp.a(PolyUModel1.cc.obj)
+24598- .debug_abbrev  0x0000000000004263      0xaa7 app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+24599- .debug_abbrev  0x0000000000004d0a      0x5bb app/libapp.a(power_mgr.c.obj)
+24600- .debug_abbrev  0x00000000000052c5      0x667 app/libapp.a(AudioBackend.cpp.obj)
+24601- .debug_abbrev  0x000000000000592c      0xb60 app/libapp.a(Labels.cc.obj)
+24602: .debug_abbrev  0x000000000000648c      0x187 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+24603- .debug_abbrev  0x0000000000006613       0xa6 zephyr/libzephyr.a(cpp_dtors.c.obj)
+24604- .debug_abbrev  0x00000000000066b9      0x44d zephyr/libzephyr.a(heap.c.obj)
+24605- .debug_abbrev  0x0000000000006b06      0x53f zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+24606- .debug_abbrev  0x0000000000007045      0x319 zephyr/libzephyr.a(printk.c.obj)
+24607- .debug_abbrev  0x000000000000735e      0x24b zephyr/libzephyr.a(thread_entry.c.obj)
+24608- .debug_abbrev  0x00000000000075a9      0x41f zephyr/libzephyr.a(cbprintf_complete.c.obj)
+24609- .debug_abbrev  0x00000000000079c8      0x1ca zephyr/libzephyr.a(assert.c.obj)
+24610- .debug_abbrev  0x0000000000007b92       0x2e zephyr/libzephyr.a(configs.c.obj)
+24611- .debug_abbrev  0x0000000000007bc0      0x487 zephyr/libzephyr.a(power.c.obj)
+24612- .debug_abbrev  0x0000000000008047       0x14 zephyr/libzephyr.a(startup.S.obj)
+--
+24779- .debug_line    0x000000000000028b      0xbe6 app/libapp.a(Main.cc.obj)
+24780- .debug_line    0x0000000000000e71     0x22d3 app/libapp.a(MainLoop.cc.obj)
+24781- .debug_line    0x0000000000003144     0x30ee app/libapp.a(UseCaseHandlerTflm.cc.obj)
+24782- .debug_line    0x0000000000006232     0x196e app/libapp.a(PolyUModel1.cc.obj)
+24783- .debug_line    0x0000000000007ba0     0x1795 app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+24784- .debug_line    0x0000000000009335      0x7e6 app/libapp.a(power_mgr.c.obj)
+24785- .debug_line    0x0000000000009b1b      0xc72 app/libapp.a(AudioBackend.cpp.obj)
+24786- .debug_line    0x000000000000a78d      0xbc5 app/libapp.a(Labels.cc.obj)
+24787: .debug_line    0x000000000000b352      0x301 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+24788- .debug_line    0x000000000000b653       0x6f zephyr/libzephyr.a(cpp_dtors.c.obj)
+24789- .debug_line    0x000000000000b6c2     0x1343 zephyr/libzephyr.a(heap.c.obj)
+24790- .debug_line    0x000000000000ca05     0x122d zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+24791- .debug_line    0x000000000000dc32      0x429 zephyr/libzephyr.a(printk.c.obj)
+24792- .debug_line    0x000000000000e05b      0x37e zephyr/libzephyr.a(thread_entry.c.obj)
+24793- .debug_line    0x000000000000e3d9     0x13fb zephyr/libzephyr.a(cbprintf_complete.c.obj)
+24794- .debug_line    0x000000000000f7d4      0x2f6 zephyr/libzephyr.a(assert.c.obj)
+24795- .debug_line    0x000000000000faca      0x2a7 zephyr/libzephyr.a(configs.c.obj)
+24796- .debug_line    0x000000000000fd71      0x888 zephyr/libzephyr.a(power.c.obj)
+24797- .debug_line    0x00000000000105f9       0x7a zephyr/libzephyr.a(startup.S.obj)
+--
+24963- .debug_frame   0x0000000000000020       0x64 app/libapp.a(Main.cc.obj)
+24964- .debug_frame   0x0000000000000084      0x1b4 app/libapp.a(MainLoop.cc.obj)
+24965- .debug_frame   0x0000000000000238      0x298 app/libapp.a(UseCaseHandlerTflm.cc.obj)
+24966- .debug_frame   0x00000000000004d0      0x18c app/libapp.a(PolyUModel1.cc.obj)
+24967- .debug_frame   0x000000000000065c      0x21c app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+24968- .debug_frame   0x0000000000000878      0x11c app/libapp.a(power_mgr.c.obj)
+24969- .debug_frame   0x0000000000000994       0xec app/libapp.a(AudioBackend.cpp.obj)
+24970- .debug_frame   0x0000000000000a80       0xa0 app/libapp.a(Labels.cc.obj)
+24971: .debug_frame   0x0000000000000b20       0x30 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+24972- .debug_frame   0x0000000000000b50       0x20 zephyr/libzephyr.a(cpp_dtors.c.obj)
+24973- .debug_frame   0x0000000000000b70      0x1f0 zephyr/libzephyr.a(heap.c.obj)
+24974- .debug_frame   0x0000000000000d60      0x104 zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+24975- .debug_frame   0x0000000000000e64       0xfc zephyr/libzephyr.a(printk.c.obj)
+24976- .debug_frame   0x0000000000000f60       0x28 zephyr/libzephyr.a(thread_entry.c.obj)
+24977- .debug_frame   0x0000000000000f88       0xe0 zephyr/libzephyr.a(cbprintf_complete.c.obj)
+24978- .debug_frame   0x0000000000001068       0x50 zephyr/libzephyr.a(assert.c.obj)
+24979- .debug_frame   0x00000000000010b8       0x20 zephyr/libzephyr.a(configs.c.obj)
+24980- .debug_frame   0x00000000000010d8       0xcc zephyr/libzephyr.a(power.c.obj)
+24981- .debug_frame   0x00000000000011a4       0xa0 zephyr/libzephyr.a(soc_common.c.obj)
+--
+25186- .debug_str     0x00000000000c31d1     0x17be app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+25187-                                       0x4131 (size before relaxing)
+25188- .debug_str     0x00000000000c498f      0xdc9 app/libapp.a(power_mgr.c.obj)
+25189-                                       0x175a (size before relaxing)
+25190- .debug_str     0x00000000000c5758      0x6a7 app/libapp.a(AudioBackend.cpp.obj)
+25191-                                       0x154f (size before relaxing)
+25192- .debug_str     0x00000000000c5dff     0x6695 app/libapp.a(Labels.cc.obj)
+25193-                                      0x11b01 (size before relaxing)
+25194: .debug_str     0x00000000000cc494      0x103 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+25195-                                        0x657 (size before relaxing)
+25196- .debug_str     0x00000000000cc597       0x5f zephyr/libzephyr.a(cpp_dtors.c.obj)
+25197-                                        0x1c8 (size before relaxing)
+25198- .debug_str     0x00000000000cc5f6      0x382 zephyr/libzephyr.a(heap.c.obj)
+25199-                                        0x6f6 (size before relaxing)
+25200- .debug_str     0x00000000000cc978      0x34a zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+25201-                                        0x858 (size before relaxing)
+25202- .debug_str     0x00000000000cccc2       0xe3 zephyr/libzephyr.a(printk.c.obj)
+25203-                                        0x5a2 (size before relaxing)
+25204- .debug_str     0x00000000000ccda5       0x88 zephyr/libzephyr.a(thread_entry.c.obj)
+--
+25729- .debug_ranges  0x0000000000000050       0xf8 app/libapp.a(Main.cc.obj)
+25730- .debug_ranges  0x0000000000000148      0x700 app/libapp.a(MainLoop.cc.obj)
+25731- .debug_ranges  0x0000000000000848      0xe18 app/libapp.a(UseCaseHandlerTflm.cc.obj)
+25732- .debug_ranges  0x0000000000001660      0x238 app/libapp.a(PolyUModel1.cc.obj)
+25733- .debug_ranges  0x0000000000001898      0x248 app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+25734- .debug_ranges  0x0000000000001ae0       0x70 app/libapp.a(power_mgr.c.obj)
+25735- .debug_ranges  0x0000000000001b50      0x2f0 app/libapp.a(AudioBackend.cpp.obj)
+25736- .debug_ranges  0x0000000000001e40      0x3e8 app/libapp.a(Labels.cc.obj)
+25737: .debug_ranges  0x0000000000002228       0x18 app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+25738- .debug_ranges  0x0000000000002240       0x10 zephyr/libzephyr.a(cpp_dtors.c.obj)
+25739- .debug_ranges  0x0000000000002250      0x4c0 zephyr/libzephyr.a(heap.c.obj)
+25740- .debug_ranges  0x0000000000002710      0x230 zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+25741- .debug_ranges  0x0000000000002940       0x68 zephyr/libzephyr.a(printk.c.obj)
+25742- .debug_ranges  0x00000000000029a8       0x10 zephyr/libzephyr.a(thread_entry.c.obj)
+25743- .debug_ranges  0x00000000000029b8      0x240 zephyr/libzephyr.a(cbprintf_complete.c.obj)
+25744- .debug_ranges  0x0000000000002bf8       0x18 zephyr/libzephyr.a(assert.c.obj)
+25745- .debug_ranges  0x0000000000002c10       0x10 zephyr/libzephyr.a(configs.c.obj)
+25746- .debug_ranges  0x0000000000002c20       0xc8 zephyr/libzephyr.a(power.c.obj)
+25747- .debug_ranges  0x0000000000002ce8      0x100 zephyr/libzephyr.a(soc_common.c.obj)
+--
+25950-                0x00000000000001f0       0x3e app/libapp.a(heatstroke_bidirectional_lstm.cc.obj)
+25951- .ARM.attributes
+25952-                0x000000000000022e       0x3e app/libapp.a(power_mgr.c.obj)
+25953- .ARM.attributes
+25954-                0x000000000000026c       0x3e app/libapp.a(AudioBackend.cpp.obj)
+25955- .ARM.attributes
+25956-                0x00000000000002aa       0x3e app/libapp.a(Labels.cc.obj)
+25957- .ARM.attributes
+25958:                0x00000000000002e8       0x3e app/libapp.a(cla_quant_uint8_vela.tflite.cc.obj)
+25959- .ARM.attributes
+25960-                0x0000000000000326       0x3e zephyr/libzephyr.a(cpp_dtors.c.obj)
+25961- .ARM.attributes
+25962-                0x0000000000000364       0x3e zephyr/libzephyr.a(heap.c.obj)
+25963- .ARM.attributes
+25964-                0x00000000000003a2       0x3e zephyr/libzephyr.a(cbprintf_packaged.c.obj)
+25965- .ARM.attributes
+25966-                0x00000000000003e0       0x3e zephyr/libzephyr.a(printk.c.obj)
+25967- .ARM.attributes
+25968-                0x000000000000041e       0x3e zephyr/libzephyr.a(sem.c.obj)
+--
+27377-DTCM            0x000000002000a000        0x0
+27378-                0x000000002000a000                __DTCM_start = .
+27379- *(SORT_BY_ALIGNMENT(DTCM))
+27380- *(SORT_BY_ALIGNMENT(DTCM.*))
+27381-                0x000000002000a000                __DTCM_end = .
+27382-                0x0000000000000000                __DTCM_size = (__DTCM_end - __DTCM_start)
+27383-                0x000000002000a000                __DTCM_load_start = LOADADDR (DTCM)
+27384-
+27385:OSPI0           0x00000000b027d7d0        0x0
+27386:                0x00000000b027d7d0                __OSPI0_start = .
+27387: *(SORT_BY_ALIGNMENT(OSPI0))
+27388: *(SORT_BY_ALIGNMENT(OSPI0.*))
+27389:                0x00000000b027d7d0                __OSPI0_end = .
+27390:                0x0000000000000000                __OSPI0_size = (__OSPI0_end - __OSPI0_start)
+27391:                0x00000000b027d7d0                __OSPI0_load_start = LOADADDR (OSPI0)
+27392-
+27393-.last_section   0x000000008003754c        0x4
+27394-                0x000000008003754c        0x4 LONG 0xe015e015
+27395-                0x0000000000037550                _flash_used = ((LOADADDR (.last_section) + SIZEOF (.last_section)) - __rom_region_start)
+27396-
+27397-bss             0x000000002000b060   0x120c58
+27398-                0x000000002000b060                . = ALIGN (0x4)
+27399-                0x000000002000b060                __bss_start = .
+27400-                0x000000002000b060                __kernel_ram_start = .
+27401- *(SORT_BY_ALIGNMENT(.bss))
+
+===== TOOLCHAIN ELF INSPECTION TOOLS =====
+FOUND: /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-readelf
+FOUND: /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm
+FOUND: /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-objdump
+
+===== ELF SECTION TABLE =====
+  [Nr] Name              Type            Addr     Off    Size   ES Flg Lk Inf Al
+  [ 2] text              PROGBITS        800007c0 0008b8 02b9c0 00  AX  0   0  8
+  [16] rodata            PROGBITS        8002d7b8 02d8b0 008d44 00   A  0   0  8
+  [18] datas             PROGBITS        2000a000 0365f8 000f01 00  WA  0   0  8
+  [26] ospi0             PROGBITS        b0000000 037650 27d7d0 00   A  0   0 16
+  [38] bss               NOBITS          2000b060 000100 120c58 00  WA  0   0 32
+
+===== ELF MODEL ACCESSOR AND DATA SYMBOLS =====
+80006064 00000008 T arm::app::asr::GetModelLen()
+8000605c 00000008 T arm::app::asr::GetModelPointer()
+b0000000 0027d7d0 r arm::app::asr::nn_model
+
+===== MLEK TOP-LEVEL LIBRARY CMAKE =====
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2025-2026 Arm Limited and/or its
+     3	#  affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	cmake_minimum_required(VERSION 3.21.0)
+    19	
+    20	# Build in release mode by default
+    21	if (NOT CMAKE_BUILD_TYPE STREQUAL Debug)
+    22	    set(CMAKE_BUILD_TYPE Release CACHE INTERNAL "")
+    23	endif()
+    24	
+    25	# Set language standards.
+    26	set(CMAKE_C_STANDARD   11)
+    27	set(CMAKE_CXX_STANDARD 17)
+    28	
+    29	# Make the standard a requirement => prevent fallback to previous
+    30	# supported standard
+    31	set(CMAKE_C_STANDARD_REQUIRED ON)
+    32	set(CMAKE_CXX_STANDARD_REQUIRED ON)
+    33	
+    34	# We want to pass standard C/C++ flags, without gnu extensions
+    35	set(CMAKE_C_EXTENSIONS OFF)
+    36	set(CMAKE_CXX_EXTENSIONS OFF)
+    37	
+    38	project(MLEK_API
+    39	        DESCRIPTION "Generic platform agnostic API"
+    40	        LANGUAGES   CXX)
+    41	
+    42	# Default configuration - paths and other defaults
+    43	include(${CMAKE_CURRENT_SOURCE_DIR}/config.cmake)
+    44	
+    45	add_subdirectory(mlek/log)
+    46	add_subdirectory(mlek/math)
+    47	add_subdirectory(mlek/fwk)
+    48	add_subdirectory(mlek/common)
+    49	add_subdirectory(mlek/use_case)
+    50	
+    51	###############################################################################
+    52	# Function to add current directory to the targets includes. This ensures
+    53	# that all the headers included refer to this base directory as the root.
+    54	# It will be the same for installation target.
+    55	# @param[in]    target_name     Name of the CMake target to add include
+    56	#                               directories for.
+    57	###############################################################################
+    58	function(mlek_api_set_include_dirs target_name)
+    59	    if (NOT TARGET ${target_name})
+    60	        message(WARNING "${target_name} is not defined")
+    61	        return()
+    62	    endif()
+    63	
+    64	    get_target_property(_target_type ${target_name} TYPE)
+    65	    if (_target_type STREQUAL "INTERFACE_LIBRARY")
+    66	        set(_scope INTERFACE)
+    67	    else()
+    68	        set(_scope PUBLIC)
+    69	    endif()
+    70	
+    71	    target_include_directories(${target_name} ${_scope}
+    72	        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    73	        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    74	endfunction()
+    75	
+    76	
+    77	###############################################################################
+    78	# Function to create an ML framework specific implementation interface library
+    79	# to allow easier use of targets defined in this CMake project.
+    80	# The function will create an alias library as well namespaced with 'mlek::'
+    81	# and the library will be called 'API_NAME_et_impl' or 'API_NAME_tflm_impl'.
+    82	# @param[in]    API_NAME        Name of the API to target. The name is suffixed
+    83	#                               by '_api' to get the expected target defined
+    84	#                               by subdirectory 'use_case'.
+    85	###############################################################################
+    86	function(create_mlek_impl_lib_target)
+    87	    set(oneValueArgs API_NAME)
+    88	    cmake_parse_arguments(PARSED "" "${oneValueArgs}"
+    89	                          "${multiValueArgs}" ${ARGN})
+    90	    set(TARGET_LIB_NAME ${PARSED_API_NAME}_impl)
+    91	    if (NOT TARGET mlek::ml_framework_impl)
+    92	        message(FATAL_ERROR "mlek::ml_framework_impl target must "
+    93	                            "exist before creating ${TARGET_LIB_NAME}")
+    94	    endif()
+    95	    add_library(${TARGET_LIB_NAME} INTERFACE)
+    96	    target_link_libraries(${TARGET_LIB_NAME} INTERFACE
+    97	        ${PARSED_API_NAME}_api      # API target (relies on abstract fwk interface)
+    98	        mlek::ml_framework_impl)    # The ML framework impl to pull in
+    99	
+   100	    add_library(mlek::${TARGET_LIB_NAME} ALIAS ${TARGET_LIB_NAME})
+   101	    message(STATUS "Created interface target: mlek::${TARGET_LIB_NAME}")
+   102	endfunction()
+   103	
+   104	# Set include directories for base targets. All other targets depend on at
+   105	# least one of these targets.
+   106	mlek_api_set_include_dirs(mlek_log)
+   107	mlek_api_set_include_dirs(arm_math)
+   108	mlek_api_set_include_dirs(common_api)
+   109	mlek_api_set_include_dirs(ml_framework_iface)
+   110	
+   111	# Create alises and add namepaced targets for easier linking.
+   112	if (NOT DEFINED MLEK_API_LIST)
+   113	    message(FATAL_ERROR "MLEK_API_LIST variable should be exposed by "
+   114	                        "${CMAKE_CURRENT_SOURCE_DIR}/mlek/use_case")
+   115	endif()
+   116	
+   117	foreach(_api_name ${MLEK_API_LIST})
+   118	    create_mlek_impl_lib_target(API_NAME ${_api_name})
+   119	endforeach()
+   120	
+   121	# Only include export/install logic when building as part of the top-level MLEK
+   122	# project. When this library is embedded in another project, defer export to
+   123	# the parent to avoid clashing install/export settings.
+   124	if (CMAKE_SOURCE_DIR STREQUAL MLEK_ROOT)
+   125	    include(${CMAKE_CURRENT_SOURCE_DIR}/export.cmake)
+   126	endif()
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/config.cmake ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2025-2026 Arm Limited and/or its
+     3	#  affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	include_guard(GLOBAL)
+    19	
+    20	message(STATUS "Including default API config parameters...")
+    21	
+    22	if (NOT COMMAND assert_defined)
+    23	    function(assert_defined var_name)
+    24	        if (NOT DEFINED ${var_name})
+    25	            message(FATAL_ERROR "ERROR: ${var_name} is undefined!")
+    26	        endif()
+    27	    endfunction()
+    28	endif()
+    29	
+    30	if (NOT DEFINED MLEK_ROOT)
+    31	    set(MLEK_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../)
+    32	endif()
+    33	
+    34	if (NOT DEFINED MLEK_DEPENDENCIES_DIR)
+    35	    set(MLEK_DEPENDENCIES_DIR ${MLEK_ROOT}/dependencies)
+    36	endif()
+    37	
+    38	if (NOT DEFINED MLEK_SCRIPTS_DIR)
+    39	    set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+    40	endif()
+    41	
+    42	# Add CMake scripts to module path
+    43	list(APPEND CMAKE_MODULE_PATH ${MLEK_ROOT}/scripts/cmake)
+    44	
+    45	# CMSIS sources
+    46	set(CMSIS_DSP_SRC_PATH ${MLEK_DEPENDENCIES_DIR}/cmsis-dsp
+    47	    CACHE PATH "CMSIS-DSP path")
+    48	set(CMSIS_SRC_PATH ${MLEK_DEPENDENCIES_DIR}/cmsis-6
+    49	    CACHE PATH "CMSIS path")
+    50	set(CORTEX_DFP_SRC_PATH ${MLEK_DEPENDENCIES_DIR}/cortex-dfp
+    51	    CACHE PATH "Cortex DFP path")
+    52	
+    53	# TensorFlow Lite Micro
+    54	set(TENSORFLOW_LITE_MICRO_BUILD_TYPE release_with_logs
+    55	    CACHE STRING "Build type")
+    56	set(TENSORFLOW_SRC_PATH ${MLEK_DEPENDENCIES_DIR}/tensorflow
+    57	    CACHE PATH "TensorFlow source path")
+    58	set(CMSIS_NN_SRC_PATH ${MLEK_DEPENDENCIES_DIR}/cmsis-nn
+    59	    CACHE PATH "CMSIS-NN path")
+    60	
+    61	# ExecuTorch
+    62	set(EXECUTORCH_SRC_PATH ${MLEK_ROOT}/dependencies/executorch
+    63	    CACHE PATH "ExecuTorch source path")
+    64	set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded
+    65	    CACHE PATH "Path for resources")
+    66	
+    67	# ExecuTorch set up requires Python virtual env set up.
+    68	if (NOT COMMAND setup_source_generator)
+    69	    include(source_gen_utils)
+    70	    setup_source_generator()
+    71	endif()
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2025-2026 Arm Limited and/or its
+     3	#  affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	include_guard(GLOBAL)
+    19	
+    20	include(GNUInstallDirs)
+    21	
+    22	set(MLEK_API_EXPORT_SET mlek-api-targets)
+    23	
+    24	set(MLEK_API_INSTALL_TARGETS
+    25	    mlek_log
+    26	    arm_math
+    27	    common_api
+    28	    ml_framework_iface)
+    29	
+    30	# Add the use case specific targets.
+    31	foreach(_api_name ${MLEK_API_LIST})
+    32	    set(_target_name ${_api_name}_api)
+    33	    if (TARGET ${_target_name})
+    34	        get_target_property(_aliased_target ${_target_name} ALIASED_TARGET)
+    35	        if (NOT _aliased_target)
+    36	            list(APPEND MLEK_API_INSTALL_TARGETS ${_target_name})
+    37	        else()
+    38	            list(APPEND MLEK_API_INSTALL_TARGETS ${_aliased_target})
+    39	        endif()
+    40	    endif()
+    41	    if (TARGET ${_api_name}_impl)
+    42	        list(APPEND MLEK_API_INSTALL_TARGETS ${_api_name}_impl)
+    43	    endif()
+    44	endforeach()
+    45	
+    46	list(REMOVE_DUPLICATES MLEK_API_INSTALL_TARGETS)
+    47	set_target_properties(${MLEK_API_INSTALL_TARGETS}
+    48	                      PROPERTIES EXCLUDE_FROM_ALL FALSE)
+    49	
+    50	# Align exported target names with the existing mlek:: aliases.
+    51	set_target_properties(mlek_log PROPERTIES EXPORT_NAME log)
+    52	if (TARGET ml_framework_tflm)
+    53	    list(APPEND MLEK_API_INSTALL_TARGETS ml_framework_tflm)
+    54	    set_target_properties(ml_framework_tflm PROPERTIES EXPORT_NAME ml_framework_impl)
+    55	endif()
+    56	if (TARGET ml_framework_et)
+    57	    list(APPEND MLEK_API_INSTALL_TARGETS ml_framework_et)
+    58	    set_target_properties(ml_framework_et PROPERTIES EXPORT_NAME ml_framework_impl)
+    59	endif()
+    60	
+    61	if (TARGET CMSISDSP)
+    62	    list(APPEND MLEK_API_INSTALL_TARGETS CMSISDSP)
+    63	endif()
+    64	
+    65	# Export targets for build-tree consumption.
+    66	export(TARGETS ${MLEK_API_INSTALL_TARGETS}
+    67	       NAMESPACE mlek::
+    68	       FILE ${CMAKE_CURRENT_BINARY_DIR}/${MLEK_API_EXPORT_SET}.cmake)
+    69	
+    70	# Installation flow For native buids.
+    71	if (NOT CMAKE_CROSSCOMPILING)
+    72	    install(TARGETS ${MLEK_API_INSTALL_TARGETS}
+    73	            EXPORT ${MLEK_API_EXPORT_SET}
+    74	            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    75	            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    76	            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    77	            INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    78	
+    79	    install(EXPORT ${MLEK_API_EXPORT_SET}
+    80	            NAMESPACE mlek::
+    81	            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/mlek-api)
+    82	
+    83	    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/mlek/
+    84	            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/mlek
+    85	            FILES_MATCHING
+    86	                PATTERN "*.h"
+    87	                PATTERN "*.hpp")
+    88	endif()
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/CMakeLists.txt ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or its
+     3	#  affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	
+    19	#########################################################
+    20	#                   ML framework abstraction            #
+    21	#########################################################
+    22	cmake_minimum_required(VERSION 3.21.0)
+    23	
+    24	set(ML_FWK_IFACE_TARGET   ml_framework_iface)
+    25	project(${ML_FWK_IFACE_TARGET}
+    26	    DESCRIPTION     "ML framework interface library"
+    27	    LANGUAGES       CXX)
+    28	
+    29	if (NOT DEFINED ML_FRAMEWORK)
+    30	    message(FATAL_ERROR "ML_FRAMEWORK must be defined")
+    31	endif ()
+    32	
+    33	# Add interface library
+    34	add_library(${ML_FWK_IFACE_TARGET} INTERFACE)
+    35	add_library(mlek::${ML_FWK_IFACE_TARGET} ALIAS ${ML_FWK_IFACE_TARGET})
+    36	
+    37	if ("ExecuTorch" STREQUAL ${ML_FRAMEWORK})
+    38	    message(STATUS "Adding ExecuTorch framework to the build...")
+    39	    add_subdirectory(executorch)
+    40	    set_target_properties(ml_framework_et PROPERTIES POSITION_INDEPENDENT_CODE FALSE)
+    41	    add_library(mlek::ml_framework_impl ALIAS ml_framework_et)
+    42	elseif ("TensorFlowLiteMicro" STREQUAL ${ML_FRAMEWORK})
+    43	    message(STATUS "Adding TensorFlow Lite Micro framework to the build...")
+    44	    add_subdirectory(tflm)
+    45	    add_library(mlek::ml_framework_impl ALIAS ml_framework_tflm)
+    46	else ()
+    47	    message(FATAL_ERROR "Unsupported ML framework '${ML_FRAMEWORK}'.")
+    48	endif ()
+    49	
+    50	# Display status:
+    51	message(STATUS "*******************************************************")
+    52	message(STATUS "Library: "                ${ML_FWK_IFACE_TARGET})
+    53	message(STATUS "CMAKE_SYSTEM_PROCESSOR: " ${CMAKE_SYSTEM_PROCESSOR})
+    54	message(STATUS "*******************************************************")
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/CMakeLists.txt ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or its
+     3	#  affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	
+    19	#########################################################
+    20	#               TensorFlow Lite Micro wrapper           #
+    21	#########################################################
+    22	cmake_minimum_required(VERSION 3.21.0)
+    23	
+    24	set(ML_FWK_TFLM_TARGET   ml_framework_tflm)
+    25	project(${ML_FWK_TFLM_TARGET}
+    26	    DESCRIPTION     "TensorFlow Lite Micro framework module"
+    27	    LANGUAGES       C CXX)
+    28	
+    29	if (NOT "TensorFlowLiteMicro" STREQUAL ${ML_FRAMEWORK})
+    30	    message(FATAL_ERROR "${CMAKE_CURRENT_SOURCE_DIR} should not be included for ${ML_FRAMEWORK}")
+    31	endif()
+    32	
+    33	# For CMSIS pack generation flow, we don't need to include TensorFlow Lite
+    34	# Micro lib or link against it.
+    35	if (NOT CMSIS_PACK_GEN_FLOW)
+    36	    # Include the TensorFlow Lite Micro build target
+    37	    # if the target is not available. An external project
+    38	    # including this project can provide its own version
+    39	    # of the target.
+    40	    if (NOT TARGET google::tensorflow-lite-micro)
+    41	        set(TFLM_EXTERNAL_TARGET OFF)
+    42	        include(tensorflow_lite_micro)
+    43	    else()
+    44	        set(TFLM_EXTERNAL_TARGET ON)
+    45	    endif()
+    46	endif ()
+    47	
+    48	# Create static library
+    49	add_library(${ML_FWK_TFLM_TARGET} STATIC
+    50	    YoloFastestModel.cc
+    51	    AdModel.cc
+    52	    MicroNetKwsModel.cc
+    53	    Wav2LetterModel.cc
+    54	    VisualWakeWordModel.cc
+    55	    TflmTensor.cc
+    56	    TensorFlowLiteMicro.cc
+    57	    RNNoiseModel.cc
+    58	    MobileNetModel.cc
+    59	    TestModel.cc
+    60	    TflmModel.cc
+    61	    MicroMutableAllOpsResolver.cc
+    62	)
+    63	
+    64	# Link time library targets:
+    65	target_link_libraries(${ML_FWK_TFLM_TARGET} PUBLIC
+    66	    mlek::log                                                               # Logging functions
+    67	    mlek::ml_framework_iface                                                # ML framework interface
+    68	    $<$<NOT:$<BOOL:${CMSIS_PACK_GEN_FLOW}>>:google::tensorflow-lite-micro>) # TensorFlow Lite Micro library
+    69	
+    70	target_compile_definitions(${ML_FWK_TFLM_TARGET} INTERFACE MLEK_FWK_TFLM=1)
+    71	
+    72	# Set the source file property to indicate that it should not use the logging
+    73	# facility from the Cortex-M CPU generic target unless it is an internally
+    74	# configured target. Reason: for external target, we can't assume that it
+    75	# compiles the sources required.
+    76	if (TFLM_EXTERNAL_TARGET)
+    77	    set_source_files_properties(TensorFlowLiteMicro.cc
+    78	        PROPERTIES COMPILE_DEFINITIONS TFLM_EXTERNAL_TARGET)
+    79	endif()
+    80	
+    81	add_library(mlek::${ML_FWK_TFLM_TARGET} ALIAS ${ML_FWK_TFLM_TARGET})
+    82	
+    83	# Display status:
+    84	message(STATUS "*******************************************************")
+    85	message(STATUS "Library: "                ${ML_FWK_TFLM_TARGET})
+    86	message(STATUS "CMAKE_SYSTEM_PROCESSOR: " ${CMAKE_SYSTEM_PROCESSOR})
+    87	message(STATUS "*******************************************************")
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/CMakeLists.txt ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2022-2023, 2025 Arm Limited and/or
+     3	#  its affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	
+    19	#########################################################
+    20	#  Common utility library used by use case libraries.   #
+    21	#  NOTE:                                                #
+    22	#  1. This library should not depend on HAL.            #
+    23	#  2. This library should depend on ML framework        #
+    24	#     interface and not on the framework wrapper        #
+    25	#     itself.                                           #
+    26	#########################################################
+    27	
+    28	cmake_minimum_required(VERSION 3.21.0)
+    29	
+    30	set(COMMON_UC_UTILS_TARGET common_api)
+    31	project(${COMMON_UC_UTILS_TARGET}
+    32	    DESCRIPTION     "Common Utilities library"
+    33	    LANGUAGES       CXX)
+    34	
+    35	# Create static library
+    36	add_library(${COMMON_UC_UTILS_TARGET} STATIC)
+    37	
+    38	## Sources
+    39	target_sources(${COMMON_UC_UTILS_TARGET} PRIVATE
+    40	    Classifier.cc
+    41	    ImageUtils.cc
+    42	    MelSpectrogram.cc
+    43	    Mfcc.cc
+    44	    AudioRenderUtils.cc)
+    45	
+    46	# Link time library targets:
+    47	target_link_libraries(${COMMON_UC_UTILS_TARGET} PUBLIC
+    48	    mlek::log                 # Logging interface
+    49	    mlek::arm_math            # Math functions
+    50	    mlek::ml_framework_iface) # ML framework interface
+    51	
+    52	add_library(mlek::common_api ALIAS common_api)
+    53	
+    54	# Display status:
+    55	message(STATUS "*******************************************************")
+    56	message(STATUS "Library:                " ${COMMON_UC_UTILS_TARGET})
+    57	message(STATUS "CMAKE_SYSTEM_PROCESSOR: " ${CMAKE_SYSTEM_PROCESSOR})
+    58	message(STATUS "*******************************************************")
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/math/CMakeLists.txt ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2022, 2025 Arm Limited and/or its
+     3	#  affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	
+    19	#######################################################
+    20	# Math functions for ML pipelines.                    #
+    21	#######################################################
+    22	
+    23	project(arm_math
+    24	        DESCRIPTION "Collection of the optimised math functions for ML pipelines"
+    25	        LANGUAGES C CXX)
+    26	
+    27	add_library(arm_math STATIC)
+    28	
+    29	target_sources(arm_math
+    30	        PRIVATE
+    31	        PlatformMath.cc)
+    32	
+    33	target_link_libraries(arm_math PRIVATE mlek_log)
+    34	
+    35	if (${CMAKE_CROSSCOMPILING})
+    36	    # If CMSIS-DSP target doesn't exist, include the MLEK default
+    37	    # configuration. An external project that wants to re-use this
+    38	    # module is expected to declare this target before including
+    39	    # this project
+    40	    if (NOT TARGET arm::cmsis-dsp)
+    41	        include(cmsis-dsp)
+    42	    endif()
+    43	    target_link_libraries(arm_math PUBLIC arm::cmsis-dsp)
+    44	endif ()
+    45	
+    46	add_library(mlek::arm_math ALIAS arm_math)
+    47	
+    48	message(STATUS "*******************************************************")
+    49	message(STATUS "Library                    : " arm_math)
+    50	message(STATUS "CMAKE_SYSTEM_PROCESSOR     : " ${CMAKE_SYSTEM_PROCESSOR})
+    51	message(STATUS "*******************************************************")
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/CMakeLists.txt ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2025-2026 Arm Limited and/or its
+     3	#  affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	
+    19	# Add individual use case APIs but don't include them in default build
+    20	set(_MLEK_API_LIST
+    21	    asr kws noise_reduction         # Voice/Audio pipelines
+    22	    img_class object_detection vww  # Vision pipelines
+    23	    ad                              # Vibration pipeline
+    24	    inference_runner)               # Generic runner - minimal inference
+    25	
+    26	foreach(_api_name ${_MLEK_API_LIST})
+    27	    add_subdirectory(${_api_name} EXCLUDE_FROM_ALL)
+    28	endforeach()
+    29	
+    30	# Expose the list to parent CMake project
+    31	set(MLEK_API_LIST ${_MLEK_API_LIST} PARENT_SCOPE)
+
+--- /home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/CMakeLists.txt ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2022, 2025 Arm Limited and/or
+     3	#  its affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	#########################################################
+    19	#       AUTOMATIC SPEECH RECOGNITION API library        #
+    20	#########################################################
+    21	cmake_minimum_required(VERSION 3.21.0)
+    22	
+    23	set(ASR_API_TARGET asr_api)
+    24	project(${ASR_API_TARGET}
+    25	        DESCRIPTION     "Automatic speech recognition use case API library"
+    26	        LANGUAGES       C CXX)
+    27	
+    28	# Create static library
+    29	add_library(${ASR_API_TARGET} STATIC
+    30	        AsrClassifier.cc
+    31	        ConformerMelSpectrogram.cc
+    32	        ConformerProcessing.cc
+    33	        OutputDecode.cc
+    34	        Wav2LetterMfcc.cc
+    35	        Wav2LetterPreprocess.cc
+    36	        Wav2LetterPostprocess.cc
+    37	)
+    38	
+    39	target_link_libraries(${ASR_API_TARGET} PUBLIC common_api)
+    40	
+    41	add_library(mlek::${ASR_API_TARGET} ALIAS ${ASR_API_TARGET})
+    42	
+    43	message(STATUS "*******************************************************")
+    44	message(STATUS "Library                                : " ${ASR_API_TARGET})
+    45	message(STATUS "CMAKE_SYSTEM_PROCESSOR                 : " ${CMAKE_SYSTEM_PROCESSOR})
+    46	message(STATUS "*******************************************************")
+
+===== APPLICATION CMAKE TARGET AND SOURCE SELECTION =====
+     1	# Copyright (C) Alif Semiconductor - All Rights Reserved.
+     2	# Use, distribution and modification of this code is permitted under the
+     3	# terms stated in the Alif Semiconductor Software License Agreement
+     4	#
+     5	# You should have received a copy of the Alif Semiconductor Software
+     6	# License Agreement with this file. If not, please write to:
+     7	# contact@alifsemi.com, or visit: https://alifsemi.com/license
+     8	
+     9	cmake_minimum_required(VERSION 3.20.0)
+    10	
+    11	if(NOT ospi-flash IN_LIST SNIPPET)
+    12	  set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+    13	endif()
+    14	
+    15	# Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+    16	# so the module is not auto-discovered and must be registered explicitly. Ask
+    17	# west for the module path instead of hardcoding the workspace layout.
+    18	execute_process(
+    19	    COMMAND west list --format "{abspath}" alif-mlek
+    20	    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    21	    OUTPUT_VARIABLE MLEK_ROOT
+    22	    OUTPUT_STRIP_TRAILING_WHITESPACE
+    23	    RESULT_VARIABLE MLEK_LIST_RESULT
+    24	    ERROR_QUIET
+    25	)
+    26	if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+    27	    message(FATAL_ERROR
+    28	        "alif-mlek module not found. Enable and fetch it first:\n"
+    29	        "  west config manifest.project-filter -- +alif-mlek\n"
+    30	        "  west update\n")
+    31	endif()
+    32	
+    33	# Register the MLEK Zephyr port as an extra Zephyr module
+    34	list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+    35	
+    36	# ---------------------------------------------------------------------------
+    37	# Ethos-U NPU selection
+    38	# ---------------------------------------------------------------------------
+    39	# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+    40	# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+    41	# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+    42	# the build and the Ethos-U driver targets the requested NPU. This overrides the
+    43	# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+    44	#
+    45	# The parsed value is also used to pick the correct Vela-compiled model below.
+    46	# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+    47	if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+    48	    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+    49	    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+    50	        set(_npu_arch "${CMAKE_MATCH_1}")
+    51	        set(_npu_macs "${CMAKE_MATCH_2}")
+    52	        if (_npu_arch STREQUAL "u55")
+    53	            set(_npu_prefix "H")
+    54	        elseif (_npu_arch STREQUAL "u65")
+    55	            set(_npu_prefix "Y")
+    56	        elseif (_npu_arch STREQUAL "u85")
+    57	            set(_npu_prefix "Z")
+    58	        else()
+    59	            message(FATAL_ERROR
+    60	                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+    61	                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+    62	        endif()
+    63	        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+    64	
+    65	        # Feed the matching Kconfig choice into the Zephyr configuration.
+    66	        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+    67	        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+    68	            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+    69	        message(STATUS
+    70	            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+    71	            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+    72	    else()
+    73	        message(FATAL_ERROR
+    74	            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+    75	            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+    76	    endif()
+    77	endif()
+    78	
+    79	find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+    80	
+    81	project(alif_asr)
+    82	
+    83	# Silence "changed in GCC 7.1" warnigns from C++ headers
+    84	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+    85	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+    86	
+    87	set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+    88	
+    89	set(ML_FRAMEWORK TensorFlowLiteMicro)
+    90	
+    91	# ---------------------------------------------------------------------------
+    92	# Build-time model and labels generation from MLEK resources
+    93	# ---------------------------------------------------------------------------
+    94	set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+    95	set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+    96	    "Path to MLEK resources (models compiled with Vela)")
+    97	setup_source_generator()
+    98	
+    99	# Source generation output directories
+   100	set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+   101	set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+   102	file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+   103	
+   104	message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+   105	message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+   106	
+   107	# Determine NPU config ID based on Zephyr Kconfig.
+   108	# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+   109	# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+   110	if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+   111	    if (CONFIG_ARM_ETHOS_U85_256)
+   112	        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+   113	    elseif (CONFIG_ARM_ETHOS_U55_256)
+   114	        set(ETHOS_U_NPU_CONFIG_ID "H256")
+   115	    else()
+   116	        set(ETHOS_U_NPU_CONFIG_ID "H128")
+   117	    endif()
+   118	endif()
+   119	
+   120	# Model file path
+   121	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+   122	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+   123	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+   124	set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+   125	    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+   126	
+   127	if (NOT EXISTS ${POLYU_MODEL_PATH})
+   128	    message(FATAL_ERROR
+   129	        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+   130	endif()
+   131	
+   132	set(EXTRA_MODEL_CODE
+   133		"/* Model parameters for ${use_case} */"
+   134		"extern const int   g_FrameLength    = 512"
+   135		"extern const int   g_FrameStride    = 160"
+   136		"extern const int   g_ctxLen         = 98"
+   137		"extern const float g_ScoreThreshold = 0.5"
+   138		)
+   139	
+   140	# Generate model file
+   141	generate_model_code(
+   142	    MODEL_PATH  ${POLYU_MODEL_PATH}
+   143	    DESTINATION ${SRC_GEN_DIR}
+   144	    EXPRESSIONS ${EXTRA_MODEL_CODE}
+   145	    NAMESPACE   "arm" "app" "asr")
+   146	
+   147	# Generate labels C++ code
+   148	set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+   149	
+   150	# Generate labels file
+   151	set(ASR_LABELS_CPP_FILE Labels)
+   152	generate_labels_code(
+   153	    INPUT           "${ASR_LABELS_FILE}"
+   154	    DESTINATION_SRC ${SRC_GEN_DIR}
+   155	    DESTINATION_HDR ${INC_GEN_DIR}
+   156	    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+   157	)
+   158	
+   159	# Collect the generated source files
+   160	file(GLOB ASR_GENERATED_SOURCES ${SRC_GEN_DIR}/*.cc)
+   161	
+   162	# Create static library
+   163	add_library(asr_iface INTERFACE)
+   164	
+   165	## Common include directories - public
+   166	target_include_directories(asr_iface
+   167	    INTERFACE
+   168		src/application/main/include)
+   169	
+   170	
+   171	target_include_directories(app PRIVATE
+   172	    src/application/main/include
+   173	    src/use_case/alif_asr/include
+   174		src/power
+   175		~/sdk-alif/alif/samples/modules/alif_common
+   176		~/sdk-alif/alif/samples/modules/alif_common/audio
+   177		~/sdk-alif/alif/samples/modules/alif_common/audio/include
+   178		 ${INC_GEN_DIR}
+   179	)
+   180	
+   181	target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+   182	
+   183	
+   184	if (CONFIG_USE_APP_MENU)
+   185	target_compile_definitions(app PRIVATE USE_APP_MENU)
+   186	endif()
+   187	
+   188	target_sources(app PRIVATE
+   189	    src/application/main/Main.cc
+   190	    src/use_case/alif_asr/src/MainLoop.cc
+   191		src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+   192	    src/use_case/alif_asr/src/reverse_v2.cc
+   193	    src/use_case/alif_asr/src/PolyUModel1.cc
+   194	    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+   195		src/power/power_mgr.c
+   196		~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+   197		${ASR_GENERATED_SOURCES}
+   198	)
+   199	
+   200	set(SRC_MAIN "src/application/main/Main.cc")
+   201	
+   202	list(APPEND SRC_MAIN_DEFS
+   203	    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+   204	    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+   205	    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+   206	
+   207	set_source_files_properties(${SRC_MAIN}
+   208	    PROPERTIES COMPILE_DEFINITIONS
+   209	    "${SRC_MAIN_DEFS}")
+   210	
+   211	target_link_libraries(app PRIVATE
+   212		asr_iface
+   213	    mlek::asr_impl
+   214	)
+
+===== MLEK TARGET ALIASES AND EXPORTED TARGET NAMES =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:45:add_subdirectory(mlek/log)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:46:add_subdirectory(mlek/math)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:47:add_subdirectory(mlek/fwk)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:48:add_subdirectory(mlek/common)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:49:add_subdirectory(mlek/use_case)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:80:# The function will create an alias library as well namespaced with 'mlek::'
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:91:    if (NOT TARGET mlek::ml_framework_impl)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:92:        message(FATAL_ERROR "mlek::ml_framework_impl target must "
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:95:    add_library(${TARGET_LIB_NAME} INTERFACE)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:98:        mlek::ml_framework_impl)    # The ML framework impl to pull in
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:100:    add_library(mlek::${TARGET_LIB_NAME} ALIAS ${TARGET_LIB_NAME})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:101:    message(STATUS "Created interface target: mlek::${TARGET_LIB_NAME}")
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:107:mlek_api_set_include_dirs(arm_math)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/CMakeLists.txt:108:mlek_api_set_include_dirs(common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:26:    arm_math
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:27:    common_api
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:34:        get_target_property(_aliased_target ${_target_name} ALIASED_TARGET)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:50:# Align exported target names with the existing mlek:: aliases.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:51:set_target_properties(mlek_log PROPERTIES EXPORT_NAME log)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:52:if (TARGET ml_framework_tflm)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:53:    list(APPEND MLEK_API_INSTALL_TARGETS ml_framework_tflm)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:54:    set_target_properties(ml_framework_tflm PROPERTIES EXPORT_NAME ml_framework_impl)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:58:    set_target_properties(ml_framework_et PROPERTIES EXPORT_NAME ml_framework_impl)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:67:       NAMESPACE mlek::
+/home/user/sdk-alif/modules/alif-mlek/source/lib/export.cmake:80:            NAMESPACE mlek::
+/home/user/sdk-alif/modules/alif-mlek/source/lib/ports/zephyr/CMakeLists.txt:37:    add_library(arm::cmsis-dsp ALIAS modules__cmsis-dsp)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/ports/zephyr/CMakeLists.txt:52:        add_library(meta::executorch ALIAS libexecutorch)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/ports/zephyr/CMakeLists.txt:54:        add_library(meta::executorch ALIAS modules__executorch)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/ports/zephyr/CMakeLists.txt:65:        add_library(google::tensorflow-lite-micro ALIAS modules__tflite-micro)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/ports/zephyr/CMakeLists.txt:93:add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../ ${CMAKE_CURRENT_BINARY_DIR}/mlek)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/CMakeLists.txt:27:    add_subdirectory(${_api_name} EXCLUDE_FROM_ALL)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/object_detection/CMakeLists.txt:28:add_library(${OBJECT_DETECTION_API_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/object_detection/CMakeLists.txt:32:target_link_libraries(${OBJECT_DETECTION_API_TARGET} PUBLIC common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/object_detection/CMakeLists.txt:34:add_library(mlek::${OBJECT_DETECTION_API_TARGET} ALIAS ${OBJECT_DETECTION_API_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/CMakeLists.txt:29:add_library(${IMG_CLASS_API_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/CMakeLists.txt:32:target_link_libraries(${IMG_CLASS_API_TARGET} PUBLIC common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/CMakeLists.txt:34:add_library(mlek::${IMG_CLASS_API_TARGET} ALIAS ${IMG_CLASS_API_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/vww/CMakeLists.txt:29:add_library(${VWW_API_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/vww/CMakeLists.txt:32:target_link_libraries(${VWW_API_TARGET} PUBLIC common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/vww/CMakeLists.txt:34:add_library(mlek::${VWW_API_TARGET} ALIAS ${VWW_API_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/inference_runner/CMakeLists.txt:29:add_library(${INFERENCE_RUNNER_API_TARGET} ALIAS common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/inference_runner/CMakeLists.txt:31:add_library(mlek::${INFERENCE_RUNNER_API_TARGET} ALIAS common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/CMakeLists.txt:29:add_library(${NOISE_REDUCTION_API_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/CMakeLists.txt:33:target_link_libraries(${NOISE_REDUCTION_API_TARGET} PUBLIC common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/CMakeLists.txt:35:add_library(mlek::${NOISE_REDUCTION_API_TARGET} ALIAS ${NOISE_REDUCTION_API_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/CMakeLists.txt:29:add_library(${AD_API_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/CMakeLists.txt:33:target_link_libraries(${AD_API_TARGET} PUBLIC common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/CMakeLists.txt:35:add_library(mlek::${AD_API_TARGET} ALIAS ${AD_API_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/CMakeLists.txt:29:add_library(${KWS_API_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/CMakeLists.txt:33:target_link_libraries(${KWS_API_TARGET} PUBLIC common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/CMakeLists.txt:35:add_library(mlek::${KWS_API_TARGET} ALIAS ${KWS_API_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/CMakeLists.txt:29:add_library(${ASR_API_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/CMakeLists.txt:39:target_link_libraries(${ASR_API_TARGET} PUBLIC common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/CMakeLists.txt:41:add_library(mlek::${ASR_API_TARGET} ALIAS ${ASR_API_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/alif_ui/CMakeLists.txt:38:add_library(${ALIF_UI_API_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/alif_ui/CMakeLists.txt:46:target_link_libraries(${ALIF_UI_API_TARGET} PUBLIC common_api lvgl)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/alif_ui/CMakeLists.txt:48:add_library(mlek::${ALIF_UI_API_TARGET} ALIAS ${ALIF_UI_API_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/math/CMakeLists.txt:23:project(arm_math
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/math/CMakeLists.txt:27:add_library(arm_math STATIC)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/math/CMakeLists.txt:29:target_sources(arm_math
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/math/CMakeLists.txt:33:target_link_libraries(arm_math PRIVATE mlek_log)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/math/CMakeLists.txt:43:    target_link_libraries(arm_math PUBLIC arm::cmsis-dsp)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/math/CMakeLists.txt:46:add_library(mlek::arm_math ALIAS arm_math)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/math/CMakeLists.txt:49:message(STATUS "Library                    : " arm_math)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/log/CMakeLists.txt:43:add_library(${MLEK_LOG_TARGET} INTERFACE)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/log/CMakeLists.txt:57:add_library(mlek::log ALIAS mlek_log)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/CMakeLists.txt:34:add_library(${ML_FWK_IFACE_TARGET} INTERFACE)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/CMakeLists.txt:35:add_library(mlek::${ML_FWK_IFACE_TARGET} ALIAS ${ML_FWK_IFACE_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/CMakeLists.txt:39:    add_subdirectory(executorch)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/CMakeLists.txt:41:    add_library(mlek::ml_framework_impl ALIAS ml_framework_et)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/CMakeLists.txt:44:    add_subdirectory(tflm)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/CMakeLists.txt:45:    add_library(mlek::ml_framework_impl ALIAS ml_framework_tflm)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/CMakeLists.txt:24:set(ML_FWK_TFLM_TARGET   ml_framework_tflm)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/CMakeLists.txt:49:add_library(${ML_FWK_TFLM_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/CMakeLists.txt:66:    mlek::log                                                               # Logging functions
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/CMakeLists.txt:67:    mlek::ml_framework_iface                                                # ML framework interface
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/CMakeLists.txt:81:add_library(mlek::${ML_FWK_TFLM_TARGET} ALIAS ${ML_FWK_TFLM_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/CMakeLists.txt:46:add_library(${ML_FWK_ET_TARGET} STATIC
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/CMakeLists.txt:56:    mlek::log                                                   # Logging functions
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/CMakeLists.txt:57:    mlek::ml_framework_iface                                    # ML framework interface lib
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/CMakeLists.txt:85:add_library(mlek::${ML_FWK_ET_TARGET} ALIAS ${ML_FWK_ET_TARGET})
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/CMakeLists.txt:30:set(COMMON_UC_UTILS_TARGET common_api)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/CMakeLists.txt:36:add_library(${COMMON_UC_UTILS_TARGET} STATIC)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/CMakeLists.txt:48:    mlek::log                 # Logging interface
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/CMakeLists.txt:49:    mlek::arm_math            # Math functions
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/CMakeLists.txt:50:    mlek::ml_framework_iface) # ML framework interface
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/CMakeLists.txt:52:add_library(mlek::common_api ALIAS common_api)
+
+===== END =====
