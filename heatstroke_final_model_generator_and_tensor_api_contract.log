@@ -1,0 +1,846 @@
+===== FINAL MODEL GENERATOR AND TENSOR API CONTRACT =====
+Sun Nov  8 08:08:27 PM HKT 2026
+
+===== FIND MODEL GENERATOR CMAKE IMPLEMENTATION =====
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-75-    if (NOT return_code EQUAL "0")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-76-        message(FATAL_ERROR "Failed to generate audio files.")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-77-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-78-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-79-endfunction()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-80-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-81-##############################################################################
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-82-# This function generates C++ files for tflite NN model files.
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-83-# @param[in]    MODEL_PATH      path to a tflite file
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-84-# @param[in]    DESTINATION     directory in which the output cc must be
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-85-#                               placed
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-86-# @param[in]    EXPRESSIONS     C++ code expressions to add to the generated file
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-87-# @param[in]    NAMESPACE       model name space
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-88-# NOTE: Uses python
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-89-##############################################################################
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake:90:function(generate_model_code)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-91-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-92-    set(multiValueArgs EXPRESSIONS NAMESPACE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-93-    set(oneValueArgs MODEL_PATH DESTINATION)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-94-    cmake_parse_arguments(PARSED "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-95-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-96-    # Absolute paths for passing into python script
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-97-    get_filename_component(ABS_MODEL_PATH ${PARSED_MODEL_PATH} ABSOLUTE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-98-    get_filename_component(ABS_DESTINATION ${PARSED_DESTINATION} ABSOLUTE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-99-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-100-    if (EXISTS ${ABS_MODEL_PATH})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-101-        message(STATUS "Using ${ABS_MODEL_PATH}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-102-    else ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-103-        message(FATAL_ERROR "${ABS_MODEL_PATH} not found!")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-104-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-105-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-106-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-107-    foreach(expression ${PARSED_EXPRESSIONS})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-108-        set(py_arg_exp ${py_arg_exp} --expression=${expression})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-109-    endforeach()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-110-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-111-    foreach(name ${PARSED_NAMESPACE})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-112-        set(py_arg_exp ${py_arg_exp} --namespaces=${name})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-113-    endforeach()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-114-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-115-    # Pass optional Arm Ethos-U NPU validation args if NPU is enabled.
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-116-    if (ETHOS_U_NPU_ENABLED)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-117-        if (DEFINED ETHOS_U_NPU_MEMORY_MODE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-118-            set(py_arg_exp ${py_arg_exp} --ethos_u_memory_mode=${ETHOS_U_NPU_MEMORY_MODE})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-119-        endif()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-120-        if (DEFINED ETHOS_U_NPU_CONFIG_ID)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-121-            # gen_model_cpp.py accepts short forms like H128/Y256/Z256 directly.
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-122-            set(py_arg_exp ${py_arg_exp} --ethos_u_config=${ETHOS_U_NPU_CONFIG_ID})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-123-        endif()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-124-    endif()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-125-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-126-    execute_process(
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-127-        COMMAND ${CMAKE_COMMAND} -E env
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-128-            PYTHONPATH=${MLEK_SCRIPTS_DIR}/py:$ENV{PYTHONPATH}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-129-            ${PYTHON} -m mlek_tools.gen.gen_model_cpp
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-130-            --model_path ${ABS_MODEL_PATH}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-131-            --output_dir ${ABS_DESTINATION} ${py_arg_exp}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-132-        RESULT_VARIABLE return_code
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-133-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-134-    if (NOT return_code EQUAL "0")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-135-        message(FATAL_ERROR "Failed to generate model files.")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-136-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-137-endfunction()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-138-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-139-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-140-##############################################################################
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-141-# This function generates C++ file for a given labels' text file.
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-142-# @param[in]    INPUT          Path to the label text file
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-143-# @param[in]    DESTINATION_SRC directory in which the output cc must be
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-144-#                               placed
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-145-# @param[in]    DESTINATION_HDR directory in which the output h file must be
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-146-#                               placed
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-147-# @param[in]    OUTPUT_FILENAME    Path to required output file
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-148-# @param[in]    NAMESPACE       data name space
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-149-# NOTE: Uses python
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-150-##############################################################################
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-151-function(generate_labels_code)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-152-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-153-    set(multiValueArgs NAMESPACE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-154-    set(oneValueArgs INPUT DESTINATION_SRC DESTINATION_HDR OUTPUT_FILENAME)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-155-    cmake_parse_arguments(PARSED "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-156-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-157-    # Absolute paths for passing into python script
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-158-    get_filename_component(input_abs ${PARSED_INPUT} ABSOLUTE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-159-    get_filename_component(src_out_abs ${PARSED_DESTINATION_SRC} ABSOLUTE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-160-    get_filename_component(hdr_out_abs ${PARSED_DESTINATION_HDR} ABSOLUTE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-161-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-162-    message(STATUS "Generating labels file from ${PARSED_INPUT}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-163-    file(REMOVE "${hdr_out_abs}/${PARSED_OUTPUT_FILENAME}.hpp")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-164-    file(REMOVE "${src_out_abs}/${PARSED_OUTPUT_FILENAME}.cc")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-165-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-166-    foreach(name ${PARSED_NAMESPACE})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-167-        set(py_arg_exp ${py_arg_exp} --namespaces=${name})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-168-    endforeach()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-169-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-170-    message(STATUS "writing to ${hdr_out_abs}/${PARSED_OUTPUT_FILENAME}.hpp and ${src_out_abs}/${PARSED_OUTPUT_FILENAME}.cc")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-171-    execute_process(
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-172-        COMMAND ${CMAKE_COMMAND} -E env
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-173-            PYTHONPATH=${MLEK_SCRIPTS_DIR}/py:$ENV{PYTHONPATH}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-174-            ${PYTHON} -m mlek_tools.gen.gen_labels_cpp
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-175-            --labels_file ${input_abs}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-176-            --source_folder_path ${src_out_abs}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-177-            --header_folder_path ${hdr_out_abs}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-178-            --output_file_name ${PARSED_OUTPUT_FILENAME} ${py_arg_exp}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-179-        RESULT_VARIABLE return_code
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-180-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-181-    if (NOT return_code EQUAL "0")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-182-        message(FATAL_ERROR "Failed to generate label files.")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-183-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-184-endfunction()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-185-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-186-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-187-##############################################################################
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-188-# This function generates C++ data files for test located in the directory it is
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-189-# pointed at.
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-190-# @param[in]    INPUT_DIR       directory in which are the npy files
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-245-                --usecase ${input_dir_name}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-246-                ${py_arg_exp}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-247-            RESULT_VARIABLE return_code
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-248-        )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-249-        if (NOT return_code EQUAL "0")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-250-            message(FATAL_ERROR "Failed to generate test data files.")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-251-        endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-252-    endforeach()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-253-endfunction()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-254-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-255-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-256-##############################################################################
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-257-# Function to prepare a python virtual environment for running the functions
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-258-# outlined above.
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-259-##############################################################################
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake:260:function(setup_source_generator)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-261-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-262-    # If a virtual env has been created in the resources_downloaded directory,
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-263-    # use it for source generator. Else, fall back to creating a virtual env
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-264-    # in the current build directory.
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-265-    if (EXISTS ${RESOURCES_PATH}/env)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-266-        set(DEFAULT_VENV_DIR ${RESOURCES_PATH}/env)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-267-    else()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-268-        set(DEFAULT_VENV_DIR ${CMAKE_BINARY_DIR}/venv)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-269-    endif()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-270-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-271-    if (${CMAKE_HOST_WIN32})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-272-        # Windows Python3 is python.exe
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-273-        set(PY_EXEC python)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-274-        set(PYTHON ${DEFAULT_VENV_DIR}/Scripts/${PY_EXEC})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-275-    else()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-276-        set(PY_EXEC python3)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-277-        set(PYTHON ${DEFAULT_VENV_DIR}/bin/${PY_EXEC})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-278-    endif()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-279-    set(PYTHON ${PYTHON} PARENT_SCOPE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-280-    set(PYTHON_VENV ${DEFAULT_VENV_DIR} PARENT_SCOPE)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-281-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-282-    if (EXISTS ${PYTHON})
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-283-        message(STATUS "Using existing python at ${PYTHON}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-284-        return()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-285-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-286-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-287-    # If environment is not found, find a supported Python version
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-288-    # and create it.
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-289-    find_package(Python3 3.10...<3.13
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-290-            COMPONENTS Interpreter
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-291-            REQUIRED)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-292-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-293-    if (NOT Python3_FOUND)
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-294-        message(FATAL_ERROR "Required version of Python3 not found!")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-295-    else()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-296-        message(STATUS "Python3 (v${Python3_VERSION}) found: ${Python3_EXECUTABLE}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-297-    endif()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-298-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-299-    message(STATUS "Configuring python environment at ${PYTHON}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-300-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-301-    execute_process(
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-302-        COMMAND ${Python3_EXECUTABLE} -m venv ${DEFAULT_VENV_DIR}
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-303-        RESULT_VARIABLE return_code
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-304-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-305-    if (NOT return_code STREQUAL "0")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-306-        message(FATAL_ERROR "Failed to setup Python3 environment. Return code: ${return_code}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-307-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-308-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-309-    execute_process(
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-310-        COMMAND ${PYTHON} -m pip install --upgrade pip
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-311-        RESULT_VARIABLE return_code
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-312-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-313-    if (NOT return_code EQUAL "0")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-314-        message(FATAL_ERROR "Failed to upgrade pip")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-315-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-316-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-317-    execute_process(
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-318-        COMMAND ${PYTHON} -m pip install wheel
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-319-        RESULT_VARIABLE return_code
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-320-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-321-    if (NOT return_code EQUAL "0")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-322-        message(FATAL_ERROR "Failed to install wheel")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-323-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-324-
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-325-    execute_process(
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-326-        COMMAND ${PYTHON} -m pip install -r ${MLEK_SCRIPTS_DIR}/py/requirements.txt
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-327-        RESULT_VARIABLE return_code
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-328-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-329-    if (NOT return_code EQUAL "0")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-330-        message(FATAL_ERROR "Failed to install requirements")
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-331-    endif ()
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake-332-endfunction()
+
+===== FIND MODEL GENERATOR TEMPLATE AND SCRIPT =====
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/templates/tflite.cc.template
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py
+
+===== MODEL AND TENSOR INTERFACE HEADER LOCATIONS =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp
+
+===== MODEL INTERFACE DECLARATIONS =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-41-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-42-    /** @brief Constructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-43-    TflmModel();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-44-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-45-    /** @brief Destructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-46-    virtual ~TflmModel() = default;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-47-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-48-    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:49:    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-50-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-51-    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:52:    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-53-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-54-    /** @brief  Gets the model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-55-    iface::TensorType GetType() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-56-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-57-    /** @brief  Gets the pointer to the model's input shape. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-58-    std::vector<size_t> GetInputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-59-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-60-    /** @brief  Gets the pointer to the model's output shape at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-61-    std::vector<size_t> GetOutputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-62-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-63-    /** @brief  Gets the number of input tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:64:    size_t GetNumInputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-65-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-66-    /** @brief  Gets the number of output tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:67:    size_t GetNumOutputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-68-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-69-    /** @brief  Logs the tensor information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-70-    void LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor) override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-71-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-72-    /** @brief  Logs the interpreter information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-73-    void LogInterpreterInfo() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-74-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-75-    /** @brief      Initialise the model class object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-76-     *  @return     true if initialisation succeeds, false otherwise.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-77-     **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-78-    bool Init(iface::MemoryRegion& computeBuffer,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-79-              iface::MemoryRegion& nnModel,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-80-              const void* backendData = nullptr) override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-81-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-82-    /** @brief  Checks if this object has been initialised. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-83-    bool IsInited() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-84-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-85-    /** @brief  Checks if the model uses signed data. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-86-    bool IsDataSigned() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-87-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-88-    /** @brief Checks if the model uses Ethos-U operator */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-89-    bool ContainsEthosUOperator() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-90-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-91-    /** @brief  Runs the inference (invokes the interpreter). */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:92:    bool RunInference() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-93-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-94-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-95-     * @brief   Gets memory region information for the backend's compute buffer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-96-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-97-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-98-    const iface::MemoryRegion& GetComputeBuffer() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-99-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-100-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-101-     * @brief   Gets memory region information for neural network model.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-102-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-103-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-104-    const iface::MemoryRegion& GetModelBuffer() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-105-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-106-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-107-     * @brief       Gets TensorFlow Lite Micro backend data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-108-     * @return      Backend data, with pointers to the model, memory allocator and interpreter.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-109-     **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-110-    const TflmBackendData& GetBackendData() const;
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-40-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-41-    /** @brief Constructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-42-    Model() = default;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-43-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-44-    /** @brief Destructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-45-    virtual ~Model() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-46-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-47-    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:48:    virtual std::shared_ptr<TensorIface> GetInputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-49-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-50-    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:51:    virtual std::shared_ptr<TensorIface> GetOutputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-52-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-53-    /** @brief  Gets the model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-54-    virtual TensorType GetType() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-55-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-56-    /** @brief  Gets the pointer to the model's input shape. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-57-    virtual std::vector<size_t> GetInputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-58-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-59-    /** @brief  Gets the pointer to the model's output shape at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-60-    virtual std::vector<size_t> GetOutputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-61-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-62-    /** @brief  Gets the number of input tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:63:    virtual size_t GetNumInputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-64-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-65-    /** @brief  Gets the number of output tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:66:    virtual size_t GetNumOutputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-67-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-68-    /** @brief  Logs the tensor information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-69-    virtual void LogTensorInfo(std::shared_ptr<TensorIface> tensor) = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-70-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-71-    /** @brief  Logs the interpreter information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-72-    virtual void LogInterpreterInfo() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-73-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-74-    /** @brief      Initialise the model class object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-75-     *  @return     true if initialisation succeeds, false otherwise.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-76-     **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-77-    virtual bool
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-78-    Init(MemoryRegion& computeBuffer, MemoryRegion& nnModel, const void* backendData) = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-79-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-80-    /** @brief  Checks if this object has been initialised. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-81-    virtual bool IsInited() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-82-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-83-    /** @brief  Checks if the model uses signed data. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-84-    virtual bool IsDataSigned() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-85-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-86-    /** @brief Checks if the model uses Ethos-U operator */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-87-    virtual bool ContainsEthosUOperator() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-88-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-89-    /** @brief  Runs the inference (invokes the interpreter). */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:90:    virtual bool RunInference() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-91-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-92-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-93-     * @brief   Gets memory region information for the backend's compute buffer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-94-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-95-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-96-    virtual const MemoryRegion& GetComputeBuffer() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-97-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-98-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-99-     * @brief   Gets memory region information for neural network model.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-100-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-101-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-102-    virtual const MemoryRegion& GetModelBuffer() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-103-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-104-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-105-inline Model::~Model() {}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-106-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-107-} /* namespace arm::app::fwk::iface */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-108-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-48-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-49-    /** @brief Constructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-50-    EtModel();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-51-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-52-    /** @brief Destructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-53-    virtual ~EtModel();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-54-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-55-    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:56:    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-57-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-58-    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:59:    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-60-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-61-    /** @brief  Gets the model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-62-    iface::TensorType GetType() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-63-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-64-    /** @brief  Gets the pointer to the model's input shape. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-65-    std::vector<size_t> GetInputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-66-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-67-    /** @brief  Gets the pointer to the model's output shape at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-68-    std::vector<size_t> GetOutputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-69-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-70-    /** @brief  Gets the number of input tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:71:    size_t GetNumInputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-72-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-73-    /** @brief  Gets the number of output tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:74:    size_t GetNumOutputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-75-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-76-    /** @brief  Logs the tensor information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-77-    void LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor) override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-78-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-79-    /** @brief  Logs the interpreter information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-80-    void LogInterpreterInfo() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-81-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-82-    /** @brief Logs overall runtime memory usage to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-83-    void LogMemoryUsage() const;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-84-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-85-    /** @brief Logs operators from the ExecuTorch program to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-86-    void LogOperatorInfo();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-87-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-88-    /** @brief      Initialise the model class object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-89-     *  @return     true if initialisation succeeds, false otherwise.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-90-     **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-91-    bool Init(iface::MemoryRegion& computeBuffer,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-92-              iface::MemoryRegion& nnModel,
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-97-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-98-    /** @brief  Checks if the model uses signed data. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-99-    bool IsDataSigned() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-100-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-101-    /** @brief Checks if the model uses Ethos-U operator */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-102-    bool ContainsEthosUOperator() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-103-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-104-    /** @brief  Runs the inference (invokes the interpreter). */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:105:    bool RunInference() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-106-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-107-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-108-     * @brief   Gets memory region information for the backend's compute buffer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-109-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-110-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-111-    const iface::MemoryRegion& GetComputeBuffer() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-112-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-113-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-114-     * @brief   Gets memory region information for neural network model.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-115-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-116-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-117-    const iface::MemoryRegion& GetModelBuffer() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-118-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-119-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-120-     * @brief       Gets ExecuTorch backend data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-121-     * @return      Backend data
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-122-     **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-123-    const EtBackendData& GetBackendData() const;
+
+===== TENSOR TYPE SHAPE AND DATA API DECLARATIONS =====
+
+===== MEMORY REGION DECLARATION =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-19-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-20-#include "mlek/fwk/iface/Tensor.hpp"
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-21-#include <cstdint>
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-22-#include <memory>
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-23-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-24-namespace arm::app::fwk::iface {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-25-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-26-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-27- * @brief   Memory region used by underlying framework
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-28- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:29:struct MemoryRegion {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-30-    uint8_t* data{nullptr};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-31-    size_t size{0};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-32-    explicit MemoryRegion(uint8_t* addr, size_t bytes) : data(addr), size(bytes) {}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-33-    MemoryRegion() = default;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-34-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-35-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-36-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-37- * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-38- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-39-class Model {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-40-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-41-    /** @brief Constructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-42-    Model() = default;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-43-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-44-    /** @brief Destructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-45-    virtual ~Model() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-46-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-47-    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-48-    virtual std::shared_ptr<TensorIface> GetInputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-49-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-50-    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-51-    virtual std::shared_ptr<TensorIface> GetOutputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-52-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-53-    /** @brief  Gets the model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-54-    virtual TensorType GetType() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-55-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-56-    /** @brief  Gets the pointer to the model's input shape. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-57-    virtual std::vector<size_t> GetInputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-58-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-59-    /** @brief  Gets the pointer to the model's output shape at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-60-    virtual std::vector<size_t> GetOutputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-61-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-62-    /** @brief  Gets the number of input tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-63-    virtual size_t GetNumInputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-64-
+
+===== EXISTING MODEL TENSOR TYPE COMPARISONS =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-38-        if (data == nullptr) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-39-            printf_err("Data pointer is null");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-40-            return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-41-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-42-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-43-        auto src = static_cast<const uint8_t*>(data);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-44-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-45-        switch (this->m_inputTensor->Type()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc:46:        case fwk::iface::TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-47-            assert(inputSize == this->m_inputTensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-48-            image::ConvertUint8ToInt8(this->m_inputTensor->GetData<int8_t>(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-49-                                      src,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-50-                                      this->m_inputTensor->GetNumElements(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-51-                                      this->m_inputTensor->Layout());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-52-            break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc:53:        case fwk::iface::TensorType::UINT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-54-            assert(inputSize == this->m_inputTensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-55-            std::memcpy(this->m_inputTensor->GetData(), src, inputSize);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-56-            break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc:57:        case fwk::iface::TensorType::FP32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-58-            assert(inputSize * sizeof(float) == this->m_inputTensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-59-            return image::ConvertUint8ToFp32<kNumChannels>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-60-                this->m_inputTensor->GetData<float>(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-61-                src,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-62-                this->m_inputTensor->GetNumElements(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-63-                this->m_inputTensor->Layout(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-64-                this->m_mean,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/img_class/ImgClassProcessing.cc-65-                this->m_stddev);
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-130-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-131-AdPostProcess::AdPostProcess(const std::shared_ptr<fwk::iface::TensorIface> outputTensor) :
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-132-    m_outputTensor{outputTensor}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-133-{}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-134-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-135-bool AdPostProcess::DoPostProcess()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-136-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-137-    switch (this->m_outputTensor->Type()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc:138:    case fwk::iface::TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-139-        this->Dequantize<int8_t>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-140-        break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-141-    default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-142-        printf_err("Unsupported tensor type");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-143-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-144-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-145-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-146-    math::MathUtils::SoftmaxF32(this->m_dequantizedOutputVec);
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-163-                     float trainingMean)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-164-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-165-    std::function<void (std::vector<int16_t>&, size_t, bool, size_t, size_t)> melSpecFeatureCalc = nullptr;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-166-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-167-    auto quant = inputTensor->GetQuantParams();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-168-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-169-    if (quant.scale != 0) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-170-        switch (inputTensor->Type()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc:171:        case fwk::iface::TensorType::INT8: {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-172-            melSpecFeatureCalc = FeatureCalc<int8_t>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-173-                inputTensor, cacheSize, [=, &melSpec](const std::vector<int16_t>& audioDataWindow) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-174-                    return melSpec.MelSpecComputeQuant<int8_t>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-175-                        audioDataWindow, quant.scale, quant.offset, trainingMean);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-176-                });
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-177-            break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-178-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-179-        default:
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-65-        /* Floating point tensor data to be populated
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-66-         * NOTE: The assumption here is that the output tensor size isn't too
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-67-         * big and therefore, there's neglibible impact on heap usage. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-68-        std::vector<float> resultData(totalOutputSize);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-69-        resultData.resize(totalOutputSize);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-70-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-71-        /* Populate the floating point buffer */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-72-        switch (outputTensor->Type()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc:73:        case fwk::iface::TensorType::UINT8: {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-74-            uint8_t* tensor_buffer = outputTensor->GetData<uint8_t>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-75-            for (size_t i = 0; i < totalOutputSize; ++i) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-76-                resultData[i] =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-77-                    quantParams.scale * (static_cast<float>(tensor_buffer[i]) - quantParams.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-78-            }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-79-            break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-80-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc:81:        case fwk::iface::TensorType::INT8: {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-82-            int8_t* tensor_buffer = outputTensor->GetData<int8_t>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-83-            for (size_t i = 0; i < totalOutputSize; ++i) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-84-                resultData[i] =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-85-                    quantParams.scale * (static_cast<float>(tensor_buffer[i]) - quantParams.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-86-            }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-87-            break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-88-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc:89:        case fwk::iface::TensorType::FP32: {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-90-            float* tensor_buffer = outputTensor->GetData<float>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-91-            for (size_t i = 0; i < totalOutputSize; ++i) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-92-                resultData[i] = tensor_buffer[i];
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-93-            }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-94-            break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-95-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-96-        default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsClassifier.cc-97-            printf_err("Tensor type %s not supported by classifier\n",
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-162-                                        size_t cacheSize)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-163-    {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-164-        std::function<void (std::vector<int16_t>&, size_t, bool, size_t)> mfccFeatureCalc = nullptr;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-165-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-166-        auto quant = inputTensor->GetQuantParams();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-167-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-168-        if (quant.scale) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-169-            switch (inputTensor->Type()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc:170:            case fwk::iface::TensorType::INT8: {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-171-                mfccFeatureCalc = this->FeatureCalc<int8_t>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-172-                    inputTensor, cacheSize, [=, &mfcc](std::vector<int16_t>& audioDataWindow) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-173-                        return mfcc.MfccComputeQuant<int8_t>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-174-                            audioDataWindow, quant.scale, quant.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-175-                    });
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-176-                break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-177-            }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-178-            default:
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-90-        auto quantParams = this->m_inputTensor->GetQuantParams();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-91-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-92-        if (0 == quantParams.scale) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-93-            printf_err("Quantisation scale can't be 0\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-94-            return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-95-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-96-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-97-        switch (this->m_inputTensor->Type()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc:98:        case fwk::iface::TensorType::UINT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-99-            return this->Quantise<uint8_t>(this->m_inputTensor->GetData<uint8_t>(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-100-                                           this->m_inputTensor->Bytes(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-101-                                           quantParams.scale,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-102-                                           quantParams.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc:103:        case fwk::iface::TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-104-            return this->Quantise<int8_t>(this->m_inputTensor->GetData<int8_t>(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-105-                                          this->m_inputTensor->Bytes(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-106-                                          quantParams.scale,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-107-                                          quantParams.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-108-        default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-109-            printf_err("Unsupported tensor type %s\n",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-110-                       fwk::iface::GetTensorDataTypeName(this->m_inputTensor->Type()));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/Wav2LetterPreprocess.cc-111-        }
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-126-            }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-127-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-128-            /* To return the floating point values, we need quantization parameters. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-129-            auto quantParams = outputTensor->GetQuantParams();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-130-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-131-            bool resultState;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-132-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-133-            switch (outputTensor->Type()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc:134:            case fwk::iface::TensorType::UINT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-135-                resultState = this->GetTopResults<uint8_t>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-136-                    outputTensor, vecResults, labels, quantParams.scale, quantParams.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-137-                break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc:138:            case fwk::iface::TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-139-                resultState = this->GetTopResults<int8_t>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-140-                    outputTensor, vecResults, labels, quantParams.scale, quantParams.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-141-                break;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-142-            default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-143-                printf_err("Tensor type %s not supported by classifier\n",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-144-                           fwk::iface::GetTensorDataTypeName(outputTensor->Type()));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-145-                return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/asr/AsrClassifier.cc-146-            }
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-55-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-56-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-57-iface::TensorType TflmTensor::Type()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-58-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-59-    assert(this->m_tensor);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-60-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-61-    switch (this->m_tensor->type) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-62-    case kTfLiteUInt8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:63:        return iface::TensorType::UINT8;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-64-    case kTfLiteInt8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:65:        return iface::TensorType::INT8;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-66-    case kTfLiteInt16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:67:        return iface::TensorType::INT16;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-68-    case kTfLiteInt32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:69:        return iface::TensorType::INT32;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-70-    case kTfLiteFloat16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:71:        return iface::TensorType::FP16;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:72:    case kTfLiteFloat32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:73:        return iface::TensorType::FP32;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-74-    default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:75:        return iface::TensorType::INVALID;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-76-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-77-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-78-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-79-iface::TensorLayout TflmTensor::Layout()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-80-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-81-    return iface::TensorLayout::NHWC;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-82-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-83-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-127-    TflmBackendData m_backendData{};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-128-    bool m_inited{false}; /* Indicates whether this object has been initialised. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-129-    iface::MemoryRegion m_computeBuffer{};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-130-    iface::MemoryRegion m_modelBuffer{};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-131-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-132-    std::vector<std::shared_ptr<iface::TensorIface>> m_input{}; /* Model's input tensor pointers. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-133-    std::vector<std::shared_ptr<iface::TensorIface>>
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-134-        m_output{};                                       /* Model's output tensor pointers. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:135:    iface::TensorType m_type{iface::TensorType::INVALID}; /* Model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-136-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-137-} /* namespace arm::app::fwk::tflm */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-138-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-139-#endif /* MLEK_TFLM_MODEL_HPP */
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-312-bool TflmModel::IsInited() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-313-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-314-    return this->m_inited;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-315-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-316-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-317-bool TflmModel::IsDataSigned() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-318-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-319-    switch (this->GetType()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:320:    case iface::TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-321-        [[fallthrough]];
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:322:    case iface::TensorType::INT16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-323-        [[fallthrough]];
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:324:    case iface::TensorType::INT32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-325-        return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-326-    default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-327-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-328-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-329-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-330-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-331-bool TflmModel::ContainsEthosUOperator() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-332-{
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-39-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-40- * @brief       Gets the tensor data type name as character array.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-41- * @param[in]   type Tensor data type object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-42- * @return      String represented as const char pointer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-43- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-44-const inline char* GetTensorDataTypeName(const TensorType type)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-45-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-46-    switch (type) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:47:    case TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-48-        return "int8";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:49:    case TensorType::UINT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-50-        return "uint8";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:51:    case TensorType::INT16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-52-        return "int16";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:53:    case TensorType::INT32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-54-        return "int32";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:55:    case TensorType::FP16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-56-        return "fp16";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:57:    case TensorType::FP32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-58-        return "fp32";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-59-    default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-60-        return "unknown";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-61-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-62-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-63-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-64-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-65- * @brief       Gets the tensor data type name as character array.
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-81-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-82- * @brief       Gets the tensor element size in bytes.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-83- * @param[in]   type Tensor data type object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-84- * @return      Number of bytes as a signed integer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-85- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-86-inline int GetTensorDataTypeSize(const TensorType type)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-87-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-88-    switch (type) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:89:    case TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-90-        [[fallthrough]];
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:91:    case TensorType::UINT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-92-        return 1;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:93:    case TensorType::INT16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-94-        [[fallthrough]];
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:95:    case TensorType::FP16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-96-        return 2;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:97:    case TensorType::INT32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-98-        [[fallthrough]];
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:99:    case TensorType::FP32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-100-        return 4;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-101-    default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-102-        return 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-103-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-104-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-105-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-106-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-107- * @brief Tensor interface class.
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-434-bool EtModel::IsInited() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-435-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-436-    return this->m_inited;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-437-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-438-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-439-bool EtModel::IsDataSigned() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-440-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-441-    switch (this->GetType()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:442:    case iface::TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-443-        [[fallthrough]];
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:444:    case iface::TensorType::INT16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-445-        [[fallthrough]];
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:446:    case iface::TensorType::INT32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-447-        return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-448-    default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-449-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-450-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-451-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-452-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-453-bool EtModel::ContainsEthosUOperator() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-454-{
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-44-    auto sz = this->m_tensor.sizes();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-45-    return std::vector<size_t>(sz.begin(), sz.end());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-46-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-47-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-48-iface::TensorType EtTensor::Type()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-49-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-50-    switch (this->m_tensor.dtype()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-51-    case executorch::aten::ScalarType::QInt8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc:52:        return iface::TensorType::INT8;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-53-    case executorch::aten::ScalarType::QUInt8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc:54:        return iface::TensorType::UINT8;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-55-    case executorch::aten::ScalarType::Int:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc:56:        return iface::TensorType::INT32;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-57-    case executorch::aten::ScalarType::Float:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc:58:        return iface::TensorType::FP32;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-59-    default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc:60:        return iface::TensorType::INVALID;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-61-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-62-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-63-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-64-iface::TensorLayout EtTensor::Layout()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-65-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-66-    return iface::TensorLayout::NCHW;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-67-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.cc-68-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-141-        m_output{}; /**< Model's output tensor pointers. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-142-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-143-    std::vector<std::pair<executorch::aten::TensorImpl, size_t>>
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-144-        m_inputTensorImplMap{}; /**< ExecuTorch's tensor implementation vector mapping to index of
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-145-                                     inputs */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-146-    std::vector<executorch::aten::Tensor>
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-147-        m_outputTensor{}; /**< ExecuTorch output tensor (results are read from this space) */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-148-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:149:    iface::TensorType m_type{iface::TensorType::INVALID}; /**< Model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-150-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-151-} /* namespace arm::app::fwk::et */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-152-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp-153-#endif /* MLEK_ET_MODEL_HPP */
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/Classifier.cc-110-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/Classifier.cc-111-        /* Floating point tensor data to be populated
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/Classifier.cc-112-         * NOTE: The assumption here is that the output tensor size isn't too
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/Classifier.cc-113-         * big and therefore, there's neglibible impact on heap usage. */
+
+===== EXACT COMBINED MODEL PATH AND HASH =====
+-rw-rw-r-- 1 user user 11M Nov  5 21:13 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+60f5c826e709c5e86fe722acc8ec6d8e8e778a1229554223465e8cd016597278  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+
+===== CURRENT CMAKE CACHE MODEL PATH =====
+398:POLYU_MODEL_PATH:FILEPATH=/home/user/sdk-alif/beeinventor/test_heatstroke/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+
+===== END =====
