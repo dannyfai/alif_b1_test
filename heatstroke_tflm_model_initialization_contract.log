@@ -1,0 +1,852 @@
+===== TFLM MODEL INITIALIZATION CONTRACT =====
+Sun Nov  8 04:34:07 PM HKT 2026
+
+===== MODEL INTERFACE =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#ifndef MLEK_MODEL_HPP
+    18	#define MLEK_MODEL_HPP
+    19	
+    20	#include "mlek/fwk/iface/Tensor.hpp"
+    21	#include <cstdint>
+    22	#include <memory>
+    23	
+    24	namespace arm::app::fwk::iface {
+    25	
+    26	/**
+    27	 * @brief   Memory region used by underlying framework
+    28	 */
+    29	struct MemoryRegion {
+    30	    uint8_t* data{nullptr};
+    31	    size_t size{0};
+    32	    explicit MemoryRegion(uint8_t* addr, size_t bytes) : data(addr), size(bytes) {}
+    33	    MemoryRegion() = default;
+    34	};
+    35	
+    36	/**
+    37	 * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+    38	 */
+    39	class Model {
+    40	public:
+    41	    /** @brief Constructor. */
+    42	    Model() = default;
+    43	
+    44	    /** @brief Destructor. */
+    45	    virtual ~Model() = 0;
+    46	
+    47	    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+    48	    virtual std::shared_ptr<TensorIface> GetInputTensor(size_t index) const = 0;
+    49	
+    50	    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+    51	    virtual std::shared_ptr<TensorIface> GetOutputTensor(size_t index) const = 0;
+    52	
+    53	    /** @brief  Gets the model's data type. */
+    54	    virtual TensorType GetType() const = 0;
+    55	
+    56	    /** @brief  Gets the pointer to the model's input shape. */
+    57	    virtual std::vector<size_t> GetInputShape(size_t index) const = 0;
+    58	
+    59	    /** @brief  Gets the pointer to the model's output shape at given output index. */
+    60	    virtual std::vector<size_t> GetOutputShape(size_t index) const = 0;
+    61	
+    62	    /** @brief  Gets the number of input tensors the model has. */
+    63	    virtual size_t GetNumInputs() const = 0;
+    64	
+    65	    /** @brief  Gets the number of output tensors the model has. */
+    66	    virtual size_t GetNumOutputs() const = 0;
+    67	
+    68	    /** @brief  Logs the tensor information to stdout. */
+    69	    virtual void LogTensorInfo(std::shared_ptr<TensorIface> tensor) = 0;
+    70	
+    71	    /** @brief  Logs the interpreter information to stdout. */
+    72	    virtual void LogInterpreterInfo() = 0;
+    73	
+    74	    /** @brief      Initialise the model class object.
+    75	     *  @return     true if initialisation succeeds, false otherwise.
+    76	     **/
+    77	    virtual bool
+    78	    Init(MemoryRegion& computeBuffer, MemoryRegion& nnModel, const void* backendData) = 0;
+    79	
+    80	    /** @brief  Checks if this object has been initialised. */
+    81	    virtual bool IsInited() const = 0;
+    82	
+    83	    /** @brief  Checks if the model uses signed data. */
+    84	    virtual bool IsDataSigned() const = 0;
+    85	
+    86	    /** @brief Checks if the model uses Ethos-U operator */
+    87	    virtual bool ContainsEthosUOperator() const = 0;
+    88	
+    89	    /** @brief  Runs the inference (invokes the interpreter). */
+    90	    virtual bool RunInference() = 0;
+    91	
+    92	    /**
+    93	     * @brief   Gets memory region information for the backend's compute buffer.
+    94	     * @return  Const reference to MemoryRegion object.
+    95	     */
+    96	    virtual const MemoryRegion& GetComputeBuffer() const = 0;
+    97	
+    98	    /**
+    99	     * @brief   Gets memory region information for neural network model.
+   100	     * @return  Const reference to MemoryRegion object.
+   101	     */
+   102	    virtual const MemoryRegion& GetModelBuffer() const = 0;
+   103	};
+   104	
+   105	inline Model::~Model() {}
+   106	
+   107	} /* namespace arm::app::fwk::iface */
+   108	
+   109	#endif /* MLEK_MODEL_HPP */
+
+===== TFLM MODEL HEADER =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021-2023, 2025 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#ifndef MLEK_TFLM_MODEL_HPP
+    18	#define MLEK_TFLM_MODEL_HPP
+    19	
+    20	#include "mlek/fwk/iface/Model.hpp"
+    21	#include "mlek/fwk/tflm/TensorFlowLiteMicro.hpp"
+    22	#include <cstdint>
+    23	
+    24	namespace arm::app::fwk::tflm {
+    25	
+    26	/**
+    27	 * Backend data for TensorFlow Lite Micro framework.
+    28	 */
+    29	struct TflmBackendData {
+    30	    const tflite::Model* m_pModel{nullptr};        /**< Tflite model pointer. */
+    31	    tflite::MicroAllocator* m_pAllocator{nullptr}; /**< Tflite micro allocator. */
+    32	
+    33	    /** Tflite interpreter. */
+    34	    std::unique_ptr<tflite::MicroInterpreter> m_pInterpreter{nullptr};
+    35	};
+    36	
+    37	/**
+    38	 * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+    39	 */
+    40	class TflmModel : public iface::Model {
+    41	public:
+    42	    /** @brief Constructor. */
+    43	    TflmModel();
+    44	
+    45	    /** @brief Destructor. */
+    46	    virtual ~TflmModel() = default;
+    47	
+    48	    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+    49	    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+    50	
+    51	    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+    52	    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+    53	
+    54	    /** @brief  Gets the model's data type. */
+    55	    iface::TensorType GetType() const override;
+    56	
+    57	    /** @brief  Gets the pointer to the model's input shape. */
+    58	    std::vector<size_t> GetInputShape(size_t index) const override;
+    59	
+    60	    /** @brief  Gets the pointer to the model's output shape at given output index. */
+    61	    std::vector<size_t> GetOutputShape(size_t index) const override;
+    62	
+    63	    /** @brief  Gets the number of input tensors the model has. */
+    64	    size_t GetNumInputs() const override;
+    65	
+    66	    /** @brief  Gets the number of output tensors the model has. */
+    67	    size_t GetNumOutputs() const override;
+    68	
+    69	    /** @brief  Logs the tensor information to stdout. */
+    70	    void LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor) override;
+    71	
+    72	    /** @brief  Logs the interpreter information to stdout. */
+    73	    void LogInterpreterInfo() override;
+    74	
+    75	    /** @brief      Initialise the model class object.
+    76	     *  @return     true if initialisation succeeds, false otherwise.
+    77	     **/
+    78	    bool Init(iface::MemoryRegion& computeBuffer,
+    79	              iface::MemoryRegion& nnModel,
+    80	              const void* backendData = nullptr) override;
+    81	
+    82	    /** @brief  Checks if this object has been initialised. */
+    83	    bool IsInited() const override;
+    84	
+    85	    /** @brief  Checks if the model uses signed data. */
+    86	    bool IsDataSigned() const override;
+    87	
+    88	    /** @brief Checks if the model uses Ethos-U operator */
+    89	    bool ContainsEthosUOperator() const override;
+    90	
+    91	    /** @brief  Runs the inference (invokes the interpreter). */
+    92	    bool RunInference() override;
+    93	
+    94	    /**
+    95	     * @brief   Gets memory region information for the backend's compute buffer.
+    96	     * @return  Const reference to MemoryRegion object.
+    97	     */
+    98	    const iface::MemoryRegion& GetComputeBuffer() const override;
+    99	
+   100	    /**
+   101	     * @brief   Gets memory region information for neural network model.
+   102	     * @return  Const reference to MemoryRegion object.
+   103	     */
+   104	    const iface::MemoryRegion& GetModelBuffer() const override;
+   105	
+   106	    /**
+   107	     * @brief       Gets TensorFlow Lite Micro backend data.
+   108	     * @return      Backend data, with pointers to the model, memory allocator and interpreter.
+   109	     **/
+   110	    const TflmBackendData& GetBackendData() const;
+   111	
+   112	protected:
+   113	    /**
+   114	     * @brief       Gets the op resolver for the model instance.
+   115	     * @return      const reference to a tflite::MicroOpResolver object.
+   116	     **/
+   117	    virtual const tflite::MicroOpResolver& GetOpResolver() = 0;
+   118	
+   119	    /**
+   120	     * @brief       Add all the operators required for the given model.
+   121	     *              Implementation of this should come from the use case.
+   122	     * @return      true is ops are successfully added, false otherwise.
+   123	     **/
+   124	    virtual bool EnlistOperations() = 0;
+   125	
+   126	private:
+   127	    TflmBackendData m_backendData{};
+   128	    bool m_inited{false}; /* Indicates whether this object has been initialised. */
+   129	    iface::MemoryRegion m_computeBuffer{};
+   130	    iface::MemoryRegion m_modelBuffer{};
+   131	
+   132	    std::vector<std::shared_ptr<iface::TensorIface>> m_input{}; /* Model's input tensor pointers. */
+   133	    std::vector<std::shared_ptr<iface::TensorIface>>
+   134	        m_output{};                                       /* Model's output tensor pointers. */
+   135	    iface::TensorType m_type{iface::TensorType::INVALID}; /* Model's data type. */
+   136	};
+   137	} /* namespace arm::app::fwk::tflm */
+   138	
+   139	#endif /* MLEK_TFLM_MODEL_HPP */
+
+===== TFLM MODEL IMPLEMENTATION FILES =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TensorFlowLiteMicro.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TensorFlowLiteMicro.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc
+
+===== TFLM MODEL INITIALIZATION IMPLEMENTATION =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-91-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-92-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-93-        if (arena_shape->Get(0) == scratch_shape->Get(0)) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-94-            return "Sram_Only/Shared_Sram";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-95-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-96-        return "Dedicated_Sram";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-97-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-98-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-99-    return {};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-100-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-101-} /* anonymous namespace */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-102-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-103-TflmModel::TflmModel() {}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-104-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-105-/* Initialise the model */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:106:bool TflmModel::Init(iface::MemoryRegion& computeBuffer,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-107-                     iface::MemoryRegion& nnModel,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-108-                     const void* backendData)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-109-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-110-    /* Following tf lite micro example:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-111-     * Map the model into a usable data structure. This doesn't involve any
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-112-     * copying or parsing, it's a very lightweight operation. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-113-    debug("loading model from @ 0x%p\n", nnModel.data);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-114-    debug("model size: %" PRIu32 " bytes.\n", nnModel.size);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-115-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-116-    /* Enable logging before we start interacting with the framework. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-117-    EnableTFLMLog();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-118-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-119-    this->m_backendData.m_pModel = ::tflite::GetModel(nnModel.data);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-120-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-121-    if (this->m_backendData.m_pModel->version() != TFLITE_SCHEMA_VERSION) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-122-        printf_err("Model's schema version %" PRIu32 " is not equal "
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-123-                   "to supported version %d.",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-124-                   this->m_backendData.m_pModel->version(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-125-                   TFLITE_SCHEMA_VERSION);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-126-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-127-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-128-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-129-    this->m_computeBuffer = computeBuffer;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-130-    this->m_modelBuffer   = nnModel;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-131-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-132-    /* Pull in only the operation implementations we need.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-133-     * This relies on a complete list of all the ops needed by this graph.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-134-     * An easier approach is to just use the AllOpsResolver, but this will
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-135-     * incur some penalty in code space for op implementations that are not
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-136-     * needed by this graph.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-137-     * static ::tflite::ops::micro::AllOpsResolver resolver; */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-138-    /* NOLINTNEXTLINE(runtime-global-variables) */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-139-    debug("loading op resolver\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-140-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-141-    this->EnlistOperations();
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-202-        /* Clear the input & output tensors */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-203-        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-204-            std::memset(this->m_input[inIndex]->GetData(), 0, this->m_input[inIndex]->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-205-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-206-        for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-207-            std::memset(this->m_output[outIndex]->GetData(), 0, this->m_output[outIndex]->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-208-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-209-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-210-        this->LogInterpreterInfo();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-211-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-212-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-213-    this->m_inited = true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-214-    return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-215-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-216-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:217:std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-218-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-219-    if (index < this->GetNumInputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-220-        return this->m_input.at(index);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-221-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-222-    return {};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-223-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-224-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:225:std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-226-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-227-    if (index < this->GetNumOutputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-228-        return this->m_output.at(index);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-229-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-230-    return nullptr;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-231-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-232-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-233-void TflmModel::LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-234-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-235-    if (!tensor) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-236-        printf_err("Invalid tensor\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-237-        assert(tensor);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-238-        return;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-239-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-240-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-241-    debug("\ttensor is assigned to 0x%p\n", tensor.get());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-242-    info("\ttensor type is %s\n", GetTensorDataTypeName(tensor->Type()));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-243-    info("\ttensor occupies %zu bytes with dimensions\n", tensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-244-    const auto shape = tensor->Shape();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-245-    for (size_t i = 0; i < shape.size(); ++i) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-246-        info("\t\t%zu: %3d\n", i, static_cast<int>(shape[i]));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-247-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-248-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-249-    const auto quant = tensor->GetQuantParams();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-250-    info("Scale = %f\n", quant.scale);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-251-    info("ZeroPoint = %d\n", quant.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-252-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-253-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-254-void TflmModel::LogInterpreterInfo()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-255-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-256-    if (!this->m_backendData.m_pInterpreter) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-257-        printf_err("Invalid interpreter\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-258-        return;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-259-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-260-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-338-    /* check for custom operators */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-339-    for (size_t i = 0; (i < nOperators); ++i) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-340-        const tflite::Operator* op         = subgraph->operators()->Get(i);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-341-        const tflite::OperatorCode* opcode = opcodes->Get(op->opcode_index());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-342-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-343-        auto builtin_code = tflite::GetBuiltinCode(opcode);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-344-        if ((builtin_code == tflite::BuiltinOperator_CUSTOM) &&
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-345-            (nullptr != opcode->custom_code()) &&
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-346-            ("ethos-u" == std::string(opcode->custom_code()->c_str()))) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-347-            return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-348-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-349-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-350-    return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-351-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-352-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:353:bool TflmModel::RunInference()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-354-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-355-    bool inference_state = false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-356-    if (this->m_backendData.m_pModel && this->m_backendData.m_pInterpreter) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-357-        if (kTfLiteOk != this->m_backendData.m_pInterpreter->Invoke()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-358-            printf_err("Invoke failed.\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-359-        } else {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-360-            inference_state = true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-361-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-362-    } else {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-363-        printf_err("Error: No interpreter!\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-364-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-365-    return inference_state;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-366-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-367-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-368-size_t TflmModel::GetNumInputs() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-369-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-370-    if (this->m_backendData.m_pModel && this->m_backendData.m_pInterpreter) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-371-        return this->m_backendData.m_pInterpreter->inputs_size();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-372-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-373-    return 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-374-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-375-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-376-size_t TflmModel::GetNumOutputs() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-377-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-378-    if (this->m_backendData.m_pModel && this->m_backendData.m_pInterpreter) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-379-        return this->m_backendData.m_pInterpreter->outputs_size();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-380-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-381-    return 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-382-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-383-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-384-iface::TensorType TflmModel::GetType() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-385-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-386-    return this->m_type;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-387-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-388-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:389:std::vector<size_t> TflmModel::GetInputShape(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-390-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-391-    if (index < this->GetNumInputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-392-        return this->m_input.at(index)->Shape();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-393-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-394-    return std::vector<size_t>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-395-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-396-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:397:std::vector<size_t> TflmModel::GetOutputShape(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-398-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-399-    if (index < this->GetNumOutputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-400-        return this->m_output.at(index)->Shape();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-401-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-402-    return std::vector<size_t>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-403-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-404-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-405-/** @brief   Gets a pointer to the backend's compute buffer. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-406-const iface::MemoryRegion& TflmModel::GetComputeBuffer() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-407-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-408-    return std::ref(this->m_computeBuffer);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-409-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-410-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-411-/** @brief      Gets the pointer to the NN model data array. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-412-const iface::MemoryRegion& TflmModel::GetModelBuffer() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-413-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-414-    return std::ref(this->m_modelBuffer);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-415-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-416-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-417-const TflmBackendData& TflmModel::GetBackendData() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-418-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-419-    return std::ref(this->m_backendData);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-420-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-421-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-422-} /* namespace arm::app::fwk::tflm */
+
+===== TFLM TENSOR IMPLEMENTATION =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or
+     3	 * its affiliates <open-source-office@arm.com>
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 *
+     6	 * Licensed under the Apache License, Version 2.0 (the "License");
+     7	 * you may not use this file except in compliance with the License.
+     8	 * You may obtain a copy of the License at
+     9	 *
+    10	 *     http://www.apache.org/licenses/LICENSE-2.0
+    11	 *
+    12	 * Unless required by applicable law or agreed to in writing, software
+    13	 * distributed under the License is distributed on an "AS IS" BASIS,
+    14	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	 * See the License for the specific language governing permissions and
+    16	 * limitations under the License.
+    17	 */
+    18	
+    19	#ifndef MLEK_TFLM_TENSOR_HPP
+    20	#define MLEK_TFLM_TENSOR_HPP
+    21	
+    22	#include "mlek/fwk/iface/Tensor.hpp"
+    23	#include "mlek/fwk/tflm/TensorFlowLiteMicro.hpp"
+    24	#include <vector>
+    25	
+    26	namespace arm::app::fwk::tflm {
+    27	
+    28	class TflmTensor : public iface::TensorIface {
+    29	public:
+    30	    explicit TflmTensor(TfLiteTensor* tensor); /**< Constructor */
+    31	    ~TflmTensor() override = default;          /** Destructor */
+    32	    void* GetData() override;
+    33	    size_t Bytes() override;
+    34	    size_t GetNumElements() override;
+    35	    iface::TensorType Type() override;
+    36	    iface::TensorLayout Layout() override;
+    37	    std::vector<size_t> Shape() override;
+    38	    iface::QuantParams GetQuantParams() override;
+    39	
+    40	private:
+    41	    TfLiteTensor* m_tensor{nullptr};
+    42	};
+    43	
+    44	} // namespace arm::app::fwk::tflm
+    45	
+    46	#endif /* MLEK_TFLM_TENSOR_HPP */
+
+===== TFLM MEMORY AND INITIALIZATION CALL SITES =====
+
+===== CURRENT APPLICATION MODEL INITIALIZATION REFERENCES =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-3-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-4-#include "mlek/fwk/tflm/TflmModel.hpp"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-5-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-6-namespace arm::app::asr {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-7-extern const int g_FrameLength;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-8-extern const int g_FrameStride;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-9-extern const float g_ScoreThreshold;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-10-extern const int g_ctxLen;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-11-} // namespace arm::app::asr
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-12-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-13-namespace arm::app::fwk::tflm {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-14-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:15:class PolyUModel1 : public TflmModel {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-16-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-17-public:
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-18-    /* Indices for the expected model - based on input and output tensor shapes */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-19-    static constexpr uint32_t ms_inputRowsIdx  = 1;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-20-    static constexpr uint32_t ms_inputColsIdx  = 2;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-21-    static constexpr uint32_t ms_outputRowsIdx = 2;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-22-    static constexpr uint32_t ms_outputColsIdx = 3;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-23-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-24-    /* Model specific constants. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-25-    static constexpr uint32_t ms_blankTokenIdx   = 28;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-26-    static constexpr uint32_t ms_numMfccFeatures = 13;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-27-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-28-protected:
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-29-    /** @brief   Gets the reference to op resolver interface class. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-30-    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-31-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-32-    /** @brief   Adds operations to the op resolver instance. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-33-    bool EnlistOperations() override;
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-25- * distributed under the License is distributed on an "AS IS" BASIS,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-26- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-27- * See the License for the specific language governing permissions and
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-28- * limitations under the License.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-29- */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-30-#include "Labels.hpp"               /* For label strings. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-31-#include "UseCaseHandler.hpp"       /* Handlers for different user options. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-32-#include "BufAttributes.hpp"        /* Buffer attributes to be applied */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-33-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-34-/** Based on ML framework, set up the model namespace. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-35-#if defined(MLEK_FWK_TFLM)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-36-//#include "mlek/fwk/tflm/Wav2LetterModel.hpp"    /* Model class for running inference. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:37:#include "PolyUModel1.hpp"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-38-#include "mlek/use_case/asr/AsrClassifier.hpp"  /* Classifier. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-39-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:40:using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-41-#elif defined(MLEK_FWK_EXECUTORCH)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-42-#include "ConformerModel.hpp"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-43-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-44-using AsrModel = arm::app::fwk::et::ConformerModel;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-45-#endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-46-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-47-#include "power_mgr.h"             /* power management APIs */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-48-#include <zephyr/logging/log.h>
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-49-#include <zephyr/kernel.h>
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-50-#include <zephyr/drivers/gpio.h>
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-51-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-52-LOG_MODULE_REGISTER(MainLoop);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-53-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-54-#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-55-#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-56-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-57-#if LPGPIO_WAKEUP_ENABLED
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-58-/* LPGPIO wake up source is used */
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-66-#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-67-#endif
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-68-#else
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-69-#define LPGPIO_EWIC_CFG 0
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-70-#define LPGPIO_WAKEUP_EVENT 0
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-71-#endif
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-72-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-73-namespace arm {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-74-namespace app {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-75-    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-76-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-77-    namespace asr {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:78:        extern uint8_t* GetModelPointer();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:79:        extern size_t GetModelLen();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-80-    } /* namespace asr */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-81-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-82-} /* namespace app */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-83-} /* namespace arm */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-84-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-85-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-86-#if LPGPIO_WAKEUP_ENABLED
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-87-static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-88-	DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-89-#endif
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-90-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-91-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-92-extern volatile uint8_t button_pressed;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-93-static struct gpio_callback button_cb_data;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-94-static bool por_boot;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-95-static struct k_sem button_wait_sem;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-96-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-97-static void button_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-169-static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-170-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-171-void MainLoop()
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-172-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-173-	por_boot = true;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-174-	k_sem_init(&button_wait_sem, 0, 1);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-175-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-176-	if (configure_lpgpio()) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-177-		LOG_ERR("Failed to configure LPGPIO for button input");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-178-		return;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-179-	}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-180-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:181:    PolyUModel1 model; /* Model wrapper object. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-182-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:183:    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:184:                                                arm::app::asr::GetModelLen()};
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:185:    arm::app::fwk::iface::MemoryRegion computeMem{arm::app::activationBuf,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-186-                                                  sizeof(arm::app::activationBuf)};
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-187-	LOG_INF("=====================\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:188:	LOG_INF("Model Ptr: 0x%X", arm::app::asr::GetModelPointer());
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:189:	LOG_INF("Model Size: %d", arm::app::asr::GetModelLen());
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-190-	LOG_INF("Model data pointer: 0x%X", modelMem.data);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-191-	LOG_INF("Model Subgraph: %d", ::tflite::GetModel(modelMem.data)->subgraphs()->size());
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-192-	const ::tflite::SubGraph* subgraph = ::tflite::GetModel(modelMem.data)->subgraphs()->Get(0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-193-	uint32_t operators_size = ::tflite::NumSubgraphOperators(subgraph);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-194-	LOG_INF("Operators Size : %d", operators_size);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-195-	#include "tensorflow/lite/micro/micro_allocator.h"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-196-	LOG_INF("Node&Reg Size : %d (Total: %d)", sizeof(::tflite::NodeAndRegistration), sizeof(::tflite::NodeAndRegistration) * operators_size);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-197-	
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-198-    /* Load the model. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-199-    if (!model.Init(computeMem, modelMem)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-200-        LOG_ERR("Failed to initialise model");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-201-        return;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-202-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-203-	LOG_INF("Init model: OK!");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-204-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-205-    if (!VerifyTensorDimensions(model)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-206-        LOG_ERR("Model's input or output dimension verification failed");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-207-        return;
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-254-// #if CONFIG_PUSH_TO_TALK
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-255-// 		power_mgr_allow_sleep();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-256-// 		/* In sleep.overlay, min-residency-us is 1s, so sleep for longer than,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-257-// 		   that to ensure we enter the deepest sleep state. Which in Alif
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-258-// 		   chip is STOP mode. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-259-// #endif
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-260-// 	}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-261-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-262-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-263-static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-264-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-265-    /* Populate tensor related parameters. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:266:    auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-267-	LOG_ERR("Input tensor size = %d\n", inputTensor->Shape().size());
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-268-    if (inputTensor->Shape().empty()) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-269-        LOG_ERR("Invalid input tensor dims\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-270-        return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-271-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-272-    if (inputTensor->Shape().size() < 3) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-273-        LOG_ERR("Input tensor dimension should be >= 3\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-274-        return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-275-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-276-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:277:    auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-278-	LOG_ERR("Output tensor size = %d\n", outputTensor->Shape().size());
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-279-    if (outputTensor->Shape().empty()) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-280-        LOG_ERR("Invalid output tensor dims\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-281-        return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-282-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-283-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-284-    if (outputTensor->Shape().size() < 3) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-285-        LOG_ERR("Output tensor dimension should be >= 3\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-286-        return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-287-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-288-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-289-    return true;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc-290-}
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-150-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-151-	auto &model = ctx.Get<fwk::iface::Model &>("model");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-152-	auto mfccFrameLen = ctx.Get<uint32_t>("frameLength");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-153-	auto mfccFrameStride = ctx.Get<uint32_t>("frameStride");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-154-	auto scoreThreshold = ctx.Get<float>("scoreThreshold");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-155-	auto inputCtxLen = ctx.Get<uint32_t>("ctxLen");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-156-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-157-	if (!model.IsInited()) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-158-		LOG_ERR("Model is not initialised! Terminating processing.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-159-		return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-160-	}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-161-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:162:	const auto inputTensor = model.GetInputTensor(0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:163:	const auto outputTensor = model.GetOutputTensor(0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-164-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-165-	/* Get input shape. Dimensions of the tensor should have been verified by
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-166-	 * the callee. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-167-	auto inputShape = model.GetInputShape(0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-168-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-169-	const uint32_t inputRowsSize = inputShape[fwk::tflm::Wav2LetterModel::ms_inputRowsIdx];
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-170-	const uint32_t inputInnerLen = inputRowsSize - (2 * inputCtxLen);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-171-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-172-	/* Audio data stride corresponds to inputInnerLen feature vectors. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-173-	const uint32_t audioDataWindowLen = (inputRowsSize - 1) * mfccFrameStride + (mfccFrameLen);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-174-	const uint32_t audioDataWindowStride = inputInnerLen * mfccFrameStride;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-175-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-176-	/* NOTE: This is only used for time stamp calculation. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-177-	const float secondsPerSample = (1.0 / audio::Wav2LetterMFCC::ms_defaultSamplingFreq);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-178-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-179-	/* Set up pre and post-processing objects. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-180-	AsrPreProcess preProcess =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-181-		AsrPreProcess(inputTensor, fwk::tflm::Wav2LetterModel::ms_numMfccFeatures,
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-374-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-375-		const int16_t *inferenceWindow = audioDataSlider.Next();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-376-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-377-		LOG_INF("Inference %zu/%zu\n", audioDataSlider.Index() + 1,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-378-			static_cast<size_t>(ceilf(audioDataSlider.FractionalTotalStrides() + 1)));
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-379-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-380-		/* Run the pre-processing, inference and post-processing. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-381-		if (!preProcess.DoPreProcess(inferenceWindow, inferenceWindowLen)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-382-			LOG_ERR("Pre-processing failed.");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-383-			return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-384-		}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-385-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:386:		if (!model.RunInference()) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-387-			LOG_ERR("Inference failed.");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-388-			return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-389-		}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-390-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-391-		LOG_INF("NPU inference done.");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-392-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-393-		/* Post processing needs to know if we are on the last audio window. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-394-		postProcess.m_lastIteration = !audioDataSlider.HasNext();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-395-		if (!postProcess.DoPostProcess()) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-396-			LOG_ERR("Post-processing failed.");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-397-			return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-398-		}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-399-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-400-		/* Add results from this window to our final results vector. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-401-		finalResults.emplace_back(asr::AsrResult(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-402-			singleInfResult,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-403-			(audioDataSlider.Index() * secondsPerSample * audioDataWindowStride),
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-404-			audioDataSlider.Index(), scoreThreshold));
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-5- * Licensed under the Apache License, Version 2.0 (the "License");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-6- * you may not use this file except in compliance with the License.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-7- * You may obtain a copy of the License at
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-8- *
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-9- *     http://www.apache.org/licenses/LICENSE-2.0
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-10- *
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-11- * Unless required by applicable law or agreed to in writing, software
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-12- * distributed under the License is distributed on an "AS IS" BASIS,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-13- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-14- * See the License for the specific language governing permissions and
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-15- * limitations under the License.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-16- */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:17:#include "PolyUModel1.hpp"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-18-#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-19-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-20-#include "mlek/log/log_macros.h"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-21-#include "reverse_v2.h"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-22-#include "heatstroke_bidirectional_lstm.h"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-23-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:24:const tflite::MicroOpResolver& arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-25-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-26-    return this->m_opResolver;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-27-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-28-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-29-TfLiteStatus ParseReverseV2(const tflite::Operator*, tflite::ErrorReporter*, tflite::BuiltinDataAllocator*,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-30-                        void**) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-31-  return kTfLiteOk;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-32-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-33-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-34-TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-35-    const tflite::Operator* op,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-36-    tflite::ErrorReporter* error_reporter,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-37-    tflite::BuiltinDataAllocator* allocator,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-38-    void** builtin_data) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-39-    return tflite::ParseOpData(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-40-        op,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-41-        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-42-        error_reporter,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-43-        allocator,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-44-        builtin_data);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-45-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-46-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-47-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:48:bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-49-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-50-#ifndef ETHOS_U_NPU_ASSUMED
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-51-    
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-52-    this->m_opResolver.AddStridedSlice();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-53-    this->m_opResolver.AddFullyConnected();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-54-    this->m_opResolver.AddReshape();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-55-    this->m_opResolver.AddAveragePool2D();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-56-    this->m_opResolver.AddUnpack();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-57-    this->m_opResolver.AddAdd();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-58-    this->m_opResolver.AddSplit();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-59-    this->m_opResolver.AddTanh();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-60-    this->m_opResolver.AddLogistic();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-61-    this->m_opResolver.AddMul();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-62-    this->m_opResolver.AddPack();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-63-    this->m_opResolver.AddConcatenation();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-64-    this->m_opResolver.AddTranspose();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-65-    this->m_opResolver.AddGather();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-66-    this->m_opResolver.AddMean();
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-181-target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-182-
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-183-
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-184-if (CONFIG_USE_APP_MENU)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-185-target_compile_definitions(app PRIVATE USE_APP_MENU)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-186-endif()
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-187-
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-188-target_sources(app PRIVATE
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-189-    src/application/main/Main.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-190-    src/use_case/alif_asr/src/MainLoop.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-191-	src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-192-    src/use_case/alif_asr/src/reverse_v2.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:193:    src/use_case/alif_asr/src/PolyUModel1.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-194-    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-195-	src/power/power_mgr.c
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-196-	~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-197-	${ASR_GENERATED_SOURCES}
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-198-)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-199-
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-200-set(SRC_MAIN "src/application/main/Main.cc")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-201-
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-202-list(APPEND SRC_MAIN_DEFS
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-203-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-204-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-205-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-206-
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-207-set_source_files_properties(${SRC_MAIN}
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-208-    PROPERTIES COMPILE_DEFINITIONS
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-209-    "${SRC_MAIN_DEFS}")
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-210-
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt-211-target_link_libraries(app PRIVATE
+
+===== END =====
