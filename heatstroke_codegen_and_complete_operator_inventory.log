@@ -1,0 +1,620 @@
+===== HEAT-STRESS CODEGEN AND OPERATOR INVENTORY =====
+Sun Nov  8 04:59:38 PM HKT 2026
+
+===== MODEL GENERATOR PYTHON MODULE =====
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py
+
+===== MODEL GENERATOR SOURCE =====
+     1	#  SPDX-FileCopyrightText:  Copyright 2021, 2023, 2026 Arm Limited and/or
+     2	#  its affiliates <open-source-office@arm.com>
+     3	#  SPDX-License-Identifier: Apache-2.0
+     4	#
+     5	#  Licensed under the Apache License, Version 2.0 (the "License");
+     6	#  you may not use this file except in compliance with the License.
+     7	#  You may obtain a copy of the License at
+     8	#
+     9	#      http://www.apache.org/licenses/LICENSE-2.0
+    10	#
+    11	#  Unless required by applicable law or agreed to in writing, software
+    12	#  distributed under the License is distributed on an "AS IS" BASIS,
+    13	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	#  See the License for the specific language governing permissions and
+    15	#  limitations under the License.
+    16	
+    17	"""
+    18	Utility script to generate model c file that can be included in the
+    19	project directly. This should be called as part of CMake framework
+    20	should the models need to be generated at configuration stage.
+    21	
+    22	This script is intentionally thin: it delegates validation to
+    23	format-specific modules and focuses on producing the .cc output.
+    24	"""
+    25	import binascii
+    26	from argparse import ArgumentParser
+    27	from pathlib import Path
+    28	
+    29	from jinja2 import Environment, FileSystemLoader
+    30	
+    31	from mlek_tools.gen.gen_utils import gen_header
+    32	from mlek_tools.validation.npu_validation import NpuValidationArgs
+    33	from mlek_tools.validation.pte_validator import validate_pte_model
+    34	from mlek_tools.validation.tflite_validator import validate_tflite_model
+    35	
+    36	
+    37	def get_model_data(model_path: str) -> list:
+    38	    """
+    39	    Reads a binary file and returns a C style array as a
+    40	    list of strings.
+    41	
+    42	    Argument:
+    43	        model_path:    path to the model.
+    44	
+    45	    Returns:
+    46	        list of strings
+    47	    """
+    48	    # Read raw bytes so we can emit a C array initializer.
+    49	    with open(model_path, 'rb') as model_file:
+    50	        data = model_file.read()
+    51	
+    52	    bytes_per_line = 32
+    53	    hex_digits_per_line = bytes_per_line * 2
+    54	    hexstream = binascii.hexlify(data).decode('utf-8')
+    55	    hexstring = '{'
+    56	
+    57	    for i in range(0, len(hexstream), 2):
+    58	        if 0 == (i % hex_digits_per_line):
+    59	            hexstring += "\n"
+    60	        hexstring += '0x' + hexstream[i:i + 2] + ", "
+    61	
+    62	    hexstring += '};\n'
+    63	    return [hexstring]
+    64	
+    65	
+    66	def main():
+    67	    """
+    68	    Generate models .cpp
+    69	    """
+    70	    # pylint: disable=duplicate-code
+    71	    parser = ArgumentParser()
+    72	
+    73	    parser.add_argument(
+    74	        "--model_path",
+    75	        help="Model path (.tflite or .pte)",
+    76	        required=True
+    77	    )
+    78	
+    79	    parser.add_argument(
+    80	        "--output_dir",
+    81	        help="Output directory",
+    82	        required=True
+    83	    )
+    84	
+    85	    parser.add_argument(
+    86	        '-e',
+    87	        '--expression',
+    88	        action='append',
+    89	        default=[],
+    90	        dest="expr"
+    91	    )
+    92	
+    93	    parser.add_argument(
+    94	        '--header',
+    95	        action='append',
+    96	        default=[],
+    97	        dest="headers"
+    98	    )
+    99	
+   100	    parser.add_argument(
+   101	        '-ns',
+   102	        '--namespaces',
+   103	        action='append',
+   104	        default=[],
+   105	        dest="namespaces"
+   106	    )
+   107	
+   108	    parser.add_argument(
+   109	        "--license_template",
+   110	        type=str,
+   111	        help="Header template file",
+   112	        default="header_template.txt"
+   113	    )
+   114	
+   115	    parser.add_argument(
+   116	        "--ethos_u_memory_mode",
+   117	        type=str,
+   118	        help="Arm Ethos-U NPU Vela memory mode (Shared_Sram, Sram_Only, Dedicated_Sram). "
+   119	             "If provided, model must be Arm Ethos-U NPU optimized.",
+   120	        default=None
+   121	    )
+   122	
+   123	    parser.add_argument(
+   124	        "--ethos_u_config",
+   125	        type=str,
+   126	        help="Arm Ethos-U NPU accelerator config (e.g. ethos-u55-128). "
+   127	             "If provided, model must be Arm Ethos-U NPU optimized.",
+   128	        default=None
+   129	    )
+   130	
+   131	    args = parser.parse_args()
+   132	    # pylint: enable=duplicate-code
+   133	
+   134	    env = Environment(loader=FileSystemLoader(Path(__file__).parent / 'templates'),
+   135	                      trim_blocks=True,
+   136	                      lstrip_blocks=True)
+   137	
+   138	    # Resolve and validate input path early to fail fast.
+   139	    model_path = Path(args.model_path)
+   140	    if not model_path.is_file():
+   141	        raise ValueError(f"{model_path} not found")
+   142	
+   143	    suffix = model_path.suffix.lower()
+   144	
+   145	    # Only validate Arm Ethos-U NPU metadata when those args are explicitly provided.
+   146	    validation_args = NpuValidationArgs(
+   147	        memory_mode=args.ethos_u_memory_mode,
+   148	        config=args.ethos_u_config,
+   149	    )
+   150	    if suffix == ".tflite":
+   151	        # TFLite validation runs only when args are set (it will early-return otherwise).
+   152	        validate_tflite_model(model_path, validation_args)
+   153	    elif suffix == ".pte":
+   154	        # PTE validation runs only when args are set (it will early-return otherwise).
+   155	        validate_pte_model(model_path, validation_args)
+   156	    else:
+   157	        raise ValueError(
+   158	            f"Unsupported model type for {model_path}. Expected .tflite or .pte."
+   159	        )
+   160	
+   161	    # Output filename mirrors the input model name with a .cc suffix.
+   162	    cpp_filename = (Path(args.output_dir) / (model_path.name + ".cc")).resolve()
+   163	    print(f"++ Converting {model_path.name} to\
+   164	    {cpp_filename.name}")
+   165	
+   166	    cpp_filename.parent.mkdir(exist_ok=True)
+   167	
+   168	    hdr = gen_header(env, args.license_template, model_path.name)
+   169	
+   170	    env \
+   171	        .get_template('tflite.cc.template') \
+   172	        .stream(common_template_header=hdr,
+   173	                model_data=get_model_data(str(model_path)),
+   174	                expressions=args.expr,
+   175	                additional_headers=args.headers,
+   176	                namespaces=args.namespaces).dump(str(cpp_filename))
+   177	
+   178	
+   179	if __name__ == '__main__':
+   180	    main()
+
+===== MODEL GENERATOR OUTPUT ACCESSORS =====
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-39-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-40-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-41-        "--audio_path",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-42-        help="Audio file path",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-43-        required=True
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-44-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-45-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-46-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py:47:        "--output_dir",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-48-        help="Output directory",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-49-        required=True
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-50-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-51-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-52-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-53-        "--sampling_rate",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-54-        type=int,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-55-        help="target sampling rate.",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-56-        default=16000
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-57-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-58-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-59-    parser.add_argument(
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-104-        args.audio_path, args.offset, args.duration
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-105-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-106-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-107-    resampled_audio = resample_audio_clip(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-108-        audio_sample, args.sampling_rate, args.mono, args.res_type, args.min_samples
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-109-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-110-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-111-    sf.write(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py:112:        path.join(args.output_dir, path.basename(args.audio_path)),
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-113-        resampled_audio.data,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-114-        resampled_audio.sample_rate
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-115-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-116-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-117-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-118-if __name__ == '__main__':
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_audio.py-119-    main()
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-29-from jinja2 import Environment, FileSystemLoader
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-30-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-31-from mlek_tools.gen.gen_utils import gen_header
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-32-from mlek_tools.validation.npu_validation import NpuValidationArgs
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-33-from mlek_tools.validation.pte_validator import validate_pte_model
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-34-from mlek_tools.validation.tflite_validator import validate_tflite_model
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-35-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-36-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py:37:def get_model_data(model_path: str) -> list:
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-38-    """
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-39-    Reads a binary file and returns a C style array as a
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-40-    list of strings.
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-41-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-42-    Argument:
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-43-        model_path:    path to the model.
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-44-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-45-    Returns:
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-46-        list of strings
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-47-    """
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-48-    # Read raw bytes so we can emit a C array initializer.
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-49-    with open(model_path, 'rb') as model_file:
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-72-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-73-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-74-        "--model_path",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-75-        help="Model path (.tflite or .pte)",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-76-        required=True
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-77-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-78-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-79-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py:80:        "--output_dir",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-81-        help="Output directory",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-82-        required=True
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-83-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-84-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-85-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-86-        '-e',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-87-        '--expression',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-88-        action='append',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-89-        default=[],
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-90-        dest="expr"
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-91-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-92-
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-94-        '--header',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-95-        action='append',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-96-        default=[],
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-97-        dest="headers"
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-98-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-99-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-100-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-101-        '-ns',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py:102:        '--namespaces',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-103-        action='append',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-104-        default=[],
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py:105:        dest="namespaces"
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-106-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-107-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-108-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-109-        "--license_template",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-110-        type=str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-111-        help="Header template file",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-112-        default="header_template.txt"
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-113-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-114-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-115-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-116-        "--ethos_u_memory_mode",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-117-        type=str,
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-154-        # PTE validation runs only when args are set (it will early-return otherwise).
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-155-        validate_pte_model(model_path, validation_args)
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-156-    else:
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-157-        raise ValueError(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-158-            f"Unsupported model type for {model_path}. Expected .tflite or .pte."
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-159-        )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-160-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-161-    # Output filename mirrors the input model name with a .cc suffix.
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py:162:    cpp_filename = (Path(args.output_dir) / (model_path.name + ".cc")).resolve()
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-163-    print(f"++ Converting {model_path.name} to\
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-164-    {cpp_filename.name}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-165-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-166-    cpp_filename.parent.mkdir(exist_ok=True)
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-167-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-168-    hdr = gen_header(env, args.license_template, model_path.name)
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-169-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-170-    env \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-171-        .get_template('tflite.cc.template') \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-172-        .stream(common_template_header=hdr,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py:173:                model_data=get_model_data(str(model_path)),
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-174-                expressions=args.expr,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-175-                additional_headers=args.headers,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py:176:                namespaces=args.namespaces).dump(str(cpp_filename))
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-177-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-178-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-179-if __name__ == '__main__':
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_model_cpp.py-180-    main()
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-80-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-81-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-82-def write_hpp_file(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-83-        template_params: TestDataParams,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-84-        header_filename: str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-85-        cc_file_path: str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-86-        header_template_file: str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-87-        header_folder_path: str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:88:        namespaces,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-89-        env
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-90-):
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-91-    """
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-92-    Write TestData.hpp and TestData.cc
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-93-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-94-    @param template_params:         Template parameters
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-95-    @param header_filename:         TestData.hpp path
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-96-    @param cc_file_path:            TestData.cc path
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-97-    @param header_template_file:    Header template file name
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-98-    @param header_folder_path:      Path to the header folder
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:99:    @param namespaces:              Namespaces to use
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-100-    @param env:                     Jinja2 environment
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-101-    """
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-102-    # pylint: disable=too-many-arguments,too-many-positional-arguments
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-103-    header_file_path = Path(header_folder_path) / header_filename
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-104-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-105-    print(f"++ Generating {header_file_path}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-106-    hdr = gen_header(env, header_template_file)
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-107-    env \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-108-        .get_template('tests/TestData.hpp.template') \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-109-        .stream(common_template_header=hdr,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-110-                ifm_count=template_params.ifm_count,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-111-                ofm_count=template_params.ofm_count,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-112-                ifm_params=template_params.ifm_params,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-113-                ofm_params=template_params.ofm_params,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:114:                namespaces=namespaces) \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-115-        .dump(str(header_file_path))
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-116-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-117-    env \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-118-        .get_template('tests/TestData.cc.template') \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-119-        .stream(common_template_header=hdr,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-120-                include_h=header_filename,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-121-                ifm_params=template_params.ifm_params,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-122-                ofm_params=template_params.ofm_params,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:123:                namespaces=namespaces) \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-124-        .dump(str(cc_file_path))
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-125-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-126-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-127-def write_individual_cc_file(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-128-        template_params: IofmParams,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-129-        header_filename: str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-130-        filename: str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-131-        cc_filename: Path,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-132-        header_template_file: str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-133-        data_folder_path: str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:134:        namespaces,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-135-        env
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-136-):
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-137-    """
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-138-    Write iofmdata.cc
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-139-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-140-    @param template_params:         Template parameters
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-141-    @param header_filename:         Header file name
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-142-    @param filename:                Input file name
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-143-    @param cc_filename:             iofmdata.cc file name
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-144-    @param header_template_file:    Header template file name
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-145-    @param data_folder_path:        Path to the folder containing the numpy file
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:146:    @param namespaces:              Namespaces to use
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-147-    @param env:                     Jinja2 environment
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-148-    """
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-149-    # pylint: disable=too-many-arguments,too-many-positional-arguments
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-150-    print(f"++ Converting {filename} to {cc_filename.name}")
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-151-    hdr = gen_header(env, header_template_file, filename)
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-152-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-153-    # Convert the image and write it to the cc file
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-154-    npy_filepath = Path(data_folder_path) / filename
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-155-    fm_data = (np.load(npy_filepath)).flatten()
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-156-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-157-    hex_line_generator = (', '.join(map(hex, sub_arr))
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-158-                          for sub_arr in np.array_split(fm_data, math.ceil(len(fm_data) / 20)))
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-159-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-160-    env \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-161-        .get_template('tests/iofmdata.cc.template') \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-162-        .stream(common_template_header=hdr,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-163-                include_h=header_filename,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-164-                var_name=template_params.var_name,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-165-                fm_data=hex_line_generator,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-166-                data_type=template_params.data_type,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:167:                namespaces=namespaces) \
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-168-        .dump(str(cc_filename))
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-169-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-170-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-171-def get_npy_vec_size(filename: str, data_folder_path: str) -> int:
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-172-    """
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-173-    Gets the size of the array in the npy file
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-174-    Args:
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-175-        filename:           npy file path.
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-176-        data_folder_path:   Path to the folder containing the numpy file.
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-177-    Return:
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-178-        size in bytes
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-179-    """
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-210-        template_params = IofmParams(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-211-            var_name=array_name,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-212-            size=get_npy_vec_size(filename, args.data_folder_path),
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-213-            data_type=get_data_type_str(filename, args.data_folder_path)
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-214-        )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-215-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-216-        write_individual_cc_file(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-217-            template_params, header_filename, filename, cc_filename, args.license_template,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:218:            args.data_folder_path, args.namespaces, env
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-219-        )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-220-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-221-        fm_params_list.append(template_params)
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-222-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-223-    return fm_params_list
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-224-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-225-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-226-def get_header_filename(use_case_filename):
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-227-    """
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-228-    Get the header file name from the use case file name
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-229-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-230-    @param use_case_filename:   The use case file name
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-271-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-272-        "--usecase",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-273-        type=str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-274-        default="",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-275-        help="Test data file suffix."
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-276-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-277-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-278-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:279:        "--namespaces",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-280-        action='append',
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-281-        default=[]
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-282-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-283-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-284-    parser.add_argument(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-285-        "--license_template",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-286-        type=str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-287-        help="Header template file",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-288-        default="header_template.txt"
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-289-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-290-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-291-    parser.add_argument(
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-327-        ifm_count=ifms_count,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-328-        ofm_count=ofms_count,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-329-        ifm_params=ifm_params,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-330-        ofm_params=ofm_params
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-331-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-332-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-333-    write_hpp_file(
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-334-        template_params, header_filename, common_cc_filepath, args.license_template,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py:335:        args.header_folder_path, args.namespaces, env
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-336-    )
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-337-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-338-
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-339-if __name__ == '__main__':
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_test_data_cpp.py-340-    main()
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_labels_cpp.py-63-        "--output_file_name",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_labels_cpp.py-64-        type=str,
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_labels_cpp.py-65-        help="Required output file name",
+/home/user/sdk-alif/modules/alif-mlek/scripts/py/mlek_tools/gen/gen_labels_cpp.py-66-        required=True
+
+===== ALL WEST BUILD CACHE LOCATIONS =====
+/home/user/sdk-alif/build_asr/CMakeCache.txt
+/home/user/sdk-alif/build_beacon/CMakeCache.txt
+/home/user/sdk-alif/build_ble_blinky/CMakeCache.txt
+/home/user/sdk-alif/build_bmi323/CMakeCache.txt
+/home/user/sdk-alif/build_bmi323_pm/CMakeCache.txt
+/home/user/sdk-alif/build/CMakeCache.txt
+/home/user/sdk-alif/build_helloworld/CMakeCache.txt
+/home/user/sdk-alif/build_kws_ethosu/CMakeCache.txt
+/home/user/sdk-alif/build_kws_ethosu/_deps/cmsis_nn-subbuild/CMakeCache.txt
+/home/user/sdk-alif/build_peripheral_nus/CMakeCache.txt
+/home/user/sdk-alif/build_tflm_ethosu/CMakeCache.txt
+
+===== EXISTING MODEL OPERATOR INVENTORY: HEADER =====
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1793695408.371183   10292 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1793695408.371357   10292 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1793695408.397989   10292 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1793695409.142537   10292 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1793695409.142724   10292 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+/home/user/onnx2tflite_env/lib/python3.12/site-packages/tensorflow/lite/python/interpreter.py:457: UserWarning:     Warning: tf.lite.Interpreter is deprecated and is scheduled for deletion in
+    TF 2.20. Please use the LiteRT interpreter from the ai_edge_litert package.
+    See the [migration guide](https://ai.google.dev/edge/litert/migration)
+    for details.
+    
+  warnings.warn(_INTERPRETER_DELETION_WARNING)
+==========================================================================================
+TFLITE OPERATOR INSPECTION
+==========================================================================================
+Model: export/combined_static_model_gelu_tanh_int32_indices_fp32.tflite
+
+MODEL INPUTS
+------------------------------------------------------------------------------------------
+x_values shape = [1, 900, 6] dtype = float32
+missing_mask shape = [1, 900, 6] dtype = float32
+x_mark shape = [1, 900, 3] dtype = float32
+worker_features shape = [1, 30] dtype = float32
+
+MODEL OUTPUTS
+------------------------------------------------------------------------------------------
+rpe_logits shape = [1, 4] dtype = float32
+psi_logits shape = [1, 4] dtype = float32
+
+OPERATOR COUNTS
+------------------------------------------------------------------------------------------
+ADD                                              51
+AVERAGE_POOL_2D                                   2
+BIDIRECTIONAL_SEQUENCE_LSTM                       2
+BROADCAST_ARGS                                    1
+BROADCAST_TO                                      1
+CAST                                             20
+CONCATENATION                                    11
+CONV_2D                                           8
+CUMSUM                                            1
+DIV                                              19
+EQUAL                                             2
+FLOOR_MOD                                         2
+FULLY_CONNECTED                                  25
+GATHER                                           24
+GREATER                                           3
+LOGICAL_AND                                       2
+LOGICAL_NOT                                       4
+MAXIMUM                                           3
+MEAN                                             24
+MIRROR_PAD                                        5
+MUL                                             100
+NEG                                               1
+RESHAPE                                          86
+RSQRT                                            10
+SELECT_V2                                         6
+SIGN                                              2
+SLICE                                             2
+SOFTMAX                                           1
+SPLIT_V                                           6
+SQRT                                              2
+SQUARE                                           10
+SUB                                              17
+SUM                                               3
+TANH                                             12
+TOPK_V2                                           1
+TRANSPOSE                                         8
+
+TOTAL OPERATORS: 477
+UNIQUE OPERATORS: 36
+
+OPERATOR DETAILS
+==========================================================================================
+
+Operator #0: GREATER
+  Inputs:
+    Tensor #3: missing_mask shape=[1, 900, 6] dtype=float32
+    Tensor #92: val_0 shape=[] dtype=float32
+  Outputs:
+    Tensor #107: gt shape=[1, 900, 6] dtype=bool
+
+Operator #1: SLICE
+  Inputs:
+    Tensor #5: worker_features shape=[1, 30] dtype=float32
+    Tensor #503: begin shape=[2] dtype=int32
+    Tensor #504: size shape=[2] dtype=int32
+  Outputs:
+    Tensor #108: slice_1 shape=[1, 18] dtype=float32
+
+Operator #2: CAST
+  Inputs:
+    Tensor #107: gt shape=[1, 900, 6] dtype=bool
+  Outputs:
+    Tensor #109: convert_element_type_default shape=[1, 900, 6] dtype=float32
+
+Operator #3: GREATER
+  Inputs:
+    Tensor #109: convert_element_type_default shape=[1, 900, 6] dtype=float32
+
+===== OPERATOR INVENTORY: UNIQUE OPERATOR NAMES =====
+
+===== OPERATOR INVENTORY: RELEVANT LSTM AND ETHOS-U ENTRIES =====
+2:I0000 00:00:1793695408.371183   10292 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+7:I0000 00:00:1793695409.142537   10292 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+36:BIDIRECTIONAL_SEQUENCE_LSTM                       2
+1761:Operator #246: BIDIRECTIONAL_SEQUENCE_LSTM
+2933:Operator #408: BIDIRECTIONAL_SEQUENCE_LSTM
+3706:Operator #246: BIDIRECTIONAL_SEQUENCE_LSTM                   version=1
+3868:Operator #408: BIDIRECTIONAL_SEQUENCE_LSTM                   version=1
+
+===== CURRENT RESOLVER REGISTRATION COUNTS =====
+grep: Unmatched ( or \(
+
+===== END =====
