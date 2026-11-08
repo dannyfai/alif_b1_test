@@ -1,0 +1,347 @@
+===== FOCUSED MLEK MODEL API REVIEW =====
+Sun Nov  8 04:31:24 PM HKT 2026
+
+===== POLYU MODEL WRAPPER FILE STATUS =====
+-rw-rw-r-- 1 user user 1345 Nov  5 16:47 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+-rw-rw-r-- 1 user user 3352 Nov  5 17:42 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+
+===== POLYU MODEL WRAPPER HEADER =====
+     1	#ifndef POLYU_MODEL1_HPP
+     2	#define POLYU_MODEL1_HPP
+     3	
+     4	#include "mlek/fwk/tflm/TflmModel.hpp"
+     5	
+     6	namespace arm::app::asr {
+     7	extern const int g_FrameLength;
+     8	extern const int g_FrameStride;
+     9	extern const float g_ScoreThreshold;
+    10	extern const int g_ctxLen;
+    11	} // namespace arm::app::asr
+    12	
+    13	namespace arm::app::fwk::tflm {
+    14	
+    15	class PolyUModel1 : public TflmModel {
+    16	
+    17	public:
+    18	    /* Indices for the expected model - based on input and output tensor shapes */
+    19	    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    20	    static constexpr uint32_t ms_inputColsIdx  = 2;
+    21	    static constexpr uint32_t ms_outputRowsIdx = 2;
+    22	    static constexpr uint32_t ms_outputColsIdx = 3;
+    23	
+    24	    /* Model specific constants. */
+    25	    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    26	    static constexpr uint32_t ms_numMfccFeatures = 13;
+    27	
+    28	protected:
+    29	    /** @brief   Gets the reference to op resolver interface class. */
+    30	    const tflite::MicroOpResolver& GetOpResolver() override;
+    31	
+    32	    /** @brief   Adds operations to the op resolver instance. */
+    33	    bool EnlistOperations() override;
+    34	
+    35	private:
+    36	    /* Maximum number of individual operations that can be enlisted. */
+    37	    static constexpr int ms_maxOpCnt = 24;
+    38	
+    39	    /* A mutable op resolver instance. */
+    40	    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+    41	};
+    42	
+    43	} /* namespace arm::app::fwk::tflm */
+    44	
+    45	#endif /* POLYU_MODEL1_HPP */
+
+===== POLYU MODEL WRAPPER IMPLEMENTATION =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#include "PolyUModel1.hpp"
+    18	#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+    19	
+    20	#include "mlek/log/log_macros.h"
+    21	#include "reverse_v2.h"
+    22	#include "heatstroke_bidirectional_lstm.h"
+    23	
+    24	const tflite::MicroOpResolver& arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    25	{
+    26	    return this->m_opResolver;
+    27	}
+    28	
+    29	TfLiteStatus ParseReverseV2(const tflite::Operator*, tflite::ErrorReporter*, tflite::BuiltinDataAllocator*,
+    30	                        void**) {
+    31	  return kTfLiteOk;
+    32	}
+    33	
+    34	TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+    35	    const tflite::Operator* op,
+    36	    tflite::ErrorReporter* error_reporter,
+    37	    tflite::BuiltinDataAllocator* allocator,
+    38	    void** builtin_data) {
+    39	    return tflite::ParseOpData(
+    40	        op,
+    41	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+    42	        error_reporter,
+    43	        allocator,
+    44	        builtin_data);
+    45	}
+    46	
+    47	
+    48	bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+    49	{
+    50	#ifndef ETHOS_U_NPU_ASSUMED
+    51	    
+    52	    this->m_opResolver.AddStridedSlice();
+    53	    this->m_opResolver.AddFullyConnected();
+    54	    this->m_opResolver.AddReshape();
+    55	    this->m_opResolver.AddAveragePool2D();
+    56	    this->m_opResolver.AddUnpack();
+    57	    this->m_opResolver.AddAdd();
+    58	    this->m_opResolver.AddSplit();
+    59	    this->m_opResolver.AddTanh();
+    60	    this->m_opResolver.AddLogistic();
+    61	    this->m_opResolver.AddMul();
+    62	    this->m_opResolver.AddPack();
+    63	    this->m_opResolver.AddConcatenation();
+    64	    this->m_opResolver.AddTranspose();
+    65	    this->m_opResolver.AddGather();
+    66	    this->m_opResolver.AddMean();
+    67	    this->m_opResolver.AddSquaredDifference();
+    68	    this->m_opResolver.AddRsqrt();
+    69	    this->m_opResolver.AddSub();
+    70	    this->m_opResolver.AddPad();
+    71	    this->m_opResolver.AddConv2D();
+    72	    this->m_opResolver.AddSoftmax();
+    73	    //this->m_opResolver.AddCustom("ReverseV2", tflite::Register_REVERSE_V2());
+    74	    const TFLMRegistration& registration = tflite::Register_REVERSE_V2();
+    75	    this->m_opResolver.AddBuiltin(tflite::BuiltinOperator_REVERSE_V2, registration,
+    76	                      ParseReverseV2);
+    77	
+    78	#endif
+    79	
+    80	    
+    81	    {
+    82	        const TFLMRegistration registration =
+    83	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+    84	
+    85	        if (this->m_opResolver.AddBuiltin(
+    86	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+    87	                registration, ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+    88	            return false;
+    89	        }
+    90	    }
+    91	
+    92	if (kTfLiteOk == this->m_opResolver.AddEthosU()) {
+    93	        info("Added %s support to op resolver\n", tflite::GetString_ETHOSU());
+    94	    } else {
+    95	        printf_err("Failed to add Arm NPU support to op resolver.");
+    96	        return false;
+    97	    }
+    98	    return true;
+    99	}
+
+===== MLEK FRAMEWORK INTERFACE HEADER FILES =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/ConformerModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtTensor.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/MobileNetModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/AdModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroNetKwsModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MobileNetModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TensorFlowLiteMicro.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TestModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/VisualWakeWordModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/Wav2LetterModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/YoloFastestModel.hpp
+
+===== MODEL CLASS AND MODEL API IN MLEK SOURCE =====
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:49:    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:52:    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:58:    std::vector<size_t> GetInputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:61:    std::vector<size_t> GetOutputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:64:    size_t GetNumInputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:67:    size_t GetNumOutputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:92:    bool RunInference() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:39:class Model {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:48:    virtual std::shared_ptr<TensorIface> GetInputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:51:    virtual std::shared_ptr<TensorIface> GetOutputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:57:    virtual std::vector<size_t> GetInputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:60:    virtual std::vector<size_t> GetOutputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:63:    virtual size_t GetNumInputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:66:    virtual size_t GetNumOutputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:90:    virtual bool RunInference() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:56:    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:59:    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:65:    std::vector<size_t> GetInputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:68:    std::vector<size_t> GetOutputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:71:    size_t GetNumInputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:74:    size_t GetNumOutputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.hpp:105:    bool RunInference() override;
+
+===== TENSOR INTERFACE COMPLETE DECLARATION =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or
+     3	 * its affiliates <open-source-office@arm.com>
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 *
+     6	 * Licensed under the Apache License, Version 2.0 (the "License");
+     7	 * you may not use this file except in compliance with the License.
+     8	 * You may obtain a copy of the License at
+     9	 *
+    10	 *     http://www.apache.org/licenses/LICENSE-2.0
+    11	 *
+    12	 * Unless required by applicable law or agreed to in writing, software
+    13	 * distributed under the License is distributed on an "AS IS" BASIS,
+    14	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	 * See the License for the specific language governing permissions and
+    16	 * limitations under the License.
+    17	 */
+    18	
+    19	#ifndef MLEK_TENSOR_HPP
+    20	#define MLEK_TENSOR_HPP
+    21	
+    22	#include <cstddef>
+    23	#include <vector>
+    24	
+    25	namespace arm::app::fwk::iface {
+    26	
+    27	/** Struct for quantization parameters. */
+    28	struct QuantParams {
+    29	    float scale{0.0};
+    30	    int offset{0};
+    31	};
+    32	
+    33	/** Enum representing tensor data types supported. */
+    34	enum class TensorType { INT8 = 0, UINT8 = 1, INT16 = 2, INT32 = 3, FP16 = 4, FP32 = 5, INVALID = 6 };
+    35	
+    36	/** Enum representing tensor layout. */
+    37	enum class TensorLayout { NHWC = 0, NCHW = 1, INVALID = 2 };
+    38	
+    39	/**
+    40	 * @brief       Gets the tensor data type name as character array.
+    41	 * @param[in]   type Tensor data type object.
+    42	 * @return      String represented as const char pointer.
+    43	 */
+    44	const inline char* GetTensorDataTypeName(const TensorType type)
+    45	{
+    46	    switch (type) {
+    47	    case TensorType::INT8:
+    48	        return "int8";
+    49	    case TensorType::UINT8:
+    50	        return "uint8";
+    51	    case TensorType::INT16:
+    52	        return "int16";
+    53	    case TensorType::INT32:
+    54	        return "int32";
+    55	    case TensorType::FP16:
+    56	        return "fp16";
+    57	    case TensorType::FP32:
+    58	        return "fp32";
+    59	    default:
+    60	        return "unknown";
+    61	    }
+    62	}
+    63	
+    64	/**
+    65	 * @brief       Gets the tensor data type name as character array.
+    66	 * @param[in]   type Tensor data type object.
+    67	 * @return      String represented as const char pointer.
+    68	 */
+    69	const inline char* GetTensorLayoutName(const TensorLayout layout)
+    70	{
+    71	    switch (layout) {
+    72	    case TensorLayout::NHWC:
+    73	        return "NHWC";
+    74	    case TensorLayout::NCHW:
+    75	        return "NCHW";
+    76	    default:
+    77	        return "unknown";
+    78	    }
+    79	}
+    80	
+    81	/**
+    82	 * @brief       Gets the tensor element size in bytes.
+    83	 * @param[in]   type Tensor data type object.
+    84	 * @return      Number of bytes as a signed integer.
+    85	 */
+    86	inline int GetTensorDataTypeSize(const TensorType type)
+    87	{
+    88	    switch (type) {
+    89	    case TensorType::INT8:
+    90	        [[fallthrough]];
+    91	    case TensorType::UINT8:
+    92	        return 1;
+    93	    case TensorType::INT16:
+    94	        [[fallthrough]];
+    95	    case TensorType::FP16:
+    96	        return 2;
+    97	    case TensorType::INT32:
+    98	        [[fallthrough]];
+    99	    case TensorType::FP32:
+   100	        return 4;
+   101	    default:
+   102	        return 0;
+   103	    }
+   104	}
+   105	
+   106	/**
+   107	 * @brief Tensor interface class.
+   108	 */
+   109	class TensorIface {
+   110	public:
+   111	    TensorIface()                        = default; /**< Constructor */
+   112	    virtual ~TensorIface()               = default; /** Destructor */
+   113	
+   114	    /** Gets pointer to actual tensor data. */
+   115	    virtual void* GetData()              = 0;
+   116	
+   117	    /** Gets number of bytes occupied by tensor data. */
+   118	    virtual size_t Bytes()               = 0;
+   119	
+   120	    /** Gets number of elements in the tensor (all dimensions combined). */
+   121	    virtual size_t GetNumElements()      = 0;
+   122	
+   123	    /** Gets the tensor data type. */
+   124	    virtual TensorType Type()            = 0;
+   125	
+   126	    /** Gets the tensor layout. */
+   127	    virtual TensorLayout Layout()        = 0;
+   128	
+   129	    /** Gets the tensor shape, expressed as a std::vector */
+   130	    virtual std::vector<size_t> Shape()  = 0;
+   131	
+   132	    /** Gets the quantization parameters for this tensor. */
+   133	    virtual QuantParams GetQuantParams() = 0;
+   134	
+   135	    /** Utility function to get the tensor data pointer in required pointer format. */
+   136	    template <typename T>
+   137	    T* GetData()
+   138	    {
+   139	        return reinterpret_cast<T*>(this->GetData());
+   140	    }
+   141	};
+   142	} // namespace arm::app::fwk::iface
+   143	
+   144	#endif /* MLEK_TENSOR_HPP */
+
+===== MODEL INITIALIZATION AND INFERENCE CALL SITES =====
+
+===== END =====
