@@ -1,0 +1,1420 @@
+===== HEAT-STRESS CMAKE AND MAINLOOP PATCH PREFLIGHT =====
+Sun Nov  8 08:06:49 PM HKT 2026
+
+===== APPLICATION CMAKE: COMPLETE FILE =====
+     1	# Copyright (C) Alif Semiconductor - All Rights Reserved.
+     2	# Use, distribution and modification of this code is permitted under the
+     3	# terms stated in the Alif Semiconductor Software License Agreement
+     4	#
+     5	# You should have received a copy of the Alif Semiconductor Software
+     6	# License Agreement with this file. If not, please write to:
+     7	# contact@alifsemi.com, or visit: https://alifsemi.com/license
+     8	
+     9	cmake_minimum_required(VERSION 3.20.0)
+    10	
+    11	if(NOT ospi-flash IN_LIST SNIPPET)
+    12	  set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+    13	endif()
+    14	
+    15	# Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+    16	# so the module is not auto-discovered and must be registered explicitly. Ask
+    17	# west for the module path instead of hardcoding the workspace layout.
+    18	execute_process(
+    19	    COMMAND west list --format "{abspath}" alif-mlek
+    20	    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    21	    OUTPUT_VARIABLE MLEK_ROOT
+    22	    OUTPUT_STRIP_TRAILING_WHITESPACE
+    23	    RESULT_VARIABLE MLEK_LIST_RESULT
+    24	    ERROR_QUIET
+    25	)
+    26	if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+    27	    message(FATAL_ERROR
+    28	        "alif-mlek module not found. Enable and fetch it first:\n"
+    29	        "  west config manifest.project-filter -- +alif-mlek\n"
+    30	        "  west update\n")
+    31	endif()
+    32	
+    33	# Register the MLEK Zephyr port as an extra Zephyr module
+    34	list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+    35	
+    36	# ---------------------------------------------------------------------------
+    37	# Ethos-U NPU selection
+    38	# ---------------------------------------------------------------------------
+    39	# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+    40	# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+    41	# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+    42	# the build and the Ethos-U driver targets the requested NPU. This overrides the
+    43	# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+    44	#
+    45	# The parsed value is also used to pick the correct Vela-compiled model below.
+    46	# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+    47	if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+    48	    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+    49	    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+    50	        set(_npu_arch "${CMAKE_MATCH_1}")
+    51	        set(_npu_macs "${CMAKE_MATCH_2}")
+    52	        if (_npu_arch STREQUAL "u55")
+    53	            set(_npu_prefix "H")
+    54	        elseif (_npu_arch STREQUAL "u65")
+    55	            set(_npu_prefix "Y")
+    56	        elseif (_npu_arch STREQUAL "u85")
+    57	            set(_npu_prefix "Z")
+    58	        else()
+    59	            message(FATAL_ERROR
+    60	                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+    61	                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+    62	        endif()
+    63	        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+    64	
+    65	        # Feed the matching Kconfig choice into the Zephyr configuration.
+    66	        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+    67	        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+    68	            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+    69	        message(STATUS
+    70	            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+    71	            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+    72	    else()
+    73	        message(FATAL_ERROR
+    74	            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+    75	            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+    76	    endif()
+    77	endif()
+    78	
+    79	find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+    80	
+    81	project(alif_asr)
+    82	
+    83	# Silence "changed in GCC 7.1" warnigns from C++ headers
+    84	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+    85	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+    86	
+    87	set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+    88	
+    89	set(ML_FRAMEWORK TensorFlowLiteMicro)
+    90	
+    91	# ---------------------------------------------------------------------------
+    92	# Build-time model and labels generation from MLEK resources
+    93	# ---------------------------------------------------------------------------
+    94	set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+    95	set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+    96	    "Path to MLEK resources (models compiled with Vela)")
+    97	setup_source_generator()
+    98	
+    99	# Source generation output directories
+   100	set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+   101	set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+   102	file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+   103	
+   104	message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+   105	message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+   106	
+   107	# Determine NPU config ID based on Zephyr Kconfig.
+   108	# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+   109	# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+   110	if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+   111	    if (CONFIG_ARM_ETHOS_U85_256)
+   112	        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+   113	    elseif (CONFIG_ARM_ETHOS_U55_256)
+   114	        set(ETHOS_U_NPU_CONFIG_ID "H256")
+   115	    else()
+   116	        set(ETHOS_U_NPU_CONFIG_ID "H128")
+   117	    endif()
+   118	endif()
+   119	
+   120	# Model file path
+   121	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_pipeline_dynamic_range.tflite
+   122	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_dynamic_range_quant.tflite
+   123	# set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/model1_static_quant_int8.tflite
+   124	set(POLYU_MODEL_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+   125	    CACHE FILEPATH "Path to the PolyU TFLite model (Vela-compiled)")
+   126	
+   127	if (NOT EXISTS ${POLYU_MODEL_PATH})
+   128	    message(FATAL_ERROR
+   129	        "PolyU model not found at ${POLYU_MODEL_PATH}\n")
+   130	endif()
+   131	
+   132	set(EXTRA_MODEL_CODE
+   133		"/* Model parameters for ${use_case} */"
+   134		"extern const int   g_FrameLength    = 512"
+   135		"extern const int   g_FrameStride    = 160"
+   136		"extern const int   g_ctxLen         = 98"
+   137		"extern const float g_ScoreThreshold = 0.5"
+   138		)
+   139	
+   140	# Generate model file
+   141	generate_model_code(
+   142	    MODEL_PATH  ${POLYU_MODEL_PATH}
+   143	    DESTINATION ${SRC_GEN_DIR}
+   144	    EXPRESSIONS ${EXTRA_MODEL_CODE}
+   145	    NAMESPACE   "arm" "app" "asr")
+   146	
+   147	# Generate labels C++ code
+   148	set(ASR_LABELS_FILE ${MLEK_ROOT}/resources/asr/labels/labels_wav2letter.txt)
+   149	
+   150	# Generate labels file
+   151	set(ASR_LABELS_CPP_FILE Labels)
+   152	generate_labels_code(
+   153	    INPUT           "${ASR_LABELS_FILE}"
+   154	    DESTINATION_SRC ${SRC_GEN_DIR}
+   155	    DESTINATION_HDR ${INC_GEN_DIR}
+   156	    OUTPUT_FILENAME "${ASR_LABELS_CPP_FILE}"
+   157	)
+   158	
+   159	# Collect the generated source files
+   160	file(GLOB ASR_GENERATED_SOURCES ${SRC_GEN_DIR}/*.cc)
+   161	
+   162	# Create static library
+   163	add_library(asr_iface INTERFACE)
+   164	
+   165	## Common include directories - public
+   166	target_include_directories(asr_iface
+   167	    INTERFACE
+   168		src/application/main/include)
+   169	
+   170	
+   171	target_include_directories(app PRIVATE
+   172	    src/application/main/include
+   173	    src/use_case/alif_asr/include
+   174		src/power
+   175		~/sdk-alif/alif/samples/modules/alif_common
+   176		~/sdk-alif/alif/samples/modules/alif_common/audio
+   177		~/sdk-alif/alif/samples/modules/alif_common/audio/include
+   178		 ${INC_GEN_DIR}
+   179	)
+   180	
+   181	target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+   182	
+   183	
+   184	if (CONFIG_USE_APP_MENU)
+   185	target_compile_definitions(app PRIVATE USE_APP_MENU)
+   186	endif()
+   187	
+   188	target_sources(app PRIVATE
+   189	    src/application/main/Main.cc
+   190	    src/use_case/alif_asr/src/MainLoop.cc
+   191		src/use_case/alif_asr/src/UseCaseHandlerTflm.cc
+   192	    src/use_case/alif_asr/src/reverse_v2.cc
+   193	    src/use_case/alif_asr/src/PolyUModel1.cc
+   194	    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+   195		src/power/power_mgr.c
+   196		~/sdk-alif/alif/samples/modules/alif_common/audio/AudioBackend.cpp
+   197		${ASR_GENERATED_SOURCES}
+   198	)
+   199	
+   200	set(SRC_MAIN "src/application/main/Main.cc")
+   201	
+   202	list(APPEND SRC_MAIN_DEFS
+   203	    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+   204	    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+   205	    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+   206	
+   207	set_source_files_properties(${SRC_MAIN}
+   208	    PROPERTIES COMPILE_DEFINITIONS
+   209	    "${SRC_MAIN_DEFS}")
+   210	
+   211	target_link_libraries(app PRIVATE
+   212		asr_iface
+   213	    mlek::asr_impl
+   214	)
+
+===== APPLICATION MAINLOOP: COMPLETE FILE =====
+     1	/* This file was ported to work on Alif Semiconductor devices. */
+     2	
+     3	/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+     4	 * Use, distribution and modification of this code is permitted under the
+     5	 * terms stated in the Alif Semiconductor Software License Agreement
+     6	 *
+     7	 * You should have received a copy of the Alif Semiconductor Software
+     8	 * License Agreement with this file. If not, please write to:
+     9	 * contact@alifsemi.com, or visit: https://alifsemi.com/license
+    10	 *
+    11	 */
+    12	
+    13	/*
+    14	 * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+    15	 * affiliates <open-source-office@arm.com>
+    16	 * SPDX-License-Identifier: Apache-2.0
+    17	 *
+    18	 * Licensed under the Apache License, Version 2.0 (the "License");
+    19	 * you may not use this file except in compliance with the License.
+    20	 * You may obtain a copy of the License at
+    21	 *
+    22	 *     http://www.apache.org/licenses/LICENSE-2.0
+    23	 *
+    24	 * Unless required by applicable law or agreed to in writing, software
+    25	 * distributed under the License is distributed on an "AS IS" BASIS,
+    26	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    27	 * See the License for the specific language governing permissions and
+    28	 * limitations under the License.
+    29	 */
+    30	#include "Labels.hpp"               /* For label strings. */
+    31	#include "UseCaseHandler.hpp"       /* Handlers for different user options. */
+    32	#include "BufAttributes.hpp"        /* Buffer attributes to be applied */
+    33	
+    34	/** Based on ML framework, set up the model namespace. */
+    35	#if defined(MLEK_FWK_TFLM)
+    36	//#include "mlek/fwk/tflm/Wav2LetterModel.hpp"    /* Model class for running inference. */
+    37	#include "PolyUModel1.hpp"
+    38	#include "mlek/use_case/asr/AsrClassifier.hpp"  /* Classifier. */
+    39	
+    40	using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+    41	#elif defined(MLEK_FWK_EXECUTORCH)
+    42	#include "ConformerModel.hpp"
+    43	
+    44	using AsrModel = arm::app::fwk::et::ConformerModel;
+    45	#endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+    46	
+    47	#include "power_mgr.h"             /* power management APIs */
+    48	#include <zephyr/logging/log.h>
+    49	#include <zephyr/kernel.h>
+    50	#include <zephyr/drivers/gpio.h>
+    51	
+    52	LOG_MODULE_REGISTER(MainLoop);
+    53	
+    54	#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+    55	#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+    56	
+    57	#if LPGPIO_WAKEUP_ENABLED
+    58	/* LPGPIO wake up source is used */
+    59	#define LPGPIO_EWIC_CFG EWIC_VBAT_GPIO
+    60	
+    61	#if CONFIG_LPGPIO_WAKEUP_SOURCE == 4
+    62	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO4
+    63	#elif CONFIG_LPGPIO_WAKEUP_SOURCE == 1
+    64	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO1
+    65	#else
+    66	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+    67	#endif
+    68	#else
+    69	#define LPGPIO_EWIC_CFG 0
+    70	#define LPGPIO_WAKEUP_EVENT 0
+    71	#endif
+    72	
+    73	namespace arm {
+    74	namespace app {
+    75	    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+    76	
+    77	    namespace asr {
+    78	        extern uint8_t* GetModelPointer();
+    79	        extern size_t GetModelLen();
+    80	    } /* namespace asr */
+    81	
+    82	} /* namespace app */
+    83	} /* namespace arm */
+    84	
+    85	
+    86	#if LPGPIO_WAKEUP_ENABLED
+    87	static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+    88		DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+    89	#endif
+    90	
+    91	
+    92	extern volatile uint8_t button_pressed;
+    93	static struct gpio_callback button_cb_data;
+    94	static bool por_boot;
+    95	static struct k_sem button_wait_sem;
+    96	
+    97	static void button_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+    98	{
+    99		ARG_UNUSED(dev);
+   100		ARG_UNUSED(cb);
+   101		ARG_UNUSED(pins);
+   102	
+   103		if (por_boot) {
+   104			/* Ignore button press event if it's from POR boot, as the button state may be unstable during POR. */
+   105			return;
+   106		}
+   107	
+   108		int val = gpio_pin_get_dt(&lpgpio_config);  // 1 = pressed, 0 = released
+   109	    if (val < 0) {
+   110	        LOG_ERR("Failed to read pin: %d", val);
+   111	        return;
+   112	    }
+   113	
+   114	    button_pressed = (val == 1);
+   115	    LOG_INF("Button %s", button_pressed ? "pressed" : "released");
+   116	
+   117		if (!k_sem_count_get(&button_wait_sem) && button_pressed) {
+   118			k_sem_give(&button_wait_sem);
+   119		}
+   120	}
+   121	
+   122	/**
+   123	 * Configure LPGPIO0 and LPGPIO1 as inputs with interrupts
+   124	 * With B1/E1C need to connect wire between SW5 (P5_7) and P15_0 to use button as Push-to-talk button.
+   125	 * With B1/E1C devkit you need to also remove resistor R64. */
+   126	static int configure_lpgpio(void)
+   127	{
+   128		int ret;
+   129		const struct gpio_dt_spec *spec = &lpgpio_config;
+   130	
+   131		if (!spec || !spec->port) {
+   132			/* Just ignore */
+   133			LOG_ERR("lpgpio invalid");
+   134			return -ENODEV;
+   135		}
+   136	
+   137		/* Configure LPGPIO0 for wakeup */
+   138		if (!gpio_is_ready_dt(spec)) {
+   139			LOG_ERR("LPGPIO0 device is not ready");
+   140			return -ENODEV;
+   141		}
+   142	
+   143		ret = gpio_pin_configure_dt(spec, GPIO_INPUT | spec->dt_flags);
+   144		if (ret != 0) {
+   145			LOG_ERR("Failed to configure LPGPIO as input: %d", ret);
+   146			return ret;
+   147		}
+   148	
+   149		ret = gpio_pin_interrupt_configure_dt(spec,
+   150						      GPIO_INT_EDGE_BOTH);
+   151		if (ret != 0) {
+   152			LOG_ERR("Failed to configure LPGPIO interrupt: %d", ret);
+   153			return ret;
+   154		}
+   155	
+   156		gpio_init_callback(&button_cb_data, button_callback, BIT(spec->pin));
+   157		ret = gpio_add_callback(spec->port, &button_cb_data);
+   158		if (ret != 0) {
+   159			LOG_ERR("Failed to add button callback: %d", ret);
+   160			return ret;
+   161		}
+   162	
+   163		LOG_INF("LPGPIO%d configured", spec->pin);
+   164	
+   165		return 0;
+   166	}
+   167	
+   168	/** @brief   Verify input and output tensor are of certain min dimensions. */
+   169	static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model);
+   170	
+   171	void MainLoop()
+   172	{
+   173		por_boot = true;
+   174		k_sem_init(&button_wait_sem, 0, 1);
+   175	
+   176		if (configure_lpgpio()) {
+   177			LOG_ERR("Failed to configure LPGPIO for button input");
+   178			return;
+   179		}
+   180	
+   181	    PolyUModel1 model; /* Model wrapper object. */
+   182	
+   183	    arm::app::fwk::iface::MemoryRegion modelMem{arm::app::asr::GetModelPointer(),
+   184	                                                arm::app::asr::GetModelLen()};
+   185	    arm::app::fwk::iface::MemoryRegion computeMem{arm::app::activationBuf,
+   186	                                                  sizeof(arm::app::activationBuf)};
+   187		LOG_INF("=====================\n");
+   188		LOG_INF("Model Ptr: 0x%X", arm::app::asr::GetModelPointer());
+   189		LOG_INF("Model Size: %d", arm::app::asr::GetModelLen());
+   190		LOG_INF("Model data pointer: 0x%X", modelMem.data);
+   191		LOG_INF("Model Subgraph: %d", ::tflite::GetModel(modelMem.data)->subgraphs()->size());
+   192		const ::tflite::SubGraph* subgraph = ::tflite::GetModel(modelMem.data)->subgraphs()->Get(0);
+   193		uint32_t operators_size = ::tflite::NumSubgraphOperators(subgraph);
+   194		LOG_INF("Operators Size : %d", operators_size);
+   195		#include "tensorflow/lite/micro/micro_allocator.h"
+   196		LOG_INF("Node&Reg Size : %d (Total: %d)", sizeof(::tflite::NodeAndRegistration), sizeof(::tflite::NodeAndRegistration) * operators_size);
+   197		
+   198	    /* Load the model. */
+   199	    if (!model.Init(computeMem, modelMem)) {
+   200	        LOG_ERR("Failed to initialise model");
+   201	        return;
+   202	    }
+   203		LOG_INF("Init model: OK!");
+   204	
+   205	    if (!VerifyTensorDimensions(model)) {
+   206	        LOG_ERR("Model's input or output dimension verification failed");
+   207	        return;
+   208	    }
+   209	
+   210	    /* Instantiate application context. */
+   211	    arm::app::ApplicationContext caseContext;
+   212	    std::vector <std::string> labels;
+   213	    GetLabelsVector(labels);
+   214	
+   215	// #if defined(MLEK_FWK_TFLM)
+   216	//     arm::app::AsrClassifier classifier{
+   217	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputRowsIdx,
+   218	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_inputColsIdx,
+   219	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputRowsIdx,
+   220	// 	arm::app::fwk::tflm::Wav2LetterModel::ms_outputColsIdx}; /* Classifier wrapper object. */
+   221	//     caseContext.Set<uint32_t>("frameLength", arm::app::asr::g_FrameLength);
+   222	//     caseContext.Set<uint32_t>("frameStride", arm::app::asr::g_FrameStride);
+   223	//     caseContext.Set<float>("scoreThreshold", arm::app::asr::g_ScoreThreshold);  /* Score threshold. */
+   224	//     caseContext.Set<uint32_t>("ctxLen", arm::app::asr::g_ctxLen);  /* Left and right context length (MFCC feat vectors). */
+   225	//     caseContext.Set<arm::app::AsrClassifier&>("classifier", classifier);
+   226	// #elif defined(MLEK_FWK_EXECUTORCH)
+   227	//     caseContext.Set<uint32_t>("melSpecWindowSize", arm::app::asr::g_melSpecWindowSize);
+   228	//     caseContext.Set<uint32_t>("melSpecHopSize", arm::app::asr::g_melSpecHopSize);
+   229	//     caseContext.Set<uint32_t>("chunkSize", arm::app::asr::g_chunkSize);
+   230	// #endif /** MLEK_FWK_TFLM or MLEK_FWK_EXECUTORCH */
+   231	//     caseContext.Set<arm::app::fwk::iface::Model&>("model", model);
+   232	//     caseContext.Set<const std::vector <std::string>&>("labels", labels);
+   233	
+   234	// 	power_mgr_allow_sleep();
+   235	// 	por_boot = false;
+   236	
+   237	// 	while (1) {
+   238	// #if CONFIG_PUSH_TO_TALK
+   239	// 		LOG_INF("Push to talk start by going to STOP mode. Press button to start capturing audio.\n");
+   240	// 		LOG_INF("Release the button to stop capturing audio.\n");
+   241	// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+   242	// 		k_sem_reset(&button_wait_sem);
+   243	// 		k_sem_take(&button_wait_sem, K_FOREVER);
+   244	// #else
+   245	// 		LOG_INF("Press the button to start capturing audio...\n");
+   246	// 		LOG_INF("Release the button to stop capturing audio.\n");
+   247	// 		LOG_INF("NOTE: If the button is not released, audio will be captured ~10 seconds.\n");
+   248	// #endif
+   249	
+   250	// 		power_mgr_disable_sleep();
+   251	
+   252	// 		// Set button press to false to start capturing audio. In button callback, button_pressed will be set to true once the button is released.
+   253	// 		ClassifyAudioHandler(caseContext);
+   254	// #if CONFIG_PUSH_TO_TALK
+   255	// 		power_mgr_allow_sleep();
+   256	// 		/* In sleep.overlay, min-residency-us is 1s, so sleep for longer than,
+   257	// 		   that to ensure we enter the deepest sleep state. Which in Alif
+   258	// 		   chip is STOP mode. */
+   259	// #endif
+   260	// 	}
+   261	}
+   262	
+   263	static bool VerifyTensorDimensions(const arm::app::fwk::iface::Model& model)
+   264	{
+   265	    /* Populate tensor related parameters. */
+   266	    auto inputTensor = model.GetInputTensor(0);
+   267		LOG_ERR("Input tensor size = %d\n", inputTensor->Shape().size());
+   268	    if (inputTensor->Shape().empty()) {
+   269	        LOG_ERR("Invalid input tensor dims\n");
+   270	        return false;
+   271	    }
+   272	    if (inputTensor->Shape().size() < 3) {
+   273	        LOG_ERR("Input tensor dimension should be >= 3\n");
+   274	        return false;
+   275	    }
+   276	
+   277	    auto outputTensor = model.GetOutputTensor(0);
+   278		LOG_ERR("Output tensor size = %d\n", outputTensor->Shape().size());
+   279	    if (outputTensor->Shape().empty()) {
+   280	        LOG_ERR("Invalid output tensor dims\n");
+   281	        return false;
+   282	    }
+   283	
+   284	    if (outputTensor->Shape().size() < 3) {
+   285	        LOG_ERR("Output tensor dimension should be >= 3\n");
+   286	        return false;
+   287	    }
+   288	
+   289	    return true;
+   290	}
+
+===== APPLICATION MODEL WRAPPER HEADER =====
+     1	#ifndef POLYU_MODEL1_HPP
+     2	#define POLYU_MODEL1_HPP
+     3	
+     4	#include "mlek/fwk/tflm/TflmModel.hpp"
+     5	
+     6	namespace arm::app::asr {
+     7	extern const int g_FrameLength;
+     8	extern const int g_FrameStride;
+     9	extern const float g_ScoreThreshold;
+    10	extern const int g_ctxLen;
+    11	} // namespace arm::app::asr
+    12	
+    13	namespace arm::app::fwk::tflm {
+    14	
+    15	class PolyUModel1 : public TflmModel {
+    16	
+    17	public:
+    18	    /* Indices for the expected model - based on input and output tensor shapes */
+    19	    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    20	    static constexpr uint32_t ms_inputColsIdx  = 2;
+    21	    static constexpr uint32_t ms_outputRowsIdx = 2;
+    22	    static constexpr uint32_t ms_outputColsIdx = 3;
+    23	
+    24	    /* Model specific constants. */
+    25	    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    26	    static constexpr uint32_t ms_numMfccFeatures = 13;
+    27	
+    28	protected:
+    29	    /** @brief   Gets the reference to op resolver interface class. */
+    30	    const tflite::MicroOpResolver& GetOpResolver() override;
+    31	
+    32	    /** @brief   Adds operations to the op resolver instance. */
+    33	    bool EnlistOperations() override;
+    34	
+    35	private:
+    36	    /* Maximum number of individual operations that can be enlisted. */
+    37	    static constexpr int ms_maxOpCnt = 32;
+    38	
+    39	    /* A mutable op resolver instance. */
+    40	    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+    41	};
+    42	
+    43	} /* namespace arm::app::fwk::tflm */
+    44	
+    45	#endif /* POLYU_MODEL1_HPP */
+
+===== APPLICATION MODEL WRAPPER IMPLEMENTATION =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+     3	 * SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Application-local heat-stress TFLM operator registrations.
+     6	 */
+     7	
+     8	#include "PolyUModel1.hpp"
+     9	
+    10	#include <cstdint>
+    11	
+    12	#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+    13	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    14	#include "tensorflow/lite/micro/micro_log.h"
+    15	
+    16	#include "mlek/log/log_macros.h"
+    17	#include "heatstroke_bidirectional_lstm.h"
+    18	
+    19	const tflite::MicroOpResolver&
+    20	arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    21	{
+    22	    return this->m_opResolver;
+    23	}
+    24	
+    25	namespace
+    26	{
+    27	
+    28	/*
+    29	 * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+    30	 * required by this implementation. Validate its options type and leave
+    31	 * builtin_data null.
+    32	 */
+    33	TfLiteStatus ParseHeatstrokeSign(
+    34	    const tflite::Operator* op,
+    35	    tflite::ErrorReporter*,
+    36	    tflite::BuiltinDataAllocator*,
+    37	    void** builtin_data)
+    38	{
+    39	    if (builtin_data != nullptr) {
+    40	        *builtin_data = nullptr;
+    41	    }
+    42	
+    43	    if (op == nullptr ||
+    44	        op->builtin_options_type() !=
+    45	            tflite::BuiltinOptions_SignOptions) {
+    46	        return kTfLiteError;
+    47	    }
+    48	
+    49	    return kTfLiteOk;
+    50	}
+    51	
+    52	/*
+    53	 * Application-local INT32 SIGN implementation.
+    54	 *
+    55	 * y = -1 when x < 0
+    56	 * y =  0 when x = 0
+    57	 * y =  1 when x > 0
+    58	 *
+    59	 * No temporary buffer or scratch allocation is required.
+    60	 */
+    61	TfLiteStatus HeatstrokeSignEval(
+    62	    TfLiteContext* context,
+    63	    TfLiteNode* node)
+    64	{
+    65	    if (context == nullptr || node == nullptr) {
+    66	        return kTfLiteError;
+    67	    }
+    68	
+    69	    const TfLiteEvalTensor* input =
+    70	        tflite::micro::GetEvalInput(context, node, 0);
+    71	
+    72	    TfLiteEvalTensor* output =
+    73	        tflite::micro::GetEvalOutput(context, node, 0);
+    74	
+    75	    if (input == nullptr || output == nullptr) {
+    76	        return kTfLiteError;
+    77	    }
+    78	
+    79	    if (input->type != kTfLiteInt32 ||
+    80	        output->type != kTfLiteInt32) {
+    81	        MicroPrintf(
+    82	            "Heatstroke SIGN requires INT32 input/output. "
+    83	            "Input=%d Output=%d",
+    84	            input->type,
+    85	            output->type);
+    86	        return kTfLiteError;
+    87	    }
+    88	
+    89	    const auto input_shape =
+    90	        tflite::micro::GetTensorShape(input);
+    91	
+    92	    const auto output_shape =
+    93	        tflite::micro::GetTensorShape(output);
+    94	
+    95	    const int input_count = input_shape.FlatSize();
+    96	    const int output_count = output_shape.FlatSize();
+    97	
+    98	    if (input_count < 0 || input_count != output_count) {
+    99	        MicroPrintf(
+   100	            "Heatstroke SIGN tensor element-count mismatch.");
+   101	        return kTfLiteError;
+   102	    }
+   103	
+   104	    const int32_t* input_data =
+   105	        tflite::micro::GetTensorData<int32_t>(input);
+   106	
+   107	    int32_t* output_data =
+   108	        tflite::micro::GetTensorData<int32_t>(output);
+   109	
+   110	    if (input_count > 0 &&
+   111	        (input_data == nullptr || output_data == nullptr)) {
+   112	        MicroPrintf(
+   113	            "Heatstroke SIGN received a null tensor data pointer.");
+   114	        return kTfLiteError;
+   115	    }
+   116	
+   117	    for (int i = 0; i < input_count; ++i) {
+   118	        const int32_t value = input_data[i];
+   119	
+   120	        output_data[i] =
+   121	            (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+   122	    }
+   123	
+   124	    return kTfLiteOk;
+   125	}
+   126	
+   127	TFLMRegistration RegisterHeatstrokeSignKernel()
+   128	{
+   129	    return tflite::micro::RegisterOp(
+   130	        nullptr,
+   131	        nullptr,
+   132	        HeatstrokeSignEval);
+   133	}
+   134	
+   135	} // namespace
+   136	
+   137	/*
+   138	 * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+   139	 * Keep its existing parser and implementation unchanged.
+   140	 */
+   141	TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+   142	    const tflite::Operator* op,
+   143	    tflite::ErrorReporter* error_reporter,
+   144	    tflite::BuiltinDataAllocator* allocator,
+   145	    void** builtin_data)
+   146	{
+   147	    return tflite::ParseOpData(
+   148	        op,
+   149	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   150	        error_reporter,
+   151	        allocator,
+   152	        builtin_data);
+   153	}
+   154	
+   155	bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+   156	{
+   157	#define HS_ADD_REQUIRED(method)                                      \
+   158	    do {                                                              \
+   159	        const TfLiteStatus status = this->m_opResolver.method();      \
+   160	        if (status != kTfLiteOk) {                                    \
+   161	            printf_err(                                               \
+   162	                "Failed to register heat-stress operator: %s\n",     \
+   163	                #method);                                             \
+   164	            return false;                                             \
+   165	        }                                                             \
+   166	    } while (0)
+   167	
+   168	    /*
+   169	     * 29 ordinary built-in operators required by the exact Vela model.
+   170	     * These CPU registrations must remain available with Ethos-U enabled.
+   171	     */
+   172	    HS_ADD_REQUIRED(AddAdd);
+   173	    HS_ADD_REQUIRED(AddBroadcastArgs);
+   174	    HS_ADD_REQUIRED(AddBroadcastTo);
+   175	    HS_ADD_REQUIRED(AddCast);
+   176	    HS_ADD_REQUIRED(AddConcatenation);
+   177	    HS_ADD_REQUIRED(AddCumSum);
+   178	    HS_ADD_REQUIRED(AddDequantize);
+   179	    HS_ADD_REQUIRED(AddDiv);
+   180	    HS_ADD_REQUIRED(AddEqual);
+   181	    HS_ADD_REQUIRED(AddFloorMod);
+   182	    HS_ADD_REQUIRED(AddGather);
+   183	    HS_ADD_REQUIRED(AddGreater);
+   184	    HS_ADD_REQUIRED(AddLogicalAnd);
+   185	    HS_ADD_REQUIRED(AddLogicalNot);
+   186	    HS_ADD_REQUIRED(AddMaximum);
+   187	    HS_ADD_REQUIRED(AddMean);
+   188	    HS_ADD_REQUIRED(AddMul);
+   189	    HS_ADD_REQUIRED(AddNeg);
+   190	    HS_ADD_REQUIRED(AddQuantize);
+   191	    HS_ADD_REQUIRED(AddReshape);
+   192	    HS_ADD_REQUIRED(AddRsqrt);
+   193	    HS_ADD_REQUIRED(AddSelectV2);
+   194	    HS_ADD_REQUIRED(AddSoftmax);
+   195	    HS_ADD_REQUIRED(AddSplitV);
+   196	    HS_ADD_REQUIRED(AddSqrt);
+   197	    HS_ADD_REQUIRED(AddSquare);
+   198	    HS_ADD_REQUIRED(AddSub);
+   199	    HS_ADD_REQUIRED(AddSum);
+   200	    HS_ADD_REQUIRED(AddTopKV2);
+   201	
+   202	#undef HS_ADD_REQUIRED
+   203	
+   204	    /*
+   205	     * Custom SIGN registration under the built-in SIGN opcode.
+   206	     */
+   207	    {
+   208	        const TFLMRegistration registration =
+   209	            RegisterHeatstrokeSignKernel();
+   210	
+   211	        if (this->m_opResolver.AddBuiltin(
+   212	                tflite::BuiltinOperator_SIGN,
+   213	                registration,
+   214	                ParseHeatstrokeSign) != kTfLiteOk) {
+   215	            printf_err("Failed to register heat-stress SIGN.\n");
+   216	            return false;
+   217	        }
+   218	    }
+   219	
+   220	    /*
+   221	     * Custom compact bidirectional LSTM registration.
+   222	     */
+   223	    {
+   224	        const TFLMRegistration registration =
+   225	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+   226	
+   227	        if (this->m_opResolver.AddBuiltin(
+   228	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   229	                registration,
+   230	                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+   231	            printf_err(
+   232	                "Failed to register heat-stress bidirectional LSTM.\n");
+   233	            return false;
+   234	        }
+   235	    }
+   236	
+   237	    /*
+   238	     * Ethos-U registration.
+   239	     *
+   240	     * AddEthosU() in this SDK can report success even when the hardware
+   241	     * registration is null. Therefore, explicitly verify FindOp().
+   242	     */
+   243	    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+   244	        printf_err("Failed to add Ethos-U to the resolver.\n");
+   245	        return false;
+   246	    }
+   247	
+   248	    const char* ethos_name = tflite::GetString_ETHOSU();
+   249	
+   250	    if (ethos_name == nullptr ||
+   251	        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+   252	        printf_err(
+   253	            "Ethos-U registration is missing from the resolver.\n");
+   254	        return false;
+   255	    }
+   256	
+   257	    /*
+   258	     * Verify all built-in registrations and parser callbacks.
+   259	     */
+   260	    const tflite::BuiltinOperator required_ops[] = {
+   261	        tflite::BuiltinOperator_ADD,
+   262	        tflite::BuiltinOperator_BROADCAST_ARGS,
+   263	        tflite::BuiltinOperator_BROADCAST_TO,
+   264	        tflite::BuiltinOperator_CAST,
+   265	        tflite::BuiltinOperator_CONCATENATION,
+   266	        tflite::BuiltinOperator_CUMSUM,
+   267	        tflite::BuiltinOperator_DEQUANTIZE,
+   268	        tflite::BuiltinOperator_DIV,
+   269	        tflite::BuiltinOperator_EQUAL,
+   270	        tflite::BuiltinOperator_FLOOR_MOD,
+   271	        tflite::BuiltinOperator_GATHER,
+   272	        tflite::BuiltinOperator_GREATER,
+   273	        tflite::BuiltinOperator_LOGICAL_AND,
+   274	        tflite::BuiltinOperator_LOGICAL_NOT,
+   275	        tflite::BuiltinOperator_MAXIMUM,
+   276	        tflite::BuiltinOperator_MEAN,
+   277	        tflite::BuiltinOperator_MUL,
+   278	        tflite::BuiltinOperator_NEG,
+   279	        tflite::BuiltinOperator_QUANTIZE,
+   280	        tflite::BuiltinOperator_RESHAPE,
+   281	        tflite::BuiltinOperator_RSQRT,
+   282	        tflite::BuiltinOperator_SELECT_V2,
+   283	        tflite::BuiltinOperator_SIGN,
+   284	        tflite::BuiltinOperator_SOFTMAX,
+   285	        tflite::BuiltinOperator_SPLIT_V,
+   286	        tflite::BuiltinOperator_SQRT,
+   287	        tflite::BuiltinOperator_SQUARE,
+   288	        tflite::BuiltinOperator_SUB,
+   289	        tflite::BuiltinOperator_SUM,
+   290	        tflite::BuiltinOperator_TOPK_V2,
+   291	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+   292	    };
+   293	
+   294	    for (const auto op : required_ops) {
+   295	        if (this->m_opResolver.FindOp(op) == nullptr) {
+   296	            printf_err(
+   297	                "Required heat-stress builtin registration is missing: %d\n",
+   298	                static_cast<int>(op));
+   299	            return false;
+   300	        }
+   301	
+   302	        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+   303	            printf_err(
+   304	                "Required heat-stress builtin parser is missing: %d\n",
+   305	                static_cast<int>(op));
+   306	            return false;
+   307	        }
+   308	    }
+   309	
+   310	    info(
+   311	        "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+   312	        ethos_name);
+   313	
+   314	    return true;
+   315	}
+
+===== MAIN APPLICATION ENTRY: INCLUDES AND MAIN =====
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021-2026 Arm Limited and/or its
+     3	 * affiliates <open-source-office@arm.com>
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 *
+     6	 * Licensed under the Apache License, Version 2.0 (the "License");
+     7	 * you may not use this file except in compliance with the License.
+     8	 * You may obtain a copy of the License at
+     9	 *
+    10	 *     http://www.apache.org/licenses/LICENSE-2.0
+    11	 *
+    12	 * Unless required by applicable law or agreed to in writing, software
+    13	 * distributed under the License is distributed on an "AS IS" BASIS,
+    14	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	 * See the License for the specific language governing permissions and
+    16	 * limitations under the License.
+    17	 */
+    18	
+    19	/****************************************************************************\
+    20	 *               Main application file for ARM NPU on MPS3 board             *
+    21	\****************************************************************************/
+    22	
+    23	#include "mlek/fwk/tflm/TensorFlowLiteMicro.hpp" /* our inference logic api */
+    24	#include "power_mgr.h"             /* power management APIs */
+    25	#include <cstdio>
+    26	#include <cstdint>
+    27	#include <new>
+    28	#include <exception>
+    29	
+    30	#include <zephyr/console/console.h>
+    31	#include <zephyr/logging/log.h>
+    32	
+    33	LOG_MODULE_REGISTER(Main);
+    34	
+    35	extern void MainLoop();
+    36	
+    37	#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
+    38	__ASM(" .global __ARM_use_no_argv\n");
+    39	#endif
+    40	
+    41	/* Print application information. */
+    42	static void PrintApplicationIntro()
+    43	{
+    44	    #define PRJ_DES_STR     "BeeInventor - PolyU Model1 Test"
+    45	    LOG_INF("%s\n", PRJ_DES_STR);
+    46	    LOG_INF("Version %s Build date: " __DATE__ " @ " __TIME__ "\n", PRJ_VER_STR);
+    47	    //LOG_INF("Compiler: %s\n", PRJ_COMPILER);
+    48	    // LOG_INF("Copyright 2021-2026 Arm Limited and/or "
+    49	    //      "its affiliates <open-source-office@arm.com>\n\n");
+    50	}
+    51	
+    52	static void out_of_heap()
+    53	{
+    54	    LOG_WRN("Out of heap\n");
+    55	    std::terminate();
+    56	}
+    57	
+    58	/* ITGU READ-ONLY DIAGNOSTIC
+    59	 * Reads ITGU registers only. No security configuration is modified.
+    60	 */
+    61	static void PrintItguRegisters()
+    62	{
+    63	    constexpr std::uintptr_t ITGU_BASE = 0xE001E500UL;
+    64	    constexpr std::uintptr_t ITGU_CTRL = ITGU_BASE + 0x00UL;
+    65	    constexpr std::uintptr_t ITGU_CFG  = ITGU_BASE + 0x04UL;
+    66	    constexpr std::uintptr_t ITGU_LUT  = ITGU_BASE + 0x10UL;
+    67	
+    68	    LOG_INF("ITGU READ-ONLY DIAGNOSTIC START");
+    69	    LOG_INF("No ITGU/DTGU/SAU registers will be written.");
+    70	
+    71	    LOG_INF("About to read ITGU_CTRL at 0x%08x",
+    72	            static_cast<unsigned int>(ITGU_CTRL));
+    73	    const auto ctrl = *reinterpret_cast<volatile const std::uint32_t *>(ITGU_CTRL);
+    74	    LOG_INF("ITGU_CTRL = 0x%08x", static_cast<unsigned int>(ctrl));
+    75	
+    76	    LOG_INF("About to read ITGU_CFG at 0x%08x",
+    77	            static_cast<unsigned int>(ITGU_CFG));
+    78	    const auto cfg = *reinterpret_cast<volatile const std::uint32_t *>(ITGU_CFG);
+    79	    LOG_INF("ITGU_CFG = 0x%08x", static_cast<unsigned int>(cfg));
+    80	
+    81	    for (unsigned int i = 0; i < 16; ++i) {
+    82	        const std::uintptr_t address = ITGU_LUT + (i * 4U);
+    83	        LOG_INF("About to read ITGU_LUT[%u] at 0x%08x",
+    84	                i, static_cast<unsigned int>(address));
+    85	        const auto value = *reinterpret_cast<volatile const std::uint32_t *>(address);
+    86	        LOG_INF("ITGU_LUT[%u] = 0x%08x",
+    87	                i, static_cast<unsigned int>(value));
+    88	    }
+    89	
+    90	    LOG_INF("ITGU READ-ONLY DIAGNOSTIC COMPLETE");
+    91	}
+    92	int main ()
+    93	{
+    94		console_getline_init();
+    95	
+    96		/* Application information, UART should have been initialised. */
+    97		PrintApplicationIntro();
+    98		PrintItguRegisters();
+    99	
+   100		std::set_new_handler(out_of_heap);
+   101	
+   102		/* Run the application. */
+   103		MainLoop();
+   104	
+   105	    /* This is unreachable without errors. */
+   106	    LOG_INF("program terminating...\n");
+   107	
+   108	    return 0;
+   109	}
+
+===== APPLICATION SOURCE FILE INVENTORY =====
+application/main/include/AppContext.hpp 3023 bytes
+application/main/include/BufAttributes.hpp 1488 bytes
+application/main/Main.cc 3692 bytes
+power/power_mgr.h 1033 bytes
+use_case/alif_asr/include/heatstroke_bidirectional_lstm.h 400 bytes
+use_case/alif_asr/include/PolyUModel1.hpp 1345 bytes
+use_case/alif_asr/include/reverse_v2.h 333 bytes
+use_case/alif_asr/include/UseCaseHandler.hpp 1642 bytes
+use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc 15279 bytes
+use_case/alif_asr/src/MainLoop.cc 10214 bytes
+use_case/alif_asr/src/PolyUModel1.cc 9300 bytes
+use_case/alif_asr/src/reverse_v2.cc 6309 bytes
+use_case/alif_asr/src/UseCaseHandlerTflm.cc 14574 bytes
+
+===== APPLICATION CMAKE MODEL GENERATION CALLS =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:141:generate_model_code(
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:152:generate_labels_code(
+
+===== MLEK MODEL GENERATION FUNCTION LOCATION =====
+/home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake:90:function(generate_model_code)
+
+===== MODEL GENERATOR CMAKE FUNCTION CONTEXT =====
+--- /home/user/sdk-alif/modules/alif-mlek/scripts/cmake/source_gen_utils.cmake ---
+     1	#----------------------------------------------------------------------------
+     2	#  SPDX-FileCopyrightText: Copyright 2021, 2024, 2026 Arm Limited and/or its
+     3	#  affiliates <open-source-office@arm.com>
+     4	#  SPDX-License-Identifier: Apache-2.0
+     5	#
+     6	#  Licensed under the Apache License, Version 2.0 (the "License");
+     7	#  you may not use this file except in compliance with the License.
+     8	#  You may obtain a copy of the License at
+     9	#
+    10	#      http://www.apache.org/licenses/LICENSE-2.0
+    11	#
+    12	#  Unless required by applicable law or agreed to in writing, software
+    13	#  distributed under the License is distributed on an "AS IS" BASIS,
+    14	#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	#  See the License for the specific language governing permissions and
+    16	#  limitations under the License.
+    17	#----------------------------------------------------------------------------
+    18	include_guard()
+    19	
+    20	set(SCRIPTS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/scripts)
+    21	
+    22	##############################################################################
+    23	# This function generates C++ files for images located in the directory it is
+    24	# pointed at. NOTE: uses python
+    25	##############################################################################
+    26	function(generate_images_code input_dir gen_dir img_size)
+    27	
+    28	    # Absolute paths for passing into python script
+    29	    get_filename_component(input_dir_abs ${input_dir} ABSOLUTE)
+    30	    get_filename_component(gen_out_abs ${gen_dir} ABSOLUTE)
+    31	
+    32	    message(STATUS "Generating image files from ${input_dir_abs}")
+    33	    execute_process(
+    34	        COMMAND ${CMAKE_COMMAND} -E env
+    35	            PYTHONPATH=${MLEK_SCRIPTS_DIR}/py:$ENV{PYTHONPATH}
+    36	            ${PYTHON} -m mlek_tools.gen.gen_rgb_cpp
+    37	            --image_path ${input_dir_abs}
+    38	            --package_gen_dir ${gen_out_abs}
+    39	            --image_size ${img_size} ${img_size}
+    40	        RESULT_VARIABLE return_code
+    41	    )
+    42	    if (NOT return_code EQUAL "0")
+    43	        message(FATAL_ERROR "Failed to generate image files.")
+    44	    endif ()
+    45	
+    46	endfunction()
+    47	
+    48	##############################################################################
+    49	# This function generates C++ files for audio files located in the directory it is
+    50	# pointed at. NOTE: uses python
+    51	##############################################################################
+    52	function(generate_audio_code input_dir gen_dir s_rate_opt mono_opt off_opt duration_opt res_type_opt min_sample_opt)
+    53	
+    54	    # Absolute paths for passing into python script
+    55	    get_filename_component(input_dir_abs ${input_dir} ABSOLUTE)
+    56	    get_filename_component(gen_dir_abs ${gen_dir} ABSOLUTE)
+    57	
+    58	    to_py_bool(mono_opt mono_opt_py)
+    59	
+    60	    message(STATUS "Generating audio files from ${input_dir_abs}")
+    61	    execute_process(
+    62	        COMMAND ${CMAKE_COMMAND} -E env
+    63	            PYTHONPATH=${MLEK_SCRIPTS_DIR}/py:$ENV{PYTHONPATH}
+    64	            ${PYTHON} -m mlek_tools.gen.gen_audio_cpp
+    65	            --audio_path ${input_dir_abs}
+    66	            --package_gen_dir ${gen_dir_abs}
+    67	            --sampling_rate ${s_rate_opt}
+    68	            --mono ${mono_opt_py}
+    69	            --offset ${off_opt}
+    70	            --duration ${duration_opt}
+    71	            --res_type ${res_type_opt}
+    72	            --min_samples ${min_sample_opt}
+    73	        RESULT_VARIABLE return_code
+    74	    )
+    75	    if (NOT return_code EQUAL "0")
+    76	        message(FATAL_ERROR "Failed to generate audio files.")
+    77	    endif ()
+    78	
+    79	endfunction()
+    80	
+    81	##############################################################################
+    82	# This function generates C++ files for tflite NN model files.
+    83	# @param[in]    MODEL_PATH      path to a tflite file
+    84	# @param[in]    DESTINATION     directory in which the output cc must be
+    85	#                               placed
+    86	# @param[in]    EXPRESSIONS     C++ code expressions to add to the generated file
+    87	# @param[in]    NAMESPACE       model name space
+    88	# NOTE: Uses python
+    89	##############################################################################
+    90	function(generate_model_code)
+    91	
+    92	    set(multiValueArgs EXPRESSIONS NAMESPACE)
+    93	    set(oneValueArgs MODEL_PATH DESTINATION)
+    94	    cmake_parse_arguments(PARSED "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
+    95	
+    96	    # Absolute paths for passing into python script
+    97	    get_filename_component(ABS_MODEL_PATH ${PARSED_MODEL_PATH} ABSOLUTE)
+    98	    get_filename_component(ABS_DESTINATION ${PARSED_DESTINATION} ABSOLUTE)
+    99	
+   100	    if (EXISTS ${ABS_MODEL_PATH})
+   101	        message(STATUS "Using ${ABS_MODEL_PATH}")
+   102	    else ()
+   103	        message(FATAL_ERROR "${ABS_MODEL_PATH} not found!")
+   104	    endif ()
+   105	
+   106	
+   107	    foreach(expression ${PARSED_EXPRESSIONS})
+   108	        set(py_arg_exp ${py_arg_exp} --expression=${expression})
+   109	    endforeach()
+   110	
+   111	    foreach(name ${PARSED_NAMESPACE})
+   112	        set(py_arg_exp ${py_arg_exp} --namespaces=${name})
+   113	    endforeach()
+   114	
+   115	    # Pass optional Arm Ethos-U NPU validation args if NPU is enabled.
+   116	    if (ETHOS_U_NPU_ENABLED)
+   117	        if (DEFINED ETHOS_U_NPU_MEMORY_MODE)
+   118	            set(py_arg_exp ${py_arg_exp} --ethos_u_memory_mode=${ETHOS_U_NPU_MEMORY_MODE})
+   119	        endif()
+   120	        if (DEFINED ETHOS_U_NPU_CONFIG_ID)
+   121	            # gen_model_cpp.py accepts short forms like H128/Y256/Z256 directly.
+   122	            set(py_arg_exp ${py_arg_exp} --ethos_u_config=${ETHOS_U_NPU_CONFIG_ID})
+   123	        endif()
+   124	    endif()
+   125	
+   126	    execute_process(
+   127	        COMMAND ${CMAKE_COMMAND} -E env
+   128	            PYTHONPATH=${MLEK_SCRIPTS_DIR}/py:$ENV{PYTHONPATH}
+   129	            ${PYTHON} -m mlek_tools.gen.gen_model_cpp
+   130	            --model_path ${ABS_MODEL_PATH}
+   131	            --output_dir ${ABS_DESTINATION} ${py_arg_exp}
+   132	        RESULT_VARIABLE return_code
+   133	    )
+   134	    if (NOT return_code EQUAL "0")
+   135	        message(FATAL_ERROR "Failed to generate model files.")
+   136	    endif ()
+   137	endfunction()
+   138	
+   139	
+   140	##############################################################################
+   141	# This function generates C++ file for a given labels' text file.
+   142	# @param[in]    INPUT          Path to the label text file
+   143	# @param[in]    DESTINATION_SRC directory in which the output cc must be
+   144	#                               placed
+   145	# @param[in]    DESTINATION_HDR directory in which the output h file must be
+   146	#                               placed
+   147	# @param[in]    OUTPUT_FILENAME    Path to required output file
+   148	# @param[in]    NAMESPACE       data name space
+   149	# NOTE: Uses python
+   150	##############################################################################
+   151	function(generate_labels_code)
+   152	
+   153	    set(multiValueArgs NAMESPACE)
+   154	    set(oneValueArgs INPUT DESTINATION_SRC DESTINATION_HDR OUTPUT_FILENAME)
+   155	    cmake_parse_arguments(PARSED "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
+   156	
+   157	    # Absolute paths for passing into python script
+   158	    get_filename_component(input_abs ${PARSED_INPUT} ABSOLUTE)
+   159	    get_filename_component(src_out_abs ${PARSED_DESTINATION_SRC} ABSOLUTE)
+   160	    get_filename_component(hdr_out_abs ${PARSED_DESTINATION_HDR} ABSOLUTE)
+   161	
+   162	    message(STATUS "Generating labels file from ${PARSED_INPUT}")
+   163	    file(REMOVE "${hdr_out_abs}/${PARSED_OUTPUT_FILENAME}.hpp")
+   164	    file(REMOVE "${src_out_abs}/${PARSED_OUTPUT_FILENAME}.cc")
+   165	
+   166	    foreach(name ${PARSED_NAMESPACE})
+   167	        set(py_arg_exp ${py_arg_exp} --namespaces=${name})
+   168	    endforeach()
+   169	
+   170	    message(STATUS "writing to ${hdr_out_abs}/${PARSED_OUTPUT_FILENAME}.hpp and ${src_out_abs}/${PARSED_OUTPUT_FILENAME}.cc")
+   171	    execute_process(
+   172	        COMMAND ${CMAKE_COMMAND} -E env
+   173	            PYTHONPATH=${MLEK_SCRIPTS_DIR}/py:$ENV{PYTHONPATH}
+   174	            ${PYTHON} -m mlek_tools.gen.gen_labels_cpp
+   175	            --labels_file ${input_abs}
+   176	            --source_folder_path ${src_out_abs}
+   177	            --header_folder_path ${hdr_out_abs}
+   178	            --output_file_name ${PARSED_OUTPUT_FILENAME} ${py_arg_exp}
+   179	        RESULT_VARIABLE return_code
+   180	    )
+   181	    if (NOT return_code EQUAL "0")
+   182	        message(FATAL_ERROR "Failed to generate label files.")
+   183	    endif ()
+   184	endfunction()
+   185	
+   186	
+   187	##############################################################################
+   188	# This function generates C++ data files for test located in the directory it is
+   189	# pointed at.
+   190	# @param[in]    INPUT_DIR       directory in which are the npy files
+   191	# @param[in]    DESTINATION_SRC directory in which the output cc must be
+   192	#                               placed
+   193	# @param[in]    DESTINATION_HDR directory in which the output h file must be
+   194	#                               placed
+   195	# @param[in]    NAMESPACE       data name space
+   196	# NOTE: Uses python
+   197	##############################################################################
+   198	function(generate_test_data_code)
+   199	
+   200	    set(multiValueArgs NAMESPACE INPUT_DIR)
+   201	    set(oneValueArgs DESTINATION_SRC DESTINATION_HDR)
+   202	    cmake_parse_arguments(PARSED "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN} )
+   203	
+   204	    list(LENGTH PARSED_INPUT_DIR input_dir_length)
+   205	
+   206	    if (${input_dir_length} GREATER 1)
+   207	        set(add_extra_namespace TRUE)
+   208	    else()
+   209	        set(add_extra_namespace FALSE)
+   210	    endif()
+   211	
+   212	    foreach(input_dir ${PARSED_INPUT_DIR})
+   213	        unset(py_arg_exp)
+   214	        file(GLOB_RECURSE input_data_files
+   215	                "${input_dir}/*.npy"
+   216	                )
+   217	        # no input NPY data found => skip code generation.
+   218	        if(NOT input_data_files)
+   219	            message(WARNING "No files were found to generate input data: ${input_dir}")
+   220	            break()
+   221	        endif()
+   222	
+   223	        # Absolute paths for passing into python script
+   224	        get_filename_component(input_dir_abs ${input_dir} ABSOLUTE)
+   225	        get_filename_component(input_dir_name ${input_dir} NAME)
+   226	        get_filename_component(src_out_abs ${PARSED_DESTINATION_SRC} ABSOLUTE)
+   227	        get_filename_component(hdr_out_abs ${PARSED_DESTINATION_HDR} ABSOLUTE)
+   228	
+   229	        foreach(name ${PARSED_NAMESPACE})
+   230	            set(py_arg_exp ${py_arg_exp} --namespaces=${name})
+   231	        endforeach()
+   232	
+   233	        if (${add_extra_namespace})
+   234	            set(py_arg_exp ${py_arg_exp} --namespaces=${input_dir_name})
+   235	        endif()
+   236	
+   237	        message(STATUS "Generating test ifm and ofm files from ${input_dir_abs}")
+   238	        execute_process(
+   239	            COMMAND ${CMAKE_COMMAND} -E env
+   240	                PYTHONPATH=${MLEK_SCRIPTS_DIR}/py:$ENV{PYTHONPATH}
+   241	                ${PYTHON} -m mlek_tools.gen.gen_test_data_cpp
+   242	                --data_folder_path ${input_dir_abs}
+   243	                --source_folder_path ${src_out_abs}
+   244	                --header_folder_path ${hdr_out_abs}
+   245	                --usecase ${input_dir_name}
+   246	                ${py_arg_exp}
+   247	            RESULT_VARIABLE return_code
+   248	        )
+   249	        if (NOT return_code EQUAL "0")
+   250	            message(FATAL_ERROR "Failed to generate test data files.")
+   251	        endif ()
+   252	    endforeach()
+   253	endfunction()
+   254	
+   255	
+   256	##############################################################################
+   257	# Function to prepare a python virtual environment for running the functions
+   258	# outlined above.
+   259	##############################################################################
+   260	function(setup_source_generator)
+   261	
+   262	    # If a virtual env has been created in the resources_downloaded directory,
+   263	    # use it for source generator. Else, fall back to creating a virtual env
+   264	    # in the current build directory.
+   265	    if (EXISTS ${RESOURCES_PATH}/env)
+   266	        set(DEFAULT_VENV_DIR ${RESOURCES_PATH}/env)
+   267	    else()
+   268	        set(DEFAULT_VENV_DIR ${CMAKE_BINARY_DIR}/venv)
+   269	    endif()
+   270	
+   271	    if (${CMAKE_HOST_WIN32})
+   272	        # Windows Python3 is python.exe
+   273	        set(PY_EXEC python)
+   274	        set(PYTHON ${DEFAULT_VENV_DIR}/Scripts/${PY_EXEC})
+   275	    else()
+   276	        set(PY_EXEC python3)
+   277	        set(PYTHON ${DEFAULT_VENV_DIR}/bin/${PY_EXEC})
+   278	    endif()
+   279	    set(PYTHON ${PYTHON} PARENT_SCOPE)
+   280	    set(PYTHON_VENV ${DEFAULT_VENV_DIR} PARENT_SCOPE)
+   281	
+   282	    if (EXISTS ${PYTHON})
+   283	        message(STATUS "Using existing python at ${PYTHON}")
+   284	        return()
+   285	    endif ()
+   286	
+   287	    # If environment is not found, find a supported Python version
+   288	    # and create it.
+   289	    find_package(Python3 3.10...<3.13
+   290	            COMPONENTS Interpreter
+   291	            REQUIRED)
+   292	
+   293	    if (NOT Python3_FOUND)
+   294	        message(FATAL_ERROR "Required version of Python3 not found!")
+   295	    else()
+   296	        message(STATUS "Python3 (v${Python3_VERSION}) found: ${Python3_EXECUTABLE}")
+   297	    endif()
+   298	
+   299	    message(STATUS "Configuring python environment at ${PYTHON}")
+   300	
+
+===== CURRENT BUILD MODEL SOURCE OBJECTS =====
+/home/user/sdk-alif/build/CMakeFiles/app.dir/generated/src/cla_quant_uint8_vela.tflite.cc.obj 5230072 bytes
+
+===== CURRENT BUILD CMAKE SOURCE AND TARGET SETTINGS =====
+353:EXTRA_DTC_OVERLAY_FILE:UNINITIALIZED=sleep.overlay
+398:POLYU_MODEL_PATH:FILEPATH=/home/user/sdk-alif/beeinventor/test_heatstroke/../PolyU/ai-models/cla_quant_uint8_vela.tflite
+639:CMAKE_BUILD_TYPE:INTERNAL=Release
+705:CMAKE_GENERATOR:INTERNAL=Ninja
+707:CMAKE_GENERATOR_INSTANCE:INTERNAL=
+709:CMAKE_GENERATOR_PLATFORM:INTERNAL=
+711:CMAKE_GENERATOR_TOOLSET:INTERNAL=
+714:CMAKE_HOME_DIRECTORY:INTERNAL=/home/user/sdk-alif/beeinventor/test_heatstroke
+
+===== CURRENT COMPILE COMMANDS FOR APPLICATION FILES =====
+2-{
+3-  "directory": "/home/user/sdk-alif/build",
+4:  "command": "/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-g++ -DACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ -DAXI_LIMIT0_MAX_BEATS_BYTES=1 -DAXI_LIMIT0_MEM_TYPE=2 -DAXI_LIMIT1_MAX_BEATS_BYTES=1 -DAXI_LIMIT1_MEM_TYPE=2 -DAXI_LIMIT2_MAX_BEATS_BYTES=1 -DAXI_LIMIT2_MEM_TYPE=2 -DAXI_LIMIT3_MAX_BEATS_BYTES=1 -DAXI_LIMIT3_MEM_TYPE=2 -DETHOSU -DETHOSU55 -DETHOSU_ARCH=u55 -DETHOSU_MACS=128 -DKERNEL -DK_HEAP_MEM_POOL_SIZE=163840 -DMLEK_FWK_TFLM=1 -D_ANSI_SOURCE -D__LINUX_ERRNO_EXTENSIONS__ -D__PROGRAM_START -D__ZEPHYR__=1 -DPRJ_COMPILER=\\\"GNU-12.2.0\\\" -DPRJ_DES_STR=\\\"\\\" -DPRJ_VER_STR=\\\"\\\" -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/power -I/home/user/sdk-alif/alif/samples/modules/alif_common -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio/include -I/home/user/sdk-alif/build/generated/include -I/home/user/sdk-alif/build/zephyr/include/generated/zephyr -I/home/user/sdk-alif/zephyr/include -I/home/user/sdk-alif/build/zephyr/include/generated -I/home/user/sdk-alif/zephyr/soc/alif/balletto -I/home/user/sdk-alif/zephyr/lib/libc/newlib/include -I/home/user/sdk-alif/zephyr/soc/alif/balletto/b1/. -I/home/user/sdk-alif/zephyr/soc/alif/common/. -I/home/user/sdk-alif/zephyr/soc/alif/balletto/common -I/home/user/sdk-alif/alif/subsys/. -I/home/user/sdk-alif/alif/subsys/modules/ethosu/. -I/home/user/sdk-alif/alif/subsys/modules/testcommands/. -I/home/user/sdk-alif/alif/include -I/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/zephyr/modules/cmsis/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/gemmlowp -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/ruy -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/kissfft -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include -I/home/user/sdk-alif/modules/hal/alif/common/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/include -I/home/user/sdk-alif/modules/hal/alif/se_services/include -I/home/user/sdk-alif/modules/hal/alif/se_services/zephyr/include -I/home/user/sdk-alif/modules/hal/ethos_u/include -I/home/user/sdk-alif/modules/alif-mlek/source/lib -isystem /home/user/sdk-alif/zephyr/lib/libc/common/include  -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -fcheck-new -std=c++17 -Wno-register -fno-exceptions -fno-rtti -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections -o CMakeFiles/app.dir/src/application/main/Main.cc.obj -c /home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/Main.cc",
+5:  "file": "/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/Main.cc",
+6:  "output": "CMakeFiles/app.dir/src/application/main/Main.cc.obj"
+7-},
+8-{
+9-  "directory": "/home/user/sdk-alif/build",
+10:  "command": "/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-g++ -DACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ -DAXI_LIMIT0_MAX_BEATS_BYTES=1 -DAXI_LIMIT0_MEM_TYPE=2 -DAXI_LIMIT1_MAX_BEATS_BYTES=1 -DAXI_LIMIT1_MEM_TYPE=2 -DAXI_LIMIT2_MAX_BEATS_BYTES=1 -DAXI_LIMIT2_MEM_TYPE=2 -DAXI_LIMIT3_MAX_BEATS_BYTES=1 -DAXI_LIMIT3_MEM_TYPE=2 -DETHOSU -DETHOSU55 -DETHOSU_ARCH=u55 -DETHOSU_MACS=128 -DKERNEL -DK_HEAP_MEM_POOL_SIZE=163840 -DMLEK_FWK_TFLM=1 -D_ANSI_SOURCE -D__LINUX_ERRNO_EXTENSIONS__ -D__PROGRAM_START -D__ZEPHYR__=1 -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/power -I/home/user/sdk-alif/alif/samples/modules/alif_common -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio/include -I/home/user/sdk-alif/build/generated/include -I/home/user/sdk-alif/build/zephyr/include/generated/zephyr -I/home/user/sdk-alif/zephyr/include -I/home/user/sdk-alif/build/zephyr/include/generated -I/home/user/sdk-alif/zephyr/soc/alif/balletto -I/home/user/sdk-alif/zephyr/lib/libc/newlib/include -I/home/user/sdk-alif/zephyr/soc/alif/balletto/b1/. -I/home/user/sdk-alif/zephyr/soc/alif/common/. -I/home/user/sdk-alif/zephyr/soc/alif/balletto/common -I/home/user/sdk-alif/alif/subsys/. -I/home/user/sdk-alif/alif/subsys/modules/ethosu/. -I/home/user/sdk-alif/alif/subsys/modules/testcommands/. -I/home/user/sdk-alif/alif/include -I/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/zephyr/modules/cmsis/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/gemmlowp -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/ruy -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/kissfft -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include -I/home/user/sdk-alif/modules/hal/alif/common/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/include -I/home/user/sdk-alif/modules/hal/alif/se_services/include -I/home/user/sdk-alif/modules/hal/alif/se_services/zephyr/include -I/home/user/sdk-alif/modules/hal/ethos_u/include -I/home/user/sdk-alif/modules/alif-mlek/source/lib -isystem /home/user/sdk-alif/zephyr/lib/libc/common/include  -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -fcheck-new -std=c++17 -Wno-register -fno-exceptions -fno-rtti -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections -o CMakeFiles/app.dir/src/use_case/alif_asr/src/MainLoop.cc.obj -c /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc",
+11:  "file": "/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc",
+12:  "output": "CMakeFiles/app.dir/src/use_case/alif_asr/src/MainLoop.cc.obj"
+13-},
+14-{
+15-  "directory": "/home/user/sdk-alif/build",
+16-  "command": "/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-g++ -DACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ -DAXI_LIMIT0_MAX_BEATS_BYTES=1 -DAXI_LIMIT0_MEM_TYPE=2 -DAXI_LIMIT1_MAX_BEATS_BYTES=1 -DAXI_LIMIT1_MEM_TYPE=2 -DAXI_LIMIT2_MAX_BEATS_BYTES=1 -DAXI_LIMIT2_MEM_TYPE=2 -DAXI_LIMIT3_MAX_BEATS_BYTES=1 -DAXI_LIMIT3_MEM_TYPE=2 -DETHOSU -DETHOSU55 -DETHOSU_ARCH=u55 -DETHOSU_MACS=128 -DKERNEL -DK_HEAP_MEM_POOL_SIZE=163840 -DMLEK_FWK_TFLM=1 -D_ANSI_SOURCE -D__LINUX_ERRNO_EXTENSIONS__ -D__PROGRAM_START -D__ZEPHYR__=1 -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/power -I/home/user/sdk-alif/alif/samples/modules/alif_common -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio/include -I/home/user/sdk-alif/build/generated/include -I/home/user/sdk-alif/build/zephyr/include/generated/zephyr -I/home/user/sdk-alif/zephyr/include -I/home/user/sdk-alif/build/zephyr/include/generated -I/home/user/sdk-alif/zephyr/soc/alif/balletto -I/home/user/sdk-alif/zephyr/lib/libc/newlib/include -I/home/user/sdk-alif/zephyr/soc/alif/balletto/b1/. -I/home/user/sdk-alif/zephyr/soc/alif/common/. -I/home/user/sdk-alif/zephyr/soc/alif/balletto/common -I/home/user/sdk-alif/alif/subsys/. -I/home/user/sdk-alif/alif/subsys/modules/ethosu/. -I/home/user/sdk-alif/alif/subsys/modules/testcommands/. -I/home/user/sdk-alif/alif/include -I/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/zephyr/modules/cmsis/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/gemmlowp -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/ruy -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/kissfft -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include -I/home/user/sdk-alif/modules/hal/alif/common/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/include -I/home/user/sdk-alif/modules/hal/alif/se_services/include -I/home/user/sdk-alif/modules/hal/alif/se_services/zephyr/include -I/home/user/sdk-alif/modules/hal/ethos_u/include -I/home/user/sdk-alif/modules/alif-mlek/source/lib -isystem /home/user/sdk-alif/zephyr/lib/libc/common/include  -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -fcheck-new -std=c++17 -Wno-register -fno-exceptions -fno-rtti -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections -o CMakeFiles/app.dir/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc.obj -c /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc",
+17-  "file": "/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc",
+--
+26-{
+27-  "directory": "/home/user/sdk-alif/build",
+28:  "command": "/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-g++ -DACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ -DAXI_LIMIT0_MAX_BEATS_BYTES=1 -DAXI_LIMIT0_MEM_TYPE=2 -DAXI_LIMIT1_MAX_BEATS_BYTES=1 -DAXI_LIMIT1_MEM_TYPE=2 -DAXI_LIMIT2_MAX_BEATS_BYTES=1 -DAXI_LIMIT2_MEM_TYPE=2 -DAXI_LIMIT3_MAX_BEATS_BYTES=1 -DAXI_LIMIT3_MEM_TYPE=2 -DETHOSU -DETHOSU55 -DETHOSU_ARCH=u55 -DETHOSU_MACS=128 -DKERNEL -DK_HEAP_MEM_POOL_SIZE=163840 -DMLEK_FWK_TFLM=1 -D_ANSI_SOURCE -D__LINUX_ERRNO_EXTENSIONS__ -D__PROGRAM_START -D__ZEPHYR__=1 -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/power -I/home/user/sdk-alif/alif/samples/modules/alif_common -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio/include -I/home/user/sdk-alif/build/generated/include -I/home/user/sdk-alif/build/zephyr/include/generated/zephyr -I/home/user/sdk-alif/zephyr/include -I/home/user/sdk-alif/build/zephyr/include/generated -I/home/user/sdk-alif/zephyr/soc/alif/balletto -I/home/user/sdk-alif/zephyr/lib/libc/newlib/include -I/home/user/sdk-alif/zephyr/soc/alif/balletto/b1/. -I/home/user/sdk-alif/zephyr/soc/alif/common/. -I/home/user/sdk-alif/zephyr/soc/alif/balletto/common -I/home/user/sdk-alif/alif/subsys/. -I/home/user/sdk-alif/alif/subsys/modules/ethosu/. -I/home/user/sdk-alif/alif/subsys/modules/testcommands/. -I/home/user/sdk-alif/alif/include -I/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/zephyr/modules/cmsis/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/gemmlowp -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/ruy -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/kissfft -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include -I/home/user/sdk-alif/modules/hal/alif/common/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/include -I/home/user/sdk-alif/modules/hal/alif/se_services/include -I/home/user/sdk-alif/modules/hal/alif/se_services/zephyr/include -I/home/user/sdk-alif/modules/hal/ethos_u/include -I/home/user/sdk-alif/modules/alif-mlek/source/lib -isystem /home/user/sdk-alif/zephyr/lib/libc/common/include  -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -fcheck-new -std=c++17 -Wno-register -fno-exceptions -fno-rtti -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections -o CMakeFiles/app.dir/src/use_case/alif_asr/src/PolyUModel1.cc.obj -c /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc",
+29:  "file": "/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc",
+30:  "output": "CMakeFiles/app.dir/src/use_case/alif_asr/src/PolyUModel1.cc.obj"
+31-},
+32-{
+33-  "directory": "/home/user/sdk-alif/build",
+34:  "command": "/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-g++ -DACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ -DAXI_LIMIT0_MAX_BEATS_BYTES=1 -DAXI_LIMIT0_MEM_TYPE=2 -DAXI_LIMIT1_MAX_BEATS_BYTES=1 -DAXI_LIMIT1_MEM_TYPE=2 -DAXI_LIMIT2_MAX_BEATS_BYTES=1 -DAXI_LIMIT2_MEM_TYPE=2 -DAXI_LIMIT3_MAX_BEATS_BYTES=1 -DAXI_LIMIT3_MEM_TYPE=2 -DETHOSU -DETHOSU55 -DETHOSU_ARCH=u55 -DETHOSU_MACS=128 -DKERNEL -DK_HEAP_MEM_POOL_SIZE=163840 -DMLEK_FWK_TFLM=1 -D_ANSI_SOURCE -D__LINUX_ERRNO_EXTENSIONS__ -D__PROGRAM_START -D__ZEPHYR__=1 -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/power -I/home/user/sdk-alif/alif/samples/modules/alif_common -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio/include -I/home/user/sdk-alif/build/generated/include -I/home/user/sdk-alif/build/zephyr/include/generated/zephyr -I/home/user/sdk-alif/zephyr/include -I/home/user/sdk-alif/build/zephyr/include/generated -I/home/user/sdk-alif/zephyr/soc/alif/balletto -I/home/user/sdk-alif/zephyr/lib/libc/newlib/include -I/home/user/sdk-alif/zephyr/soc/alif/balletto/b1/. -I/home/user/sdk-alif/zephyr/soc/alif/common/. -I/home/user/sdk-alif/zephyr/soc/alif/balletto/common -I/home/user/sdk-alif/alif/subsys/. -I/home/user/sdk-alif/alif/subsys/modules/ethosu/. -I/home/user/sdk-alif/alif/subsys/modules/testcommands/. -I/home/user/sdk-alif/alif/include -I/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/zephyr/modules/cmsis/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/gemmlowp -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/ruy -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/kissfft -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include -I/home/user/sdk-alif/modules/hal/alif/common/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/include -I/home/user/sdk-alif/modules/hal/alif/se_services/include -I/home/user/sdk-alif/modules/hal/alif/se_services/zephyr/include -I/home/user/sdk-alif/modules/hal/ethos_u/include -I/home/user/sdk-alif/modules/alif-mlek/source/lib -isystem /home/user/sdk-alif/zephyr/lib/libc/common/include  -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -fcheck-new -std=c++17 -Wno-register -fno-exceptions -fno-rtti -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections -o CMakeFiles/app.dir/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc.obj -c /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc",
+35:  "file": "/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc",
+36:  "output": "CMakeFiles/app.dir/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc.obj"
+37-},
+38-{
+39-  "directory": "/home/user/sdk-alif/build",
+40-  "command": "/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-gcc -DACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ -DAXI_LIMIT0_MAX_BEATS_BYTES=1 -DAXI_LIMIT0_MEM_TYPE=2 -DAXI_LIMIT1_MAX_BEATS_BYTES=1 -DAXI_LIMIT1_MEM_TYPE=2 -DAXI_LIMIT2_MAX_BEATS_BYTES=1 -DAXI_LIMIT2_MEM_TYPE=2 -DAXI_LIMIT3_MAX_BEATS_BYTES=1 -DAXI_LIMIT3_MEM_TYPE=2 -DETHOSU -DETHOSU55 -DETHOSU_ARCH=u55 -DETHOSU_MACS=128 -DKERNEL -DK_HEAP_MEM_POOL_SIZE=163840 -DMLEK_FWK_TFLM=1 -D_ANSI_SOURCE -D__LINUX_ERRNO_EXTENSIONS__ -D__PROGRAM_START -D__ZEPHYR__=1 -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include -I/home/user/sdk-alif/beeinventor/test_heatstroke/src/power -I/home/user/sdk-alif/alif/samples/modules/alif_common -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio -I/home/user/sdk-alif/alif/samples/modules/alif_common/audio/include -I/home/user/sdk-alif/build/generated/include -I/home/user/sdk-alif/build/zephyr/include/generated/zephyr -I/home/user/sdk-alif/zephyr/include -I/home/user/sdk-alif/build/zephyr/include/generated -I/home/user/sdk-alif/zephyr/soc/alif/balletto -I/home/user/sdk-alif/zephyr/lib/libc/newlib/include -I/home/user/sdk-alif/zephyr/soc/alif/balletto/b1/. -I/home/user/sdk-alif/zephyr/soc/alif/common/. -I/home/user/sdk-alif/zephyr/soc/alif/balletto/common -I/home/user/sdk-alif/alif/subsys/. -I/home/user/sdk-alif/alif/subsys/modules/ethosu/. -I/home/user/sdk-alif/alif/subsys/modules/testcommands/. -I/home/user/sdk-alif/alif/include -I/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include -I/home/user/sdk-alif/zephyr/modules/cmsis/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/. -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/gemmlowp -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/flatbuffers/include -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/ruy -I/home/user/sdk-alif/optional/modules/lib/tflite-micro/third_party_static/kissfft -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include -I/home/user/sdk-alif/modules/hal/alif/common/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include -I/home/user/sdk-alif/modules/hal/alif/drivers/ethos_u/include -I/home/user/sdk-alif/modules/hal/alif/se_services/include -I/home/user/sdk-alif/modules/hal/alif/se_services/zephyr/include -I/home/user/sdk-alif/modules/hal/ethos_u/include -I/home/user/sdk-alif/modules/alif-mlek/source/lib -isystem /home/user/sdk-alif/zephyr/lib/libc/common/include  -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wno-pointer-sign -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -Werror=implicit-int -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections -std=c99 -o CMakeFiles/app.dir/src/power/power_mgr.c.obj -c /home/user/sdk-alif/beeinventor/test_heatstroke/src/power/power_mgr.c",
+41-  "file": "/home/user/sdk-alif/beeinventor/test_heatstroke/src/power/power_mgr.c",
+
+===== ACTIVATION AND EXTERNAL MODEL CONFIGURATION =====
+1886:CONFIG_ACTIVATION_BUF_SECTION=".bss.activation_buf"
+1887:CONFIG_ACTIVATION_BUF_SZ=0x120000
+1888:CONFIG_MODEL_IN_EXT_FLASH=y
+
+===== GENERATED MODEL TEMPLATE =====
+     1	{#
+     2	 SPDX-FileCopyrightText: Copyright 2021 Arm Limited and/or its affiliates <open-source-office@arm.com>
+     3	 SPDX-License-Identifier: Apache-2.0
+     4	
+     5	 Licensed under the Apache License, Version 2.0 (the "License");
+     6	 you may not use this file except in compliance with the License.
+     7	 You may obtain a copy of the License at
+     8	
+     9	     http://www.apache.org/licenses/LICENSE-2.0
+    10	
+    11	 Unless required by applicable law or agreed to in writing, software
+    12	 distributed under the License is distributed on an "AS IS" BASIS,
+    13	 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 See the License for the specific language governing permissions and
+    15	 limitations under the License.
+    16	#}
+    17	{{common_template_header}}
+    18	
+    19	#include "BufAttributes.hpp"
+    20	
+    21	#include <cstddef>
+    22	#include <cstdint>
+    23	
+    24	{% for header in additional_headers %}
+    25	#include "{{header}}"
+    26	{% endfor %}
+    27	
+    28	{% for namespace in namespaces %}
+    29	namespace {{namespace}} {
+    30	{% endfor %}
+    31	
+    32	{% for expression in expressions %}
+    33	{{expression}};
+    34	{% endfor %}
+    35	
+    36	static const uint8_t nn_model[] MODEL_SECTION_ATTRIBUTE =
+    37	{% for model_hex_line in model_data %}
+    38	{{model_hex_line}}
+    39	{% endfor %}
+    40	
+    41	const uint8_t * GetModelPointer()
+    42	{
+    43	    return nn_model;
+    44	}
+    45	
+    46	size_t GetModelLen()
+    47	{
+    48	    return sizeof(nn_model);
+    49	}
+    50	
+    51	{% for namespace in namespaces %}
+    52	} /* namespace {{namespace}} */
+    53	{% endfor %}
+
+===== END =====
