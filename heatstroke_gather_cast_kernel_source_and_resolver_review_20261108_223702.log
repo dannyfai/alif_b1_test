@@ -1,0 +1,874 @@
+===== GATHER / CAST KERNEL SOURCE AND RESOLVER REVIEW =====
+Sun Nov  8 10:37:02 PM HKT 2026
+===== EXACT GATHER KERNEL SOURCE =====
+-rw-rw-r-- 1 user user 8000 Oct  6 13:44 /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc
+156800ee9c0bce283defae15d51a7207dc0b51134e3f9182fbcd2047cd8969c8  /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc
+     1	/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	#include "tensorflow/lite/c/builtin_op_data.h"
+    17	#include "tensorflow/lite/c/common.h"
+    18	#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+    19	#include "tensorflow/lite/kernels/kernel_util.h"
+    20	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    21	#include "tensorflow/lite/micro/micro_log.h"
+    22	#include "tensorflow/lite/micro/micro_utils.h"
+    23	
+    24	namespace tflite {
+    25	namespace {
+    26	
+    27	constexpr int kInputTensor = 0;
+    28	constexpr int kInputPositions = 1;
+    29	constexpr int kOutputTensor = 0;
+    30	
+    31	template <typename InputT, typename CoordsT = int32_t>
+    32	TfLiteStatus Gather(const TfLiteGatherParams* params,
+    33	                    const TfLiteEvalTensor* input,
+    34	                    const TfLiteEvalTensor* coords, TfLiteEvalTensor* output) {
+    35	  const InputT* input_data = tflite::micro::GetTensorData<InputT>(input);
+    36	  const CoordsT* coords_data = tflite::micro::GetTensorData<CoordsT>(coords);
+    37	  InputT* output_data = tflite::micro::GetTensorData<InputT>(output);
+    38	  const TfLiteIntArray* input_dims = input->dims;
+    39	  const int input_dims_size = input_dims->size;
+    40	  int axis = params->axis;
+    41	  if (axis < 0) {
+    42	    axis += input_dims_size;
+    43	  }
+    44	  TFLITE_DCHECK_GE(axis, 0);
+    45	  TFLITE_DCHECK_LT(axis, input_dims_size);
+    46	
+    47	  int batch_dims = params->batch_dims;
+    48	  // batch_dims should be in range: [-rank(coords), rank(coords)].
+    49	  // Negative batch_dims is added with rank of coords.
+    50	  const TfLiteIntArray* coords_dims = coords->dims;
+    51	  const int coords_dims_size = coords_dims->size;
+    52	  if (batch_dims < 0) {
+    53	    batch_dims += coords_dims_size;
+    54	  }
+    55	  TFLITE_DCHECK_GE(batch_dims, 0);
+    56	  TFLITE_DCHECK_LT(batch_dims, input_dims_size);
+    57	  TFLITE_DCHECK_LE(batch_dims, coords_dims_size);
+    58	  TFLITE_DCHECK_GE(axis, batch_dims);
+    59	  for (int i = 0; i < batch_dims; ++i) {
+    60	    TFLITE_DCHECK_EQ(input_dims->data[i], coords_dims->data[i]);
+    61	  }
+    62	
+    63	  const int axis_size = input_dims->data[axis];
+    64	
+    65	  int batch_size = 1;
+    66	  for (int i = 0; i < batch_dims; ++i) {
+    67	    batch_size *= input_dims->data[i];
+    68	  }
+    69	  int outer_size = 1;
+    70	  for (int i = batch_dims; i < axis; ++i) {
+    71	    outer_size *= input_dims->data[i];
+    72	  }
+    73	  int inner_size = 1;
+    74	  for (int i = axis + 1; i < input_dims_size; ++i) {
+    75	    inner_size *= input_dims->data[i];
+    76	  }
+    77	  int coord_size = 1;
+    78	  for (int i = batch_dims; i < coords_dims_size; ++i) {
+    79	    coord_size *= coords_dims->data[i];
+    80	  }
+    81	
+    82	  for (int batch = 0; batch < batch_size; ++batch) {
+    83	    for (int outer = 0; outer < outer_size; ++outer) {
+    84	      for (int coord = 0; coord < coord_size; ++coord) {
+    85	        TFLITE_DCHECK_GE(coords_data[coord], 0);
+    86	        TFLITE_DCHECK_LT(coords_data[coord], axis_size);
+    87	        std::memcpy(output_data +
+    88	                        (((batch * outer_size) + outer) * coord_size + coord) *
+    89	                            inner_size,
+    90	                    input_data + (((batch * outer_size) + outer) * axis_size +
+    91	                                  coords_data[batch * coord_size + coord]) *
+    92	                                     inner_size,
+    93	                    sizeof(InputT) * inner_size);
+    94	      }
+    95	    }
+    96	  }
+    97	  return kTfLiteOk;
+    98	}
+    99	
+   100	TfLiteStatus GatherPrepare(TfLiteContext* context, TfLiteNode* node) {
+   101	  MicroContext* micro_context = GetMicroContext(context);
+   102	
+   103	  TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
+   104	  TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+   105	
+   106	  const auto* params =
+   107	      reinterpret_cast<const TfLiteGatherParams*>(node->builtin_data);
+   108	  TfLiteTensor* input =
+   109	      micro_context->AllocateTempInputTensor(node, kInputTensor);
+   110	  TF_LITE_ENSURE(context, input != nullptr);
+   111	  TfLiteTensor* coords =
+   112	      micro_context->AllocateTempInputTensor(node, kInputPositions);
+   113	  TF_LITE_ENSURE(context, coords != nullptr);
+   114	  TfLiteTensor* output =
+   115	      micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+   116	  TF_LITE_ENSURE(context, output != nullptr);
+   117	
+   118	  switch (coords->type) {
+   119	    case kTfLiteInt32:
+   120	      break;
+   121	    default:
+   122	      MicroPrintf("Positions of type '%s' are not supported by gather.",
+   123	                  TfLiteTypeGetName(coords->type));
+   124	      return kTfLiteError;
+   125	      break;
+   126	  }
+   127	
+   128	  // Assign to output the input type.
+   129	  output->type = input->type;
+   130	
+   131	  // Check conditions for different types.
+   132	  switch (input->type) {
+   133	    case kTfLiteFloat32:
+   134	    case kTfLiteInt8:
+   135	      break;
+   136	    default:
+   137	      MicroPrintf("Type '%s' is not supported by gather.",
+   138	                  TfLiteTypeGetName(input->type));
+   139	      return kTfLiteError;
+   140	      break;
+   141	  }
+   142	
+   143	  int axis = params->axis;
+   144	  if (axis < 0) {
+   145	    axis += NumDimensions(input);
+   146	  }
+   147	  TF_LITE_ENSURE(context, 0 <= axis && axis < NumDimensions(input));
+   148	
+   149	  int batch_dims = params->batch_dims;
+   150	  // batch_dims should be in range: [-rank(coords), rank(coords)].
+   151	  // Negative batch_dims is added with rank of coords.
+   152	  if (batch_dims < 0) {
+   153	    batch_dims += NumDimensions(coords);
+   154	  }
+   155	  TF_LITE_ENSURE(context, batch_dims <= axis);
+   156	  TF_LITE_ENSURE(context, 0 <= batch_dims && batch_dims < NumDimensions(input));
+   157	  TF_LITE_ENSURE(context, batch_dims <= NumDimensions(coords));
+   158	  for (int i = 0; i < batch_dims; ++i) {
+   159	    TF_LITE_ENSURE_EQ(context, input->dims->data[i], coords->dims->data[i]);
+   160	  }
+   161	
+   162	  // GATHER updates the output tensor dimensions, but TfLiteTensor in the
+   163	  // MicroInterpreter is a temporary allocation. We must therefore relocate the
+   164	  // dims from the FlatBuffer to the persistent storage arena.
+   165	  TfLiteEvalTensor* output_eval =
+   166	      tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+   167	  TF_LITE_ENSURE_OK(context, tflite::micro::CreateWritableTensorDimsWithCopy(
+   168	                                 context, output, output_eval));
+   169	
+   170	  TfLiteIntArray* output_shape = output->dims;
+   171	  output_shape->size =
+   172	      NumDimensions(input) + NumDimensions(coords) - 1 - batch_dims;
+   173	  int output_index = 0;
+   174	  for (int i = 0; i < axis; ++i) {
+   175	    output_shape->data[output_index++] = input->dims->data[i];
+   176	  }
+   177	  for (int i = batch_dims; i < coords->dims->size; ++i) {
+   178	    output_shape->data[output_index++] = coords->dims->data[i];
+   179	  }
+   180	  for (int i = axis + 1; i < input->dims->size; ++i) {
+   181	    output_shape->data[output_index++] = input->dims->data[i];
+   182	  }
+   183	
+   184	  micro_context->DeallocateTempTfLiteTensor(input);
+   185	  micro_context->DeallocateTempTfLiteTensor(coords);
+   186	  micro_context->DeallocateTempTfLiteTensor(output);
+   187	
+   188	  return kTfLiteOk;
+   189	}
+   190	
+   191	TfLiteStatus GatherEval(TfLiteContext* context, TfLiteNode* node) {
+   192	  const auto* params =
+   193	      reinterpret_cast<const TfLiteGatherParams*>(node->builtin_data);
+   194	  const TfLiteEvalTensor* input =
+   195	      tflite::micro::GetEvalInput(context, node, kInputTensor);
+   196	  const TfLiteEvalTensor* coords =
+   197	      tflite::micro::GetEvalInput(context, node, kInputPositions);
+   198	  TfLiteEvalTensor* output =
+   199	      tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+   200	
+   201	  if (coords->type == kTfLiteInt32) {
+   202	    switch (input->type) {
+   203	      case kTfLiteFloat32:
+   204	        return Gather<float, int32_t>(params, input, coords, output);
+   205	        break;
+   206	      case kTfLiteInt8:
+   207	        return Gather<int8_t, int32_t>(params, input, coords, output);
+   208	        break;
+   209	      default:
+   210	        MicroPrintf("Type '%s' is not supported by gather.",
+   211	                    TfLiteTypeGetName(input->type));
+   212	        return kTfLiteError;
+   213	        break;
+   214	    }
+   215	  }
+   216	  return kTfLiteOk;
+   217	}
+   218	}  // namespace
+   219	
+   220	TFLMRegistration Register_GATHER() {
+   221	  return tflite::micro::RegisterOp(nullptr, GatherPrepare, GatherEval);
+   222	}
+   223	
+   224	}  // namespace tflite
+===== EXACT CAST KERNEL SOURCE =====
+-rw-rw-r-- 1 user user 4342 Oct 30 16:34 /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc
+388e7b6e978b35355e2696b40470d0ef0d3160495850fde720d8564c038bcc2e  /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	#include "tensorflow/lite/c/common.h"
+    17	#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+    18	#include "tensorflow/lite/kernels/kernel_util.h"
+    19	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    20	#include "tensorflow/lite/micro/micro_log.h"
+    21	
+    22	namespace tflite {
+    23	namespace {
+    24	
+    25	constexpr int kInputTensor = 0;
+    26	constexpr int kOutputTensor = 0;
+    27	
+    28	TfLiteStatus CastPrepare(TfLiteContext* context, TfLiteNode* node) {
+    29	  TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
+    30	  TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+    31	
+    32	  MicroContext* micro_context = GetMicroContext(context);
+    33	
+    34	  TfLiteTensor* input =
+    35	      micro_context->AllocateTempInputTensor(node, kInputTensor);
+    36	  TF_LITE_ENSURE(context, input != nullptr);
+    37	  TfLiteTensor* output =
+    38	      micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+    39	  TF_LITE_ENSURE(context, output != nullptr);
+    40	
+    41	  micro_context->DeallocateTempTfLiteTensor(input);
+    42	  micro_context->DeallocateTempTfLiteTensor(output);
+    43	
+    44	  return kTfLiteOk;
+    45	}
+    46	
+    47	template <typename FromT, typename ToT>
+    48	void copyCast(const FromT* in, ToT* out, int num_elements) {
+    49	  std::transform(in, in + num_elements, out,
+    50	                 [](FromT a) { return static_cast<ToT>(a); });
+    51	}
+    52	
+    53	template <typename FromT>
+    54	TfLiteStatus copyToTensor(TfLiteContext* context, const FromT* in,
+    55	                          TfLiteEvalTensor* out, int num_elements) {
+    56	  switch (out->type) {
+    57	    case kTfLiteInt8:
+    58	      copyCast(in, out->data.int8, num_elements);
+    59	      break;
+    60	    case kTfLiteInt16:
+    61	      copyCast(in, out->data.i16, num_elements);
+    62	      break;
+    63	    case kTfLiteInt32:
+    64	      copyCast(in, out->data.i32, num_elements);
+    65	      break;
+    66	    case kTfLiteUInt32:
+    67	      copyCast(in, out->data.u32, num_elements);
+    68	      break;
+    69	    case kTfLiteFloat32:
+    70	      copyCast(in, tflite::micro::GetTensorData<float>(out), num_elements);
+    71	      break;
+    72	    default:
+    73	      // Unsupported type.
+    74	      MicroPrintf("Output type %s (%d) not supported.",
+    75	                  TfLiteTypeGetName(out->type), out->type);
+    76	  }
+    77	  return kTfLiteOk;
+    78	}
+    79	
+    80	TfLiteStatus CastEval(TfLiteContext* context, TfLiteNode* node) {
+    81	  const TfLiteEvalTensor* input =
+    82	      tflite::micro::GetEvalInput(context, node, kInputTensor);
+    83	  TfLiteEvalTensor* output =
+    84	      tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+    85	  int num_elements = MatchingFlatSize(tflite::micro::GetTensorShape(input),
+    86	                                      tflite::micro::GetTensorShape(output));
+    87	
+    88	  switch (input->type) {
+    89	    case kTfLiteInt8:
+    90	      return copyToTensor(context, input->data.int8, output, num_elements);
+    91	    case kTfLiteInt16:
+    92	      return copyToTensor(context, tflite::micro::GetTensorData<int16_t>(input),
+    93	                          output, num_elements);
+    94	    case kTfLiteInt32:
+    95	      return copyToTensor(context, tflite::micro::GetTensorData<int32_t>(input),
+    96	                          output, num_elements);
+    97	    case kTfLiteUInt32:
+    98	      return copyToTensor(context,
+    99	                          tflite::micro::GetTensorData<uint32_t>(input), output,
+   100	                          num_elements);
+   101	    case kTfLiteFloat32:
+   102	      return copyToTensor(context, tflite::micro::GetTensorData<float>(input),
+   103	                          output, num_elements);
+   104	    case kTfLiteBool:
+   105	      return copyToTensor(context, tflite::micro::GetTensorData<bool>(input),
+   106	                          output, num_elements);
+   107	    default:
+   108	      // Unsupported type.
+   109	      MicroPrintf("Input type %s (%d) not supported.",
+   110	                  TfLiteTypeGetName(input->type), input->type);
+   111	  }
+   112	  return kTfLiteOk;
+   113	}
+   114	}  // namespace
+   115	
+   116	TFLMRegistration Register_CAST() {
+   117	  return tflite::micro::RegisterOp(nullptr, CastPrepare, CastEval);
+   118	}
+   119	
+   120	}  // namespace tflite
+===== GATHER REFERENCE IMPLEMENTATION =====
+===== CAST REGISTRATION AND RESOLVER API =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-52-using AudioPreprocessorOpResolver = tflite::MicroMutableOpResolver<18>;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-53-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-54-TfLiteStatus RegisterOps(MicroSpeechOpResolver& op_resolver) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-55-  TF_LITE_ENSURE_STATUS(op_resolver.AddReshape());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-56-  TF_LITE_ENSURE_STATUS(op_resolver.AddFullyConnected());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-57-  TF_LITE_ENSURE_STATUS(op_resolver.AddDepthwiseConv2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-58-  TF_LITE_ENSURE_STATUS(op_resolver.AddSoftmax());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-59-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-60-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-61-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-62-TfLiteStatus RegisterOps(AudioPreprocessorOpResolver& op_resolver) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-63-  TF_LITE_ENSURE_STATUS(op_resolver.AddReshape());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc:64:  TF_LITE_ENSURE_STATUS(op_resolver.AddCast());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-65-  TF_LITE_ENSURE_STATUS(op_resolver.AddStridedSlice());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-66-  TF_LITE_ENSURE_STATUS(op_resolver.AddConcatenation());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-67-  TF_LITE_ENSURE_STATUS(op_resolver.AddMul());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-68-  TF_LITE_ENSURE_STATUS(op_resolver.AddAdd());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-69-  TF_LITE_ENSURE_STATUS(op_resolver.AddDiv());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-70-  TF_LITE_ENSURE_STATUS(op_resolver.AddMinimum());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-71-  TF_LITE_ENSURE_STATUS(op_resolver.AddMaximum());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-72-  TF_LITE_ENSURE_STATUS(op_resolver.AddWindow());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-73-  TF_LITE_ENSURE_STATUS(op_resolver.AddFftAutoScale());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-74-  TF_LITE_ENSURE_STATUS(op_resolver.AddRfft());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-75-  TF_LITE_ENSURE_STATUS(op_resolver.AddEnergy());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-76-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBank());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-77-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBankSquareRoot());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-78-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBankSpectralSubtraction());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/micro_speech/micro_speech_test.cc-79-  TF_LITE_ENSURE_STATUS(op_resolver.AddPCAN());
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-178-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-179-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-180-  TfLiteStatus AddBroadcastTo() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-181-    return AddBuiltin(BuiltinOperator_BROADCAST_TO, Register_BROADCAST_TO(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-182-                      ParseBroadcastTo);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-183-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-184-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-185-  TfLiteStatus AddCallOnce() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-186-    return AddBuiltin(BuiltinOperator_CALL_ONCE, Register_CALL_ONCE(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-187-                      ParseCallOnce);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-188-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-189-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:190:  TfLiteStatus AddCast() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:191:    return AddBuiltin(BuiltinOperator_CAST, Register_CAST(), ParseCast);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-192-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-193-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-194-  TfLiteStatus AddCeil() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-195-    return AddBuiltin(BuiltinOperator_CEIL, Register_CEIL(), ParseCeil);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-196-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-197-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-198-  TfLiteStatus AddCircularBuffer() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-199-    return AddCustom("CIRCULAR_BUFFER", tflite::Register_CIRCULAR_BUFFER());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-200-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-201-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-202-  TfLiteStatus AddConcatenation() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-203-    return AddBuiltin(BuiltinOperator_CONCATENATION, Register_CONCATENATION(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-204-                      ParseConcatenation);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-205-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-206-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-339-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-340-  TfLiteStatus AddFramer() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-341-    // TODO(b/286250473): change back name to "Framer" and remove namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-342-    return AddCustom("SignalFramer", tflite::tflm_signal::Register_FRAMER());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-343-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-344-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-345-  TfLiteStatus AddFullyConnected(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-346-      const TFLMRegistration& registration = Register_FULLY_CONNECTED()) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-347-    return AddBuiltin(BuiltinOperator_FULLY_CONNECTED, registration,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-348-                      ParseFullyConnected);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-349-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-350-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:351:  TfLiteStatus AddGather() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:352:    return AddBuiltin(BuiltinOperator_GATHER, tflite::Register_GATHER(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-353-                      ParseGather);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-354-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-355-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:356:  TfLiteStatus AddGatherNd() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:357:    return AddBuiltin(BuiltinOperator_GATHER_ND, tflite::Register_GATHER_ND(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-358-                      ParseGatherNd);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-359-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-360-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-361-  TfLiteStatus AddGreater() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-362-    return AddBuiltin(BuiltinOperator_GREATER, Register_GREATER(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-363-                      ParseGreater);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-364-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-365-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-366-  TfLiteStatus AddGreaterEqual() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-367-    return AddBuiltin(BuiltinOperator_GREATER_EQUAL, Register_GREATER_EQUAL(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-368-                      ParseGreaterEqual);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-369-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-370-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-371-  TfLiteStatus AddHardSwish() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-372-    return AddBuiltin(BuiltinOperator_HARD_SWISH, tflite::Register_HARD_SWISH(),
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-29-  TF_LITE_ENSURE_STATUS(op_resolver.AddAbs());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-30-  TF_LITE_ENSURE_STATUS(op_resolver.AddAdd());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-31-  TF_LITE_ENSURE_STATUS(op_resolver.AddAddN());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-32-  TF_LITE_ENSURE_STATUS(op_resolver.AddArgMax());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-33-  TF_LITE_ENSURE_STATUS(op_resolver.AddArgMin());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-34-  TF_LITE_ENSURE_STATUS(op_resolver.AddAssignVariable());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-35-  TF_LITE_ENSURE_STATUS(op_resolver.AddAveragePool2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-36-  TF_LITE_ENSURE_STATUS(op_resolver.AddBatchMatMul());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-37-  TF_LITE_ENSURE_STATUS(op_resolver.AddBatchToSpaceNd());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-38-  TF_LITE_ENSURE_STATUS(op_resolver.AddBroadcastArgs());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-39-  TF_LITE_ENSURE_STATUS(op_resolver.AddBroadcastTo());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-40-  TF_LITE_ENSURE_STATUS(op_resolver.AddCallOnce());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h:41:  TF_LITE_ENSURE_STATUS(op_resolver.AddCast());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-42-  TF_LITE_ENSURE_STATUS(op_resolver.AddCeil());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-43-  TF_LITE_ENSURE_STATUS(op_resolver.AddCircularBuffer());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-44-  TF_LITE_ENSURE_STATUS(op_resolver.AddConcatenation());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-45-  TF_LITE_ENSURE_STATUS(op_resolver.AddConv2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-46-  TF_LITE_ENSURE_STATUS(op_resolver.AddCos());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-47-  TF_LITE_ENSURE_STATUS(op_resolver.AddCumSum());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-48-  TF_LITE_ENSURE_STATUS(op_resolver.AddDelay());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-49-  TF_LITE_ENSURE_STATUS(op_resolver.AddDepthToSpace());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-50-  TF_LITE_ENSURE_STATUS(op_resolver.AddDepthwiseConv2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-51-  TF_LITE_ENSURE_STATUS(op_resolver.AddDequantize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-52-  TF_LITE_ENSURE_STATUS(op_resolver.AddDetectionPostprocess());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-53-  TF_LITE_ENSURE_STATUS(op_resolver.AddDiv());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-54-  TF_LITE_ENSURE_STATUS(op_resolver.AddElu());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-55-  TF_LITE_ENSURE_STATUS(op_resolver.AddEmbeddingLookup());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-56-  TF_LITE_ENSURE_STATUS(op_resolver.AddEnergy());
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-60-  TF_LITE_ENSURE_STATUS(op_resolver.AddExpandDims());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-61-  TF_LITE_ENSURE_STATUS(op_resolver.AddFftAutoScale());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-62-  TF_LITE_ENSURE_STATUS(op_resolver.AddFill());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-63-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBank());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-64-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBankLog());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-65-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBankSpectralSubtraction());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-66-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBankSquareRoot());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-67-  TF_LITE_ENSURE_STATUS(op_resolver.AddFloor());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-68-  TF_LITE_ENSURE_STATUS(op_resolver.AddFloorDiv());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-69-  TF_LITE_ENSURE_STATUS(op_resolver.AddFloorMod());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-70-  TF_LITE_ENSURE_STATUS(op_resolver.AddFramer());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-71-  TF_LITE_ENSURE_STATUS(op_resolver.AddFullyConnected());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h:72:  TF_LITE_ENSURE_STATUS(op_resolver.AddGather());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h:73:  TF_LITE_ENSURE_STATUS(op_resolver.AddGatherNd());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-74-  TF_LITE_ENSURE_STATUS(op_resolver.AddGreater());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-75-  TF_LITE_ENSURE_STATUS(op_resolver.AddGreaterEqual());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-76-  TF_LITE_ENSURE_STATUS(op_resolver.AddHardSwish());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-77-  TF_LITE_ENSURE_STATUS(op_resolver.AddIf());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-78-  TF_LITE_ENSURE_STATUS(op_resolver.AddIrfft());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-79-  TF_LITE_ENSURE_STATUS(op_resolver.AddL2Normalization());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-80-  TF_LITE_ENSURE_STATUS(op_resolver.AddL2Pool2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-81-  TF_LITE_ENSURE_STATUS(op_resolver.AddLeakyRelu());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-82-  TF_LITE_ENSURE_STATUS(op_resolver.AddLess());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-83-  TF_LITE_ENSURE_STATUS(op_resolver.AddLessEqual());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-84-  TF_LITE_ENSURE_STATUS(op_resolver.AddLog());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-85-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogSoftmax());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-86-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogicalAnd());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-87-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogicalNot());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-88-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogicalOr());
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-38-  constexpr int outputs_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-39-  constexpr int tensors_size = inputs_size + outputs_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-40-  TfLiteTensor tensors[tensors_size] = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-41-      CreateTensor(input_data, in_dims),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-42-      CreateTensor(positions_data, pos_dims),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-43-      CreateTensor(output_data, out_dims, true),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-44-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-45-  int inputs_array_data[] = {2, 0, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-46-  TfLiteIntArray* inputs_array = IntArrayFromInts(inputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-47-  int outputs_array_data[] = {1, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-48-  TfLiteIntArray* outputs_array = IntArrayFromInts(outputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-49-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc:50:  const TFLMRegistration registration = Register_GATHER();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-51-  micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-52-                             outputs_array, &params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-53-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-54-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-55-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-56-  // The output tensor's data and shape have been updated by the kernel.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-57-  TfLiteTensor* actual_output_tensor = &tensors[2];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-58-  TfLiteIntArray* actual_output_dims = actual_output_tensor->dims;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-59-  const int actual_output_dims_size = actual_output_dims->size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-60-  const int output_size = ElementCount(*actual_output_dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-61-  for (int i = 0; i < output_size; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-62-    TF_LITE_MICRO_EXPECT_EQ(expected_output_data[i], output_data[i]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-63-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-64-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_test.cc-65-  // Compare output tensor's shape if expected_output_dims[] is provided.
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-208-        break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-209-      default:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-210-        MicroPrintf("Type '%s' is not supported by gather.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-211-                    TfLiteTypeGetName(input->type));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-212-        return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-213-        break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-214-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-215-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-216-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-217-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-218-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-219-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:220:TFLMRegistration Register_GATHER() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-221-  return tflite::micro::RegisterOp(nullptr, GatherPrepare, GatherEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-222-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-223-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc-224-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-104-    case kTfLiteBool:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-105-      return copyToTensor(context, tflite::micro::GetTensorData<bool>(input),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-106-                          output, num_elements);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-107-    default:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-108-      // Unsupported type.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-109-      MicroPrintf("Input type %s (%d) not supported.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-110-                  TfLiteTypeGetName(input->type), input->type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-111-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-112-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-113-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-114-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-115-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:116:TFLMRegistration Register_CAST() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-117-  return tflite::micro::RegisterOp(nullptr, CastPrepare, CastEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-118-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-119-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc-120-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-196-  switch (indices->type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-197-    case kTfLiteInt32:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-198-      return EvalGatherNd<int32_t>(context, params, indices, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-199-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-200-    default:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-201-      MicroPrintf("Indices of type '%s' are not supported by gather_nd.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-202-                  TfLiteTypeGetName(indices->type));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-203-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-204-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-205-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-206-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-207-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc:208:TFLMRegistration Register_GATHER_ND() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-209-  return tflite::micro::RegisterOp(nullptr, GatherNdPrepare, GatherNdEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-210-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-211-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc-212-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-33-  constexpr int outputs_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-34-  constexpr int tensors_size = inputs_size + outputs_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-35-  TfLiteTensor tensors[tensors_size] = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-36-      CreateTensor(input_data, input_dims),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-37-      CreateTensor(output_data, output_dims),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-38-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-39-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-40-  int inputs_array_data[] = {1, 0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-41-  TfLiteIntArray* inputs_array = IntArrayFromInts(inputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-42-  int outputs_array_data[] = {1, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-43-  TfLiteIntArray* outputs_array = IntArrayFromInts(outputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-44-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc:45:  const TFLMRegistration registration = Register_CAST();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-46-  micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-47-                             outputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-48-                             /*builtin_data=*/nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-49-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-50-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-51-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-52-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-53-  for (int i = 0; i < output_dims_count; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-54-    TF_LITE_MICRO_EXPECT_EQ(expected_output_data[i], output_data[i]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-55-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-56-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-57-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-58-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-59-}  // namespace testing
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast_test.cc-60-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-35-  constexpr int outputs_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-36-  constexpr int tensors_size = inputs_size + outputs_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-37-  TfLiteTensor tensors[tensors_size] = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-38-      CreateTensor(param_data, pdims),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-39-      CreateTensor(index_data, idims),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-40-      CreateTensor(output_data, odims),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-41-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-42-  int inputs_array_data[] = {2, 0, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-43-  TfLiteIntArray* inputs_array = IntArrayFromInts(inputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-44-  int outputs_array_data[] = {1, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-45-  TfLiteIntArray* outputs_array = IntArrayFromInts(outputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-46-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc:47:  const TFLMRegistration registration = Register_GATHER_ND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-48-  micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-49-                             outputs_array, /*builtin_data=*/nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-50-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-51-  TF_LITE_MICRO_EXPECT_EQ(expected_status, runner.Invoke());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-52-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-53-  if (expected_status == kTfLiteOk) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-54-    // The output tensor's data and shape have been updated by the kernel.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-55-    TfLiteTensor* actual_output_tensor = &tensors[2];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-56-    TfLiteIntArray* actual_output_dims = actual_output_tensor->dims;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-57-    const int output_size = ElementCount(*actual_output_dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-58-    for (int i = 0; i < output_size; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-59-      TF_LITE_MICRO_EXPECT_EQ(expected_output_data[i], output_data[i]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-60-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-61-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd_test.cc-62-}
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-36-TFLMRegistration Register_ABS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-37-TFLMRegistration Register_ADD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-38-TFLMRegistration Register_ADD_N();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-39-TFLMRegistration Register_ARG_MAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-40-TFLMRegistration Register_ARG_MIN();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-41-TFLMRegistration Register_ASSIGN_VARIABLE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-42-TFLMRegistration Register_AVERAGE_POOL_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-43-TFLMRegistration Register_BATCH_MATMUL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-44-TFLMRegistration Register_BATCH_TO_SPACE_ND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-45-TFLMRegistration Register_BROADCAST_ARGS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-46-TFLMRegistration Register_BROADCAST_TO();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-47-TFLMRegistration Register_CALL_ONCE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:48:TFLMRegistration Register_CAST();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-49-TFLMRegistration Register_CEIL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-50-// TODO(b/160234179): Change custom OPs to also return by value.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-51-TFLMRegistration* Register_CIRCULAR_BUFFER();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-52-TFLMRegistration Register_CONCATENATION();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-53-TFLMRegistration Register_CONV_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-54-TFLMRegistration Register_COS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-55-TFLMRegistration Register_CUMSUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-56-TFLMRegistration Register_TOPK_V2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-57-TFLMRegistration Register_DEPTH_TO_SPACE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-58-TFLMRegistration Register_DEPTHWISE_CONV_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-59-TFLMRegistration Register_DEQUANTIZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-60-TFLMRegistration Register_DIV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-61-TFLMRegistration Register_ELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-62-TFLMRegistration Register_EMBEDDING_LOOKUP();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-63-TFLMRegistration Register_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-64-TFLMRegistration* Register_ETHOSU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-65-TFLMRegistration Register_EXP();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-66-TFLMRegistration Register_EXPAND_DIMS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-67-TFLMRegistration Register_FILL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-68-TFLMRegistration Register_FLOOR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-69-TFLMRegistration Register_FLOOR_DIV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-70-TFLMRegistration Register_FLOOR_MOD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-71-TFLMRegistration Register_FULLY_CONNECTED();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:72:TFLMRegistration Register_GATHER();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:73:TFLMRegistration Register_GATHER_ND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-74-TFLMRegistration Register_GREATER();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-75-TFLMRegistration Register_GREATER_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-76-TFLMRegistration Register_HARD_SWISH();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-77-TFLMRegistration Register_IF();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-78-TFLMRegistration Register_L2_NORMALIZATION();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-79-TFLMRegistration Register_L2_POOL_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-80-TFLMRegistration Register_LEAKY_RELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-81-TFLMRegistration Register_LESS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-82-TFLMRegistration Register_LESS_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-83-TFLMRegistration Register_LOG();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-84-TFLMRegistration Register_LOG_SOFTMAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-85-TFLMRegistration Register_LOGICAL_AND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-86-TFLMRegistration Register_LOGICAL_NOT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-87-TFLMRegistration Register_LOGICAL_OR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-88-TFLMRegistration Register_LOGISTIC();
+===== APPLICATION RESOLVER GATHER REGISTRATION =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-163-                #method);                                             \
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-164-            return false;                                             \
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-165-        }                                                             \
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-166-    } while (0)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-167-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-168-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-169-     * 29 ordinary built-in operators required by the exact Vela model.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-170-     * These CPU registrations must remain available with Ethos-U enabled.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-171-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-172-    HS_ADD_REQUIRED(AddAdd);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-173-    HS_ADD_REQUIRED(AddBroadcastArgs);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-174-    HS_ADD_REQUIRED(AddBroadcastTo);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:175:    HS_ADD_REQUIRED(AddCast);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-176-    HS_ADD_REQUIRED(AddConcatenation);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-177-    HS_ADD_REQUIRED(AddCumSum);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-178-    HS_ADD_REQUIRED(AddDequantize);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-179-    HS_ADD_REQUIRED(AddDiv);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-180-    HS_ADD_REQUIRED(AddEqual);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-181-    HS_ADD_REQUIRED(AddFloorMod);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:182:    HS_ADD_REQUIRED(AddGather);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-183-    HS_ADD_REQUIRED(AddGreater);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-184-    HS_ADD_REQUIRED(AddLogicalAnd);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-185-    HS_ADD_REQUIRED(AddLogicalNot);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-186-    HS_ADD_REQUIRED(AddMaximum);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-187-    HS_ADD_REQUIRED(AddMean);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-188-    HS_ADD_REQUIRED(AddMul);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-189-    HS_ADD_REQUIRED(AddNeg);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-190-    HS_ADD_REQUIRED(AddQuantize);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-191-    HS_ADD_REQUIRED(AddReshape);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-192-    HS_ADD_REQUIRED(AddRsqrt);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-193-    HS_ADD_REQUIRED(AddSelectV2);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-194-    HS_ADD_REQUIRED(AddSoftmax);
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-199-    HS_ADD_REQUIRED(AddSum);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-200-    HS_ADD_REQUIRED(AddTopKV2);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-201-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-202-#undef HS_ADD_REQUIRED
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-203-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-204-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-205-     * Custom SIGN registration under the built-in SIGN opcode.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-206-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-207-    {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-208-        const TFLMRegistration registration =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-209-            RegisterHeatstrokeSignKernel();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-210-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:211:        if (this->m_opResolver.AddBuiltin(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-212-                tflite::BuiltinOperator_SIGN,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-213-                registration,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-214-                ParseHeatstrokeSign) != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-215-            printf_err("Failed to register heat-stress SIGN.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-216-            return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-217-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-218-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-219-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-220-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-221-     * Custom compact bidirectional LSTM registration.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-222-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-223-    {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-224-        const TFLMRegistration registration =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-225-            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-226-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:227:        if (this->m_opResolver.AddBuiltin(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-228-                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-229-                registration,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-230-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-231-            printf_err(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-232-                "Failed to register heat-stress bidirectional LSTM.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-233-            return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-234-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-235-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-236-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-237-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-238-     * Ethos-U registration.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-239-     *
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-25-    static constexpr uint32_t ms_blankTokenIdx   = 28;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-26-    static constexpr uint32_t ms_numMfccFeatures = 13;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-27-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-28-protected:
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-29-    /** @brief   Gets the reference to op resolver interface class. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-30-    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-31-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-32-    /** @brief   Adds operations to the op resolver instance. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-33-    bool EnlistOperations() override;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-34-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-35-private:
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-36-    /* Maximum number of individual operations that can be enlisted. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:37:    static constexpr int ms_maxOpCnt = 32;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-38-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-39-    /* A mutable op resolver instance. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:40:    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-41-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-42-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-43-} /* namespace arm::app::fwk::tflm */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-44-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-45-#endif /* POLYU_MODEL1_HPP */
+===== APPLICATION SOURCE AND CMAKE INTEGRATION POINTS =====
+158-
+159-target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+160-
+161-
+162-if (CONFIG_USE_APP_MENU)
+163-target_compile_definitions(app PRIVATE USE_APP_MENU)
+164-endif()
+165-
+166:target_sources(app PRIVATE
+167-    src/application/main/Main.cc
+168-    src/use_case/alif_asr/src/MainLoop.cc
+169-    src/use_case/alif_asr/src/reverse_v2.cc
+170:    src/use_case/alif_asr/src/PolyUModel1.cc
+171:    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+172-    src/power/power_mgr.c
+173-    "${POLYU_MODEL_CPP}"
+174-)
+175-
+176-set(SRC_MAIN "src/application/main/Main.cc")
+177-
+178-list(APPEND SRC_MAIN_DEFS
+179-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+180-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+181-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+182-
+183-set_source_files_properties(${SRC_MAIN}
+184-    PROPERTIES COMPILE_DEFINITIONS
+185-    "${SRC_MAIN_DEFS}")
+186-
+187:target_link_libraries(app PRIVATE
+188-    mlek::ml_framework_impl
+189-)
+===== GATHER AND CAST INCLUDE DEPENDENCIES =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:16:#include "tensorflow/lite/c/builtin_op_data.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:17:#include "tensorflow/lite/c/common.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:18:#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:19:#include "tensorflow/lite/kernels/kernel_util.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:20:#include "tensorflow/lite/micro/kernels/kernel_util.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:21:#include "tensorflow/lite/micro/micro_log.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:22:#include "tensorflow/lite/micro/micro_utils.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:24:namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:25:namespace {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:33:                    const TfLiteEvalTensor* input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:34:                    const TfLiteEvalTensor* coords, TfLiteEvalTensor* output) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:100:TfLiteStatus GatherPrepare(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:165:  TfLiteEvalTensor* output_eval =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:166:      tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:191:TfLiteStatus GatherEval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:194:  const TfLiteEvalTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:195:      tflite::micro::GetEvalInput(context, node, kInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:196:  const TfLiteEvalTensor* coords =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:197:      tflite::micro::GetEvalInput(context, node, kInputPositions);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:198:  TfLiteEvalTensor* output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:199:      tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:218:}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:221:  return tflite::micro::RegisterOp(nullptr, GatherPrepare, GatherEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc:224:}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:16:#include "tensorflow/lite/c/common.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:17:#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:18:#include "tensorflow/lite/kernels/kernel_util.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:19:#include "tensorflow/lite/micro/kernels/kernel_util.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:20:#include "tensorflow/lite/micro/micro_log.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:22:namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:23:namespace {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:28:TfLiteStatus CastPrepare(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:55:                          TfLiteEvalTensor* out, int num_elements) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:80:TfLiteStatus CastEval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:81:  const TfLiteEvalTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:82:      tflite::micro::GetEvalInput(context, node, kInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:83:  TfLiteEvalTensor* output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:84:      tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:114:}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:117:  return tflite::micro::RegisterOp(nullptr, CastPrepare, CastEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc:120:}  // namespace tflite
+===== END =====
