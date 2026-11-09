@@ -1,0 +1,568 @@
+============================================================
+ETHOS-U KERNEL AND CORRECT MODEL AUDIT
+============================================================
+
+1. Ethos-U kernel source files
+
+----- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc -----
+11-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+12-See the License for the specific language governing permissions and
+13-limitations under the License.
+14-==============================================================================*/
+15-
+16-//
+17-// This is a stub file for non-Ethos platforms
+18-//
+19-#include "tensorflow/lite/micro/micro_common.h"
+20-
+21-namespace tflite {
+22-
+23:TFLMRegistration* Register_ETHOSU() { return nullptr; }
+24-
+25-const char* GetString_ETHOSU() { return ""; }
+26-
+27-}  // namespace tflite
+
+----- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h -----
+10-distributed under the License is distributed on an "AS IS" BASIS,
+11-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+12-See the License for the specific language governing permissions and
+13-limitations under the License.
+14-==============================================================================*/
+15-#ifndef TENSORFLOW_LITE_MICRO_KERNELS_ETHOSU_H_
+16-#define TENSORFLOW_LITE_MICRO_KERNELS_ETHOSU_H_
+17-
+18-#include "tensorflow/lite/c/common.h"
+19-
+20-namespace tflite {
+21-
+22:TFLMRegistration* Register_ETHOSU();
+23-
+24-const char* GetString_ETHOSU();
+25-
+26-}  // namespace tflite
+27-
+28-#endif  // TENSORFLOW_LITE_MICRO_KERNELS_ETHOSU_H_
+
+----- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc -----
+28-
+29-struct OpData {
+30-  int cms_data_size;
+31-  int base_addr_idx;
+32-  int base_addr_size_idx;
+33-};
+34-
+35-void* Init(TfLiteContext* context, const char* buffer, size_t length) {
+36-  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+37-  return context->AllocatePersistentBuffer(context, sizeof(OpData));
+38-}
+39-
+40:TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
+41-  TFLITE_DCHECK(context != nullptr);
+42-  TF_LITE_ENSURE(context, node->inputs->size > 0);
+43-  TFLITE_DCHECK(node->user_data != nullptr);
+44-  TF_LITE_ENSURE(context, node->custom_initial_data_size > 0);
+45-
+46-  OpData* data = static_cast<OpData*>(node->user_data);
+47-  int num_base_addr = node->inputs->size + node->outputs->size;
+48-
+49-  // Request arrays for the base address pointers and sizes.
+50:  TF_LITE_ENSURE_STATUS(context->RequestScratchBufferInArena(
+51-      context, num_base_addr * sizeof(uint64_t), &data->base_addr_idx));
+52:  TF_LITE_ENSURE_STATUS(context->RequestScratchBufferInArena(
+53-      context, num_base_addr * sizeof(size_t), &data->base_addr_size_idx));
+54-
+55-  // Get command stream data size.
+56-  MicroContext* micro_context = GetMicroContext(context);
+57-  TfLiteTensor* tensor = micro_context->AllocateTempInputTensor(node, 0);
+58-  data->cms_data_size = tensor->bytes;
+59-  micro_context->DeallocateTempTfLiteTensor(tensor);
+60-  return kTfLiteOk;
+61-}
+62-
+63-TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+64-  TFLITE_DCHECK(node->user_data != nullptr);
+65-  TFLITE_DCHECK(context != nullptr);
+66-  TFLITE_DCHECK(context->GetScratchBuffer != nullptr);
+67-
+68-  // Get base addresses.
+69-  TfLiteEvalTensor* tensor;
+70-  int i = 0;
+71-  int num_tensors = 0;
+72-  void* cms_data;
+73-  uint8_t co_type;
+74-  int result;
+75-  const OpData* data = static_cast<const OpData*>(node->user_data);
+76-  uint64_t* base_addrs = static_cast<uint64_t*>(
+77-      context->GetScratchBuffer(context, data->base_addr_idx));
+78-  size_t* base_addrs_size = static_cast<size_t*>(
+79-      context->GetScratchBuffer(context, data->base_addr_size_idx));
+80-
+81-  const uint8_t* custom_data =
+82-      static_cast<uint8_t const*>(node->custom_initial_data);
+83-  auto root = flexbuffers::GetRoot(custom_data, node->custom_initial_data_size);
+84-  co_type = root.AsInt8();
+85-  if (co_type != CO_TYPE_ETHOSU) {
+86-    MicroPrintf("CO_TYPE != ETHOSU");
+87-    return kTfLiteError;
+88-  }
+89-
+90-  // Get command stream data address.
+91-  tensor = context->GetEvalTensor(context, node->inputs->data[0]);
+92-  cms_data = reinterpret_cast<void*>(tensor->data.uint8);
+93-
+94:  // Get addresses to weights/scratch/input data.
+95-  for (i = 1; i < node->inputs->size; ++i) {
+96-    tensor = context->GetEvalTensor(context, node->inputs->data[i]);
+97-    base_addrs[num_tensors] =
+98-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(tensor->data.uint8));
+99-    size_t byte_size = 1;
+100-    for (int k = 0; k < tensor->dims->size; k++) {
+101-      byte_size = byte_size * tensor->dims->data[k];
+102-    }
+103-    base_addrs_size[num_tensors] = byte_size;
+104-    num_tensors++;
+105-  }
+106-
+107-  // Get addresses to output data.
+108-  for (i = 0; i < node->outputs->size; ++i) {
+109-    tensor = context->GetEvalTensor(context, node->outputs->data[i]);
+110-    base_addrs[num_tensors] =
+111-        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(tensor->data.uint8));
+112-    size_t byte_size = 1;
+113-    for (int k = 0; k < tensor->dims->size; k++) {
+114-      byte_size = byte_size * tensor->dims->data[k];
+115-    }
+116-    base_addrs_size[num_tensors] = byte_size;
+117-    num_tensors++;
+118-  }
+119-
+120-  // When Vela optimizes a tflite file it will assign the tensors like this:
+121-  //
+122-  // +-------+------------------------+  +--------+-------------+
+123-  // | INPUT | Description            |  | OUTPUT | Description |
+124-  // +-------+------------------------+  +--------+-------------+
+125-  // |     0 | Ethos-U command stream |  |   0..m | Outputs     |
+126-  // |     1 | TFLM model             |  +--------+-------------+
+127-  // |     2 | TFLM arena             |
+128:  // |     3 | Ethos-U fast scratch   |
+129-  // |  4..n | Inputs                 |
+130-  // +-------+------------------------+
+131-  //
+132-  // This code will assign the NPU base addresses like this:
+133-  //
+134-  // +--------------+----------------------+
+135-  // | Base address | Description          |
+136-  // +--------------+----------------------+
+137-  // |            0 | TFLM model           |
+138-  // |            1 | TFLM arena           |
+139:  // |            2 | Ethos-U fast scratch |
+140-  // |         3..n | Input tensors        |
+141-  // |         n..m | Output tensors       |
+142-  // +--------------+----------------------+
+143-  //
+144-  // The number of base address will be limited to 8.
+145-  //
+146-  // NOTE! The command stream produced by Vela will access the IFM and OFM
+147-  // buffers using base address 1. This means that it is not possible to point
+148-  // the input and output tensors outside of the TFLM arena.
+149-  num_tensors = std::min(num_tensors, 8);
+150-
+151-  struct ethosu_driver* drv = ethosu_reserve_driver();
+152-  result = ethosu_invoke_v3(drv, cms_data, data->cms_data_size, base_addrs,
+153-                            base_addrs_size, num_tensors,
+154-                            GetMicroContext(context)->external_context());
+155-  ethosu_release_driver(drv);
+156-
+157-  if (-1 == result) {
+158-    return kTfLiteError;
+159-  } else {
+160-    return kTfLiteOk;
+161-  }
+162-}
+163-
+164-}  // namespace
+165-
+166:TFLMRegistration* Register_ETHOSU() {
+167:  static TFLMRegistration r = tflite::micro::RegisterOp(Init, Prepare, Eval);
+168-  return &r;
+169-}
+170-
+171-const char* GetString_ETHOSU() { return "ethos-u"; }
+172-
+173-}  // namespace tflite
+
+2. Ethos-U kernel registration references
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-267-    return AddBuiltin(BuiltinOperator_ELU, tflite::Register_ELU(), ParseElu);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-268-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-269-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-270-  TfLiteStatus AddEqual() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-271-    return AddBuiltin(BuiltinOperator_EQUAL, Register_EQUAL(), ParseEqual);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-272-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-273-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-274-  TfLiteStatus AddEthosU() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:275:    TFLMRegistration* registration = tflite::Register_ETHOSU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-276-    if (registration) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-277-      return AddCustom(tflite::GetString_ETHOSU(), registration);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-278-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-279-    return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-280-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-281-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-282-  TfLiteStatus AddExp() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-283-    return AddBuiltin(BuiltinOperator_EXP, Register_EXP(), ParseExp);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-284-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-285-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-286-  TfLiteStatus AddExpandDims() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-287-    return AddBuiltin(BuiltinOperator_EXPAND_DIMS, Register_EXPAND_DIMS(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-288-                      ParseExpandDims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-289-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-290-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-291-  TfLiteStatus AddFftAutoScale() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-292-    // TODO(b/286250473): change back name and remove namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-293-    return AddCustom("SignalFftAutoScale",
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-14-==============================================================================*/
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-15-#ifndef TENSORFLOW_LITE_MICRO_KERNELS_ETHOSU_H_
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-16-#define TENSORFLOW_LITE_MICRO_KERNELS_ETHOSU_H_
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-17-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-18-#include "tensorflow/lite/c/common.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-19-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-20-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-21-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h:22:TFLMRegistration* Register_ETHOSU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-23-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-24-const char* GetString_ETHOSU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-25-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-26-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-27-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h-28-#endif  // TENSORFLOW_LITE_MICRO_KERNELS_ETHOSU_H_
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-15-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-16-//
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-17-// This is a stub file for non-Ethos platforms
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-18-//
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-19-#include "tensorflow/lite/micro/micro_common.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-20-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-21-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-22-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc:23:TFLMRegistration* Register_ETHOSU() { return nullptr; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-24-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-25-const char* GetString_ETHOSU() { return ""; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-26-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc-27-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-158-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-159-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-160-    return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-161-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-162-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-163-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-164-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-165-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc:166:TFLMRegistration* Register_ETHOSU() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-167-  static TFLMRegistration r = tflite::micro::RegisterOp(Init, Prepare, Eval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-168-  return &r;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-169-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-170-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-171-const char* GetString_ETHOSU() { return "ethos-u"; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-172-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc-173-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-56-TFLMRegistration Register_TOPK_V2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-57-TFLMRegistration Register_DEPTH_TO_SPACE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-58-TFLMRegistration Register_DEPTHWISE_CONV_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-59-TFLMRegistration Register_DEQUANTIZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-60-TFLMRegistration Register_DIV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-61-TFLMRegistration Register_ELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-62-TFLMRegistration Register_EMBEDDING_LOOKUP();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-63-TFLMRegistration Register_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:64:TFLMRegistration* Register_ETHOSU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-65-TFLMRegistration Register_EXP();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-66-TFLMRegistration Register_EXPAND_DIMS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-67-TFLMRegistration Register_FILL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-68-TFLMRegistration Register_FLOOR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-69-TFLMRegistration Register_FLOOR_DIV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-70-TFLMRegistration Register_FLOOR_MOD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-71-TFLMRegistration Register_FULLY_CONNECTED();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-72-TFLMRegistration Register_GATHER();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-73-TFLMRegistration Register_GATHER_ND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-74-TFLMRegistration Register_GREATER();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-75-TFLMRegistration Register_GREATER_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-76-TFLMRegistration Register_HARD_SWISH();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-77-TFLMRegistration Register_IF();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-78-TFLMRegistration Register_L2_NORMALIZATION();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-79-TFLMRegistration Register_L2_POOL_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-80-TFLMRegistration Register_LEAKY_RELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-81-TFLMRegistration Register_LESS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-82-TFLMRegistration Register_LESS_EQUAL();
+
+3. Candidate artifact existence, size and SHA256
+MODEL_NOT_FOUND: /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+
+4. Ethos-U scratch tensor and consumers
+
+5. TFLM scratch request bookkeeping
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-669-TfLiteStatus MicroAllocator::FinishModelAllocation(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-670-    const Model* model, SubgraphAllocations* subgraph_allocations,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-671-    ScratchBufferHandle** scratch_buffer_handles) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-672-  if (!model_is_allocating_) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-673-    MicroPrintf(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-674-        "MicroAllocator: Model allocation finished before "
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-675-        "starting allocating model");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-676-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-677-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-678-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-679-  // Allocate scratch buffer metadata.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-680-  TF_LITE_ENSURE_STATUS(AllocateScratchBufferHandles(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:681:      scratch_buffer_handles, scratch_buffer_request_count_));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-682-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-683-  // Plan all subgraphs and scratch buffers together.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-684-  TF_LITE_ENSURE_STATUS(CommitStaticMemoryPlan(model, subgraph_allocations,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-685-                                               *scratch_buffer_handles));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-686-  model_is_allocating_ = false;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-687-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-688-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-689-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-690-void* MicroAllocator::AllocatePersistentBuffer(size_t bytes) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-691-  return persistent_buffer_allocator_->AllocatePersistentBuffer(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-692-      bytes, MicroArenaBufferAlignment());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-693-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-694-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:695:TfLiteStatus MicroAllocator::RequestScratchBufferInArena(size_t bytes,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-696-                                                         int subgraph_idx,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-697-                                                         int* buffer_idx) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-698-  // All scratch buffer requests are stored in the head section of the arena
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-699-  // when a model is in the prepare phase. First align a scratch buffer request
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-700-  // pointer to the start of the head:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-701-  internal::ScratchBufferRequest* requests = GetScratchBufferRequests();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-702-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-703-  // Count the number of requested scratch buffers for the current node:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-704-  size_t current_node_request_count = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:705:  for (size_t i = 0; i < scratch_buffer_request_count_; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-706-    if (requests[i].node_idx == kUnassignedScratchBufferRequestIndex) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-707-      ++current_node_request_count;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-708-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-709-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-710-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-711-  // First, ensure that the per-kernel request has not exceeded the limit:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-712-  if (current_node_request_count >= kMaxScratchBuffersPerOp) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-713-    MicroPrintf("Scratch buffer request exeeds limit per operator (%d)",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-714-                kMaxScratchBuffersPerOp);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-715-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-716-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-717-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-718-  // Initialize and assign values for the request at the current index:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-719-  internal::ScratchBufferRequest* current_request =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:720:      &requests[scratch_buffer_request_count_];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-721-  *current_request = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-722-  // Assign -1 as a sentinel value that will be updated when the node finishes
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-723-  // allocating:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-724-  current_request->bytes = bytes;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-725-  current_request->node_idx = kUnassignedScratchBufferRequestIndex;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-726-  current_request->subgraph_idx = subgraph_idx;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-727-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-728-  // Assign the current request index to the out-param:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:729:  *buffer_idx = scratch_buffer_request_count_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-730-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-731-  // Bump the request count to prepare for the next request:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:732:  ++scratch_buffer_request_count_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-733-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-734-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-735-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-736-TfLiteStatus MicroAllocator::FinishPrepareNodeAllocations(int node_id) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-737-  // When a node has finished preparing, all temp allocations performed by the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-738-  // kernel should be cleaned up:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-739-  TF_LITE_ENSURE_STATUS(ResetTempAllocations());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-740-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-741-  // Find and update any new scratch buffer requests for the current node:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-742-  internal::ScratchBufferRequest* requests = GetScratchBufferRequests();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-743-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:744:  for (size_t i = 0; i < scratch_buffer_request_count_; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-745-    // A request with a node_idx of -1 is a sentinel value used to indicate this
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-746-    // was a new request for the current node. The allocator finally knows the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-747-    // node index at this point. Assign the value and update the list of new
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-748-    // requests so the head section can be adjusted to allow for the next kernel
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-749-    // to allocate at most kMaxScratchBuffersPerOp requests:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-750-    if (requests[i].node_idx == kUnassignedScratchBufferRequestIndex) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-751-      requests[i].node_idx = node_id;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-752-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-753-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-754-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-755-  // Ensure that the head is re-adjusted to allow for another at-most
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-756-  // kMaxScratchBuffersPerOp scratch buffer requests in the next operator:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-757-  TF_LITE_ENSURE_STATUS(non_persistent_buffer_allocator_->ResizeBuffer(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-758-      scratch_buffer_head_,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-759-      sizeof(internal::ScratchBufferRequest) *
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:760:          (scratch_buffer_request_count_ + kMaxScratchBuffersPerOp),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-761-      alignof(internal::ScratchBufferRequest)));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-762-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-763-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-764-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-765-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-766-size_t MicroAllocator::used_bytes() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-767-  return non_persistent_buffer_allocator_->GetNonPersistentUsedBytes() +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-768-         persistent_buffer_allocator_->GetPersistentUsedBytes();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-769-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-770-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-771-TfLiteStatus MicroAllocator::AllocateNodeAndRegistrations(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-772-    const Model* model, SubgraphAllocations* subgraph_allocations) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-773-  TFLITE_DCHECK(subgraph_allocations != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-774-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-775-  for (size_t subgraph_idx = 0; subgraph_idx < model->subgraphs()->size();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-776-       subgraph_idx++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-777-    const SubGraph* subgraph = model->subgraphs()->Get(subgraph_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-778-    TFLITE_DCHECK(subgraph != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-779-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-780-    uint32_t operators_size = NumSubgraphOperators(subgraph);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-781-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-782-    // Initialize NodeAndRegistrations for the subgraph.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-783-    NodeAndRegistration* output = reinterpret_cast<NodeAndRegistration*>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-784-        persistent_buffer_allocator_->AllocatePersistentBuffer(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-785-            sizeof(NodeAndRegistration) * operators_size,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-786-            alignof(NodeAndRegistration)));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-787-    if (output == nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-788-      MicroPrintf("Failed to allocate memory for node_and_registrations.");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-789-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-790-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-791-    subgraph_allocations[subgraph_idx].node_and_registrations = output;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-792-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-793-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-794-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-795-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1118-  // 2. Add them into the planner (such as the GreedyMemoryPlanner).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1119-  // 3. Static memory planning using the planner.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1120-  // 4. Set tensor/buffer pointers based on the offsets from the previous step.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1121-  //
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1122-  // Note that AllocationInfo is only needed for creating the plan. It will be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1123-  // allocated from the temp section and cleaned up at the bottom of this
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1124-  // function.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1125-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1126-  // Use the AllocationInfoBuilder class to help determine where buffers are
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1127-  // used in the subgraph.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1128-  AllocationInfoBuilder builder(model, non_persistent_buffer_allocator_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1129-  TF_LITE_ENSURE_STATUS(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:1130:      builder.CreateAllocationInfo(scratch_buffer_request_count_));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1131-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1132-  const int32_t* offline_planner_offsets = nullptr;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1133-  TF_LITE_ENSURE_STATUS(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1134-      builder.GetOfflinePlannedOffsets(&offline_planner_offsets));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1135-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1136-  // We allocate buffers for variable tensors here since the offline planner
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1137-  // offsets are conviently available here.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1138-  for (size_t subgraph_idx = 0; subgraph_idx < model->subgraphs()->size();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1139-       subgraph_idx++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1140-    const SubGraph* subgraph = model->subgraphs()->Get(subgraph_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1141-    TFLITE_DCHECK(subgraph != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1142-    TF_LITE_ENSURE_STATUS(AllocateVariables(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1143-        subgraph, allocations[subgraph_idx].tensors, offline_planner_offsets));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1144-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1145-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1146-  TF_LITE_ENSURE_STATUS(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1147-      builder.InitializeAllocationInfo(offline_planner_offsets, allocations));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1148-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1149-  internal::ScratchBufferRequest* scratch_buffer_requests =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1150-      GetScratchBufferRequests();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1151-  TF_LITE_ENSURE_STATUS(builder.MarkAllocationLifetimes(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1152-      0, scratch_buffer_requests, scratch_buffer_handles, allocations));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1153-  int allocation_info_count = builder.AllocationCount();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1154-  AllocationInfo* allocation_info = builder.Finish();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1155-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1156-  // Remaining arena size that memory planner can use for calculating offsets.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1157-  size_t remaining_arena_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1158-      non_persistent_buffer_allocator_->GetAvailableMemory(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1159-          MicroArenaBufferAlignment());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1160-  uint8_t* planner_arena = non_persistent_buffer_allocator_->AllocateTemp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1161-      remaining_arena_size, MicroArenaBufferAlignment());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1162-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1163-  if (planner_arena == nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1164-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1165-  }
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1201-  // memory plan in this function. Ensure that the head is set to the largest
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1202-  // memory plan sent through the allocator:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1203-  TF_LITE_ENSURE_STATUS(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1204-      non_persistent_buffer_allocator_->ReserveNonPersistentOverlayMemory(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1205-          max_head_buffer_usage_, MicroArenaBufferAlignment()));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1206-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1207-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1208-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1209-TfLiteStatus MicroAllocator::AllocateScratchBufferHandles(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1210-    ScratchBufferHandle** scratch_buffer_handles, size_t handle_count) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1211-  TFLITE_DCHECK(scratch_buffer_handles != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1212-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:1213:  if (scratch_buffer_request_count_ == 0) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1214-    // No scratch buffer requests were requested during model allocation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1215-    return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1216-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1217-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1218-  // Allocate a consecutive block of memory store the scratch buffer handles.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1219-  // This alignment ensures quick lookup during inference time for the model:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1220-  *scratch_buffer_handles = reinterpret_cast<ScratchBufferHandle*>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1221-      persistent_buffer_allocator_->AllocatePersistentBuffer(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1222-          sizeof(ScratchBufferHandle) * handle_count,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1223-          alignof(ScratchBufferHandle)));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1224-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1225-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1226-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1227-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1228-TfLiteStatus MicroAllocator::InitScratchBufferData() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1229-  // A model is preparing to allocate resources, ensure that scratch buffer
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1230-  // request counter is cleared:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:1231:  scratch_buffer_request_count_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1232-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1233-  // All requests will be stored in the head section. Each kernel is allowed at
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1234-  // most kMaxScratchBuffersPerOp requests. Adjust the head to reserve at most
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1235-  // that many requests to begin:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1236-  scratch_buffer_head_ =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1237-      non_persistent_buffer_allocator_->AllocateResizableBuffer(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1238-          sizeof(internal::ScratchBufferRequest) * kMaxScratchBuffersPerOp,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1239-          alignof(internal::ScratchBufferRequest));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1240-  if (scratch_buffer_head_ == nullptr) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1241-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1242-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1243-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1244-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1245-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1246-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1247-internal::ScratchBufferRequest* MicroAllocator::GetScratchBufferRequests() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1248-  return reinterpret_cast<internal::ScratchBufferRequest*>(AlignPointerUp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1249-      scratch_buffer_head_, alignof(internal::ScratchBufferRequest)));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1250-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1251-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1252-TfLiteBridgeBuiltinDataAllocator* MicroAllocator::GetBuiltinDataAllocator() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1253-  return builtin_data_allocator_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1254-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1255-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc-1256-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-235-  // already deallocated.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-236-  virtual bool IsAllTempDeallocated();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-237-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-238-  // Allocates persistent buffer which has the same life time as the allocator.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-239-  // The memory is immediately available and is allocated from the tail of the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-240-  // arena.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-241-  virtual void* AllocatePersistentBuffer(size_t bytes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-242-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-243-  // Register a scratch buffer of size `bytes` for Node with `node_id`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-244-  // This method only requests a buffer with a given size to be used after a
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-245-  // model has finished allocation via FinishModelAllocation(). All requested
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-246-  // buffers will be accessible by the out-param in that method.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h:247:  TfLiteStatus RequestScratchBufferInArena(size_t bytes, int subgraph_idx,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-248-                                           int* buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-249-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-250-  // Finish allocating a specific NodeAndRegistration prepare block (kernel
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-251-  // entry for a model) with a given node ID. This call ensures that any scratch
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-252-  // buffer requests and temporary allocations are handled and ready for the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-253-  // next node prepare block.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-254-  TfLiteStatus FinishPrepareNodeAllocations(int node_id);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-255-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-256-  // Returns the arena usage in bytes, only available after
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-257-  // `FinishModelAllocation`. Otherwise, it will return 0.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-258-  size_t used_bytes() const;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-259-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-260-  TfLiteBridgeBuiltinDataAllocator* GetBuiltinDataAllocator();
+
+============================================================
+AUDIT COMPLETE
+============================================================
