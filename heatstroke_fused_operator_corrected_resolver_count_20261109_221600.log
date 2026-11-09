@@ -1,0 +1,513 @@
+============================================================
+CORRECTED RESOLVER REGISTRATION COUNT
+============================================================
+
+1. Complete EnlistOperations implementation
+   585	    return tflite::ParseOpData(
+   586	        op,
+   587	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   588	        error_reporter,
+   589	        allocator,
+   590	        builtin_data);
+   591	}
+   592	
+   593	bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+   594	{
+   595	#define HS_ADD_REQUIRED(method)                                      \
+   596	    do {                                                              \
+   597	        const TfLiteStatus status = this->m_opResolver.method();      \
+   598	        if (status != kTfLiteOk) {                                    \
+   599	            printf_err(                                               \
+   600	                "Failed to register heat-stress operator: %s\n",     \
+   601	                #method);                                             \
+   602	            return false;                                             \
+   603	        }                                                             \
+   604	    } while (0)
+   605	
+   606	    /*
+   607	     * 28 stock ordinary built-in operators; GATHER is registered separately below.
+   608	     * These CPU registrations must remain available with Ethos-U enabled.
+   609	     */
+   610	    HS_ADD_REQUIRED(AddAdd);
+   611	    HS_ADD_REQUIRED(AddBroadcastArgs);
+   612	    HS_ADD_REQUIRED(AddBroadcastTo);
+   613	    HS_ADD_REQUIRED(AddCast);
+   614	    HS_ADD_REQUIRED(AddConcatenation);
+   615	    HS_ADD_REQUIRED(AddCumSum);
+   616	    HS_ADD_REQUIRED(AddDequantize);
+   617	    HS_ADD_REQUIRED(AddDiv);
+   618	    HS_ADD_REQUIRED(AddEqual);
+   619	    HS_ADD_REQUIRED(AddFloorMod);
+   620	    /*
+   621	     * Application-local GATHER replacement supporting INT32 and INT64
+   622	     * indices. It reuses the existing output tensor and allocates no
+   623	     * index-conversion or scratch buffer.
+   624	     */
+   625	    {
+   626	        const TFLMRegistration registration =
+   627	            tflite::RegisterHeatstrokeGatherKernel();
+   628	
+   629	        if (this->m_opResolver.AddBuiltin(
+   630	                tflite::BuiltinOperator_GATHER,
+   631	                registration,
+   632	                tflite::ParseGather) != kTfLiteOk) {
+   633	            printf_err(
+   634	                "Failed to register heat-stress INT64 GATHER.\n");
+   635	            return false;
+   636	        }
+   637	    }
+   638	    HS_ADD_REQUIRED(AddGreater);
+   639	    HS_ADD_REQUIRED(AddLogicalAnd);
+   640	    HS_ADD_REQUIRED(AddLogicalNot);
+   641	    HS_ADD_REQUIRED(AddMaximum);
+   642	    HS_ADD_REQUIRED(AddMean);
+   643	    HS_ADD_REQUIRED(AddMul);
+   644	    HS_ADD_REQUIRED(AddNeg);
+   645	    HS_ADD_REQUIRED(AddQuantize);
+   646	    HS_ADD_REQUIRED(AddReshape);
+   647	    HS_ADD_REQUIRED(AddRsqrt);
+   648	    HS_ADD_REQUIRED(AddSelectV2);
+   649	    HS_ADD_REQUIRED(AddSoftmax);
+   650	    HS_ADD_REQUIRED(AddSplitV);
+   651	    HS_ADD_REQUIRED(AddSqrt);
+   652	    HS_ADD_REQUIRED(AddSquare);
+   653	    HS_ADD_REQUIRED(AddSub);
+   654	    HS_ADD_REQUIRED(AddSum);
+   655	    HS_ADD_REQUIRED(AddTopKV2);
+   656	
+   657	#undef HS_ADD_REQUIRED
+   658	
+   659	    /*
+   660	     * Custom SIGN registration under the built-in SIGN opcode.
+   661	     */
+   662	    {
+   663	        const TFLMRegistration registration =
+   664	            RegisterHeatstrokeSignKernel();
+   665	
+   666	        if (this->m_opResolver.AddBuiltin(
+   667	                tflite::BuiltinOperator_SIGN,
+   668	                registration,
+   669	                ParseHeatstrokeSign) != kTfLiteOk) {
+   670	            printf_err("Failed to register heat-stress SIGN.\n");
+   671	            return false;
+   672	        }
+   673	    }
+   674	
+   675	    /*
+   676	     * Select the application-local BiLSTM implementation.
+   677	     * Experimental mode is opt-in and paired with the repaired model.
+   678	     */
+   679	    {
+   680	#if defined(HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+   681	        const TFLMRegistration registration =
+   682	            tflite::RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+   683	#else
+   684	        const TFLMRegistration registration =
+   685	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+   686	#endif
+   687	
+   688	        if (this->m_opResolver.AddBuiltin(
+   689	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   690	                registration,
+   691	                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+   692	            printf_err(
+   693	                "Failed to register heat-stress bidirectional LSTM.\n");
+   694	            return false;
+   695	        }
+   696	    }
+   697	
+   698	    /*
+   699	     * Ethos-U registration.
+   700	     *
+   701	     * AddEthosU() in this SDK can report success even when the hardware
+   702	     * registration is null. Therefore, explicitly verify FindOp().
+   703	     */
+   704	    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+   705	        printf_err("Failed to add Ethos-U to the resolver.\n");
+   706	        return false;
+   707	    }
+   708	
+   709	    const char* ethos_name = tflite::GetString_ETHOSU();
+   710	
+   711	    if (ethos_name == nullptr ||
+   712	        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+   713	        printf_err(
+   714	            "Ethos-U registration is missing from the resolver.\n");
+   715	        return false;
+   716	    }
+   717	
+   718	    /*
+   719	     * Verify all built-in registrations and parser callbacks.
+   720	     */
+   721	    const tflite::BuiltinOperator required_ops[] = {
+   722	        tflite::BuiltinOperator_ADD,
+   723	        tflite::BuiltinOperator_BROADCAST_ARGS,
+   724	        tflite::BuiltinOperator_BROADCAST_TO,
+   725	        tflite::BuiltinOperator_CAST,
+   726	        tflite::BuiltinOperator_CONCATENATION,
+   727	        tflite::BuiltinOperator_CUMSUM,
+   728	        tflite::BuiltinOperator_DEQUANTIZE,
+   729	        tflite::BuiltinOperator_DIV,
+   730	        tflite::BuiltinOperator_EQUAL,
+   731	        tflite::BuiltinOperator_FLOOR_MOD,
+   732	        tflite::BuiltinOperator_GATHER,
+   733	        tflite::BuiltinOperator_GREATER,
+   734	        tflite::BuiltinOperator_LOGICAL_AND,
+   735	        tflite::BuiltinOperator_LOGICAL_NOT,
+   736	        tflite::BuiltinOperator_MAXIMUM,
+   737	        tflite::BuiltinOperator_MEAN,
+   738	        tflite::BuiltinOperator_MUL,
+   739	        tflite::BuiltinOperator_NEG,
+   740	        tflite::BuiltinOperator_QUANTIZE,
+   741	        tflite::BuiltinOperator_RESHAPE,
+   742	        tflite::BuiltinOperator_RSQRT,
+   743	        tflite::BuiltinOperator_SELECT_V2,
+   744	        tflite::BuiltinOperator_SIGN,
+   745	        tflite::BuiltinOperator_SOFTMAX,
+   746	        tflite::BuiltinOperator_SPLIT_V,
+   747	        tflite::BuiltinOperator_SQRT,
+   748	        tflite::BuiltinOperator_SQUARE,
+   749	        tflite::BuiltinOperator_SUB,
+   750	        tflite::BuiltinOperator_SUM,
+   751	        tflite::BuiltinOperator_TOPK_V2,
+   752	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+   753	    };
+   754	
+   755	    for (const auto op : required_ops) {
+   756	        if (this->m_opResolver.FindOp(op) == nullptr) {
+   757	            printf_err(
+   758	                "Required heat-stress builtin registration is missing: %d\n",
+   759	                static_cast<int>(op));
+   760	            return false;
+   761	        }
+   762	
+   763	        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+   764	            printf_err(
+   765	                "Required heat-stress builtin parser is missing: %d\n",
+   766	                static_cast<int>(op));
+   767	            return false;
+   768	        }
+   769	    }
+   770	
+   771	    info(
+   772	        "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+   773	        ethos_name);
+   774	
+   775	    return true;
+   776	}
+
+2. Parse actual function body and count registrations
+FUNCTION_START_LINE 594
+FUNCTION_END_LINE 776
+FUNCTION_LINES 183
+
+BUILTIN_MACRO_REGISTRATIONS 28
+  line=610: AddAdd
+  line=611: AddBroadcastArgs
+  line=612: AddBroadcastTo
+  line=613: AddCast
+  line=614: AddConcatenation
+  line=615: AddCumSum
+  line=616: AddDequantize
+  line=617: AddDiv
+  line=618: AddEqual
+  line=619: AddFloorMod
+  line=638: AddGreater
+  line=639: AddLogicalAnd
+  line=640: AddLogicalNot
+  line=641: AddMaximum
+  line=642: AddMean
+  line=643: AddMul
+  line=644: AddNeg
+  line=645: AddQuantize
+  line=646: AddReshape
+  line=647: AddRsqrt
+  line=648: AddSelectV2
+  line=649: AddSoftmax
+  line=650: AddSplitV
+  line=651: AddSqrt
+  line=652: AddSquare
+  line=653: AddSub
+  line=654: AddSum
+  line=655: AddTopKV2
+
+EXPLICIT_ADDBUILTIN_REGISTRATIONS 3
+  line=629: AddBuiltin
+  line=666: AddBuiltin
+  line=688: AddBuiltin
+
+EXPLICIT_ADDCUSTOM_REGISTRATIONS 0
+
+ADD_ETHOS_U_CALLS 1
+  line=704: AddEthosU
+
+EXPLICIT_REGISTRATIONS_EXCLUDING_ETHOS 31
+REGISTRATIONS_IF_ETHOS_U_USES_ONE_SLOT 32
+
+RESOLVER_CAPACITY 32
+HEADROOM_BEFORE_ETHOS 1
+HEADROOM_IF_ETHOS_U_USES_ONE_SLOT 0
+CAPACITY_NEEDED_FOR_TWO_NEW_CUSTOM_OPS 65
+
+3. AddEthosU implementation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-82-TF_LITE_MICRO_TEST(TestInvoke) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-83-#ifdef ETHOS_U
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-84-  const tflite::Model* model = ::tflite::GetModel(g_person_detect_model_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-85-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-86-  const tflite::Model* model = ::tflite::GetModel(network_model);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-87-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-88-  if (model->version() != TFLITE_SCHEMA_VERSION) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-89-    MicroPrintf(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-90-        "Model provided is schema version %d not equal "
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-91-        "to supported version %d.\n",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-92-        model->version(), TFLITE_SCHEMA_VERSION);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-93-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-94-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-95-#ifdef ETHOS_U
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-96-  tflite::MicroMutableOpResolver<1> resolver;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc:97:  resolver.AddEthosU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-98-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-99-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-100-  tflite::MicroMutableOpResolver<5> resolver;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-101-  resolver.AddAveragePool2D(tflite::Register_AVERAGE_POOL_2D_INT8());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-102-  resolver.AddConv2D(tflite::Register_CONV_2D_INT8());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-103-  resolver.AddDepthwiseConv2D(tflite::Register_DEPTHWISE_CONV_2D_INT8());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-104-  resolver.AddReshape();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-105-  resolver.AddSoftmax(tflite::Register_SOFTMAX_INT8());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-106-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-107-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-108-  tflite::MicroInterpreter interpreter(model, resolver, tensor_arena,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-109-                                       TENSOR_ARENA_SIZE);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-110-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-111-  TfLiteStatus allocate_status = interpreter.AllocateTensors();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-112-  if (allocate_status != kTfLiteOk) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-113-    MicroPrintf("Tensor allocation failed\n");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-114-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-115-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-116-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-117-  for (int n = 0; n < NUM_INFERENCES; n++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-118-    for (size_t i = 0; i < interpreter.inputs_size(); ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-119-      TfLiteTensor* input = interpreter.input(i);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-120-#ifdef ETHOS_U
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-121-      memcpy(input->data.int8, g_person_image_data, input->bytes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-122-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-123-      memcpy(input->data.data, &input_data[i], input->bytes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-124-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-125-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-126-    TfLiteStatus invoke_status = interpreter.Invoke();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-127-    if (invoke_status != kTfLiteOk) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-128-      MicroPrintf("Invoke failed\n");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-129-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-130-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-131-    TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, invoke_status);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-132-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-133-#ifdef NUM_BYTES_TO_PRINT
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-134-    // Print all of the output data, or the first NUM_BYTES_TO_PRINT bytes,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-135-    // whichever comes first as well as the output shape.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-136-    printf("num_of_outputs: %d\n", interpreter.outputs_size());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-137-    printf("output_begin\n");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-138-    printf("[\n");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-139-    for (int i = 0; i < interpreter.outputs_size(); i++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-140-      TfLiteTensor* output = interpreter.output(i);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-141-      print_output_data(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/network_tester/network_tester_test.cc-142-      if (i != interpreter.outputs_size() - 1) {
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-259-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-260-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-261-  TfLiteStatus AddEnergy() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-262-    // TODO(b/286250473): change back name to "Energy" and remove namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-263-    return AddCustom("SignalEnergy", tflite::tflm_signal::Register_ENERGY());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-264-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-265-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-266-  TfLiteStatus AddElu() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-267-    return AddBuiltin(BuiltinOperator_ELU, tflite::Register_ELU(), ParseElu);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-268-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-269-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-270-  TfLiteStatus AddEqual() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-271-    return AddBuiltin(BuiltinOperator_EQUAL, Register_EQUAL(), ParseEqual);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-272-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-273-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:274:  TfLiteStatus AddEthosU() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-275-    TFLMRegistration* registration = tflite::Register_ETHOSU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-276-    if (registration) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-277-      return AddCustom(tflite::GetString_ETHOSU(), registration);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-278-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-279-    return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-280-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-281-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-282-  TfLiteStatus AddExp() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-283-    return AddBuiltin(BuiltinOperator_EXP, Register_EXP(), ParseExp);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-284-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-285-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-286-  TfLiteStatus AddExpandDims() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-287-    return AddBuiltin(BuiltinOperator_EXPAND_DIMS, Register_EXPAND_DIMS(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-288-                      ParseExpandDims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-289-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-290-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-291-  TfLiteStatus AddFftAutoScale() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-292-    // TODO(b/286250473): change back name and remove namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-293-    return AddCustom("SignalFftAutoScale",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-294-                     tflite::tflm_signal::Register_FFT_AUTO_SCALE());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-295-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-296-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-297-  TfLiteStatus AddFill() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-298-    return AddBuiltin(BuiltinOperator_FILL, tflite::Register_FILL(), ParseFill);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-299-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-300-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-301-  TfLiteStatus AddFilterBank() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-302-    // TODO(b/286250473): change back name to "FilterBank" and remove namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-303-    return AddCustom("SignalFilterBank",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-304-                     tflite::tflm_signal::Register_FILTER_BANK());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-305-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-306-  TfLiteStatus AddFilterBankLog() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-307-    // TODO(b/286250473): change back name to "FilterBankLog" and remove
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-308-    // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-309-    return AddCustom("SignalFilterBankLog",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-310-                     tflite::tflm_signal::Register_FILTER_BANK_LOG());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-311-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-312-  TfLiteStatus AddFilterBankSquareRoot() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-313-    // TODO(b/286250473): change back name to "FilterBankSquareRoot" and remove
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-314-    // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-315-    return AddCustom("SignalFilterBankSquareRoot",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-316-                     tflite::tflm_signal::Register_FILTER_BANK_SQUARE_ROOT());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-317-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-318-  TfLiteStatus AddFilterBankSpectralSubtraction() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-319-    // TODO(b/286250473): change back name to "FilterBankSpectralSubtraction"
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-43-  TF_LITE_ENSURE_STATUS(op_resolver.AddCircularBuffer());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-44-  TF_LITE_ENSURE_STATUS(op_resolver.AddConcatenation());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-45-  TF_LITE_ENSURE_STATUS(op_resolver.AddConv2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-46-  TF_LITE_ENSURE_STATUS(op_resolver.AddCos());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-47-  TF_LITE_ENSURE_STATUS(op_resolver.AddCumSum());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-48-  TF_LITE_ENSURE_STATUS(op_resolver.AddDelay());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-49-  TF_LITE_ENSURE_STATUS(op_resolver.AddDepthToSpace());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-50-  TF_LITE_ENSURE_STATUS(op_resolver.AddDepthwiseConv2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-51-  TF_LITE_ENSURE_STATUS(op_resolver.AddDequantize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-52-  TF_LITE_ENSURE_STATUS(op_resolver.AddDetectionPostprocess());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-53-  TF_LITE_ENSURE_STATUS(op_resolver.AddDiv());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-54-  TF_LITE_ENSURE_STATUS(op_resolver.AddElu());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-55-  TF_LITE_ENSURE_STATUS(op_resolver.AddEmbeddingLookup());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-56-  TF_LITE_ENSURE_STATUS(op_resolver.AddEnergy());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-57-  TF_LITE_ENSURE_STATUS(op_resolver.AddEqual());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h:58:  TF_LITE_ENSURE_STATUS(op_resolver.AddEthosU());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-59-  TF_LITE_ENSURE_STATUS(op_resolver.AddExp());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-60-  TF_LITE_ENSURE_STATUS(op_resolver.AddExpandDims());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-61-  TF_LITE_ENSURE_STATUS(op_resolver.AddFftAutoScale());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-62-  TF_LITE_ENSURE_STATUS(op_resolver.AddFill());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-63-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBank());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-64-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBankLog());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-65-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBankSpectralSubtraction());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-66-  TF_LITE_ENSURE_STATUS(op_resolver.AddFilterBankSquareRoot());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-67-  TF_LITE_ENSURE_STATUS(op_resolver.AddFloor());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-68-  TF_LITE_ENSURE_STATUS(op_resolver.AddFloorDiv());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-69-  TF_LITE_ENSURE_STATUS(op_resolver.AddFloorMod());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-70-  TF_LITE_ENSURE_STATUS(op_resolver.AddFramer());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-71-  TF_LITE_ENSURE_STATUS(op_resolver.AddFullyConnected());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-72-  TF_LITE_ENSURE_STATUS(op_resolver.AddGather());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-73-  TF_LITE_ENSURE_STATUS(op_resolver.AddGatherNd());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-74-  TF_LITE_ENSURE_STATUS(op_resolver.AddGreater());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-75-  TF_LITE_ENSURE_STATUS(op_resolver.AddGreaterEqual());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-76-  TF_LITE_ENSURE_STATUS(op_resolver.AddHardSwish());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-77-  TF_LITE_ENSURE_STATUS(op_resolver.AddIf());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-78-  TF_LITE_ENSURE_STATUS(op_resolver.AddIrfft());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-79-  TF_LITE_ENSURE_STATUS(op_resolver.AddL2Normalization());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-80-  TF_LITE_ENSURE_STATUS(op_resolver.AddL2Pool2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-81-  TF_LITE_ENSURE_STATUS(op_resolver.AddLeakyRelu());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-82-  TF_LITE_ENSURE_STATUS(op_resolver.AddLess());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-83-  TF_LITE_ENSURE_STATUS(op_resolver.AddLessEqual());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-84-  TF_LITE_ENSURE_STATUS(op_resolver.AddLog());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-85-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogSoftmax());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-86-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogicalAnd());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-87-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogicalNot());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-88-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogicalOr());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-89-  TF_LITE_ENSURE_STATUS(op_resolver.AddLogistic());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-90-  TF_LITE_ENSURE_STATUS(op_resolver.AddMaxPool2D());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-91-  TF_LITE_ENSURE_STATUS(op_resolver.AddMaximum());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-92-  TF_LITE_ENSURE_STATUS(op_resolver.AddMean());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-93-  TF_LITE_ENSURE_STATUS(op_resolver.AddMinimum());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-94-  TF_LITE_ENSURE_STATUS(op_resolver.AddMirrorPad());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-95-  TF_LITE_ENSURE_STATUS(op_resolver.AddMul());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-96-  TF_LITE_ENSURE_STATUS(op_resolver.AddNeg());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-97-  TF_LITE_ENSURE_STATUS(op_resolver.AddNotEqual());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-98-  TF_LITE_ENSURE_STATUS(op_resolver.AddOverlapAdd());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-99-  TF_LITE_ENSURE_STATUS(op_resolver.AddPCAN());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-100-  TF_LITE_ENSURE_STATUS(op_resolver.AddPack());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-101-  TF_LITE_ENSURE_STATUS(op_resolver.AddPad());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-102-  TF_LITE_ENSURE_STATUS(op_resolver.AddPadV2());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/benchmarking/op_resolver.h-103-  TF_LITE_ENSURE_STATUS(op_resolver.AddPrelu());
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-50-alignas(16) uint8_t tensor_arena[kTensorArenaSize];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-51-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-52-uint8_t op_resolver_buffer[sizeof(PersonDetectionOpResolver)];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-53-uint8_t benchmark_runner_buffer[sizeof(PersonDetectionBenchmarkRunner)];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-54-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-55-// Initialize benchmark runner instance explicitly to avoid global init order
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-56-// issues on Sparkfun. Use new since static variables within a method
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-57-// are automatically surrounded by locking, which breaks bluepill.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-58-PersonDetectionBenchmarkRunner* CreateBenchmarkRunner(MicroProfiler* profiler) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-59-  // We allocate PersonDetectionOpResolver from a global buffer
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-60-  // because the object's lifetime must exceed that of the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-61-  // PersonDetectionBenchmarkRunner object.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-62-  PersonDetectionOpResolver* op_resolver =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-63-      new (op_resolver_buffer) PersonDetectionOpResolver();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-64-#ifdef ETHOS_U
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc:65:  op_resolver->AddEthosU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-66-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-67-  op_resolver->AddFullyConnected(tflite::Register_FULLY_CONNECTED_INT8());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-68-  op_resolver->AddConv2D(tflite::Register_CONV_2D_INT8REF());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-69-  op_resolver->AddDepthwiseConv2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-70-  op_resolver->AddSoftmax();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-71-  op_resolver->AddAveragePool2D(tflite::Register_AVERAGE_POOL_2D_INT8());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-72-  op_resolver->AddReshape();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-73-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-74-  return new (benchmark_runner_buffer)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-75-      PersonDetectionBenchmarkRunner(g_person_detect_model_data, op_resolver,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-76-                                     tensor_arena, kTensorArenaSize, profiler);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-77-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-78-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-79-void PersonDetectionNIerations(const int8_t* input, int iterations,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-80-                               const char* tag,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-81-                               PersonDetectionBenchmarkRunner& benchmark_runner,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-82-                               MicroProfiler& profiler) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-83-  benchmark_runner.SetInput(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-84-  uint32_t ticks = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-85-  for (int i = 0; i < iterations; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-86-    profiler.ClearEvents();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-87-    benchmark_runner.RunSingleIteration();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-88-    ticks += profiler.GetTotalTicks();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-89-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-90-  MicroPrintf("%s took %u ticks (%u ms)", tag, ticks, TicksToMs(ticks));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-91-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-92-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-93-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-94-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-95-int main(int argc, char** argv) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-96-  tflite::InitializeTarget();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-97-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-98-  tflite::MicroProfiler profiler;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-99-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-100-  uint32_t event_handle = profiler.BeginEvent("InitializeBenchmarkRunner");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-101-  tflite::PersonDetectionBenchmarkRunner* benchmark_runner =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-102-      CreateBenchmarkRunner(&profiler);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/benchmarks/person_detection_benchmark.cc-103-  profiler.EndEvent(event_handle);
+
+4. Resolver internal registration storage and capacity checks
+
+5. Existing resolver capacity declaration
+33-    bool EnlistOperations() override;
+34-
+35-private:
+36-    /* Maximum number of individual operations that can be enlisted. */
+37:    static constexpr int ms_maxOpCnt = 32;
+38-
+39-    /* A mutable op resolver instance. */
+40:    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+41-};
+42-
+43-} /* namespace arm::app::fwk::tflm */
+44-
+45-#endif /* POLYU_MODEL1_HPP */
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
