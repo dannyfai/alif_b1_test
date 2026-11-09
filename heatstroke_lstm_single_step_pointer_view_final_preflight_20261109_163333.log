@@ -1,0 +1,782 @@
+============================================================
+LSTM SINGLE-STEP POINTER VIEW FINAL PREFLIGHT
+============================================================
+
+1. LSTM evaluator header: omitted lines 155-305
+   155	
+   156	// Since LSTM includes multiple intermediate stages, introducing the internal
+   157	// namespace to expose them for testing
+   158	namespace lstm_internal {
+   159	
+   160	void Sigmoid(const RuntimeShape& data_shape, int16_t* data);
+   161	
+   162	void Sigmoid(const RuntimeShape& data_shape, float* data);
+   163	
+   164	void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+   165	          int16_t* input_data, const RuntimeShape& output_data_shape,
+   166	          int16_t* output_data);
+   167	
+   168	void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+   169	          float* input_data, const RuntimeShape& output_data_shape,
+   170	          float* output_data);
+   171	
+   172	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   173	         const int16_t* input1_data, const int16_t* input2_data,
+   174	         int8_t* output_data);
+   175	
+   176	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   177	         const int16_t* input1_data, const int16_t* input2_data,
+   178	         int16_t* output_data);
+   179	
+   180	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   181	         const float* input1_data, const float* input2_data,
+   182	         float* output_data);
+   183	
+   184	void FullyConnected(const FullyConnectedParams& params,
+   185	                    const RuntimeShape& input_shape, const int8_t* input_data,
+   186	                    const RuntimeShape& filter_shape, const int8_t* filter_data,
+   187	                    const RuntimeShape& bias_shape, const int32_t* bias_data,
+   188	                    const RuntimeShape& output_shape, int16_t* output_data);
+   189	
+   190	void FullyConnected(const FullyConnectedParams& params,
+   191	                    const RuntimeShape& input_shape, const int16_t* input_data,
+   192	                    const RuntimeShape& filter_shape, const int8_t* filter_data,
+   193	                    const RuntimeShape& bias_shape, const int64_t* bias_data,
+   194	                    const RuntimeShape& output_shape, int16_t* output_data);
+   195	
+   196	void FullyConnected(const FullyConnectedParams& params,
+   197	                    const RuntimeShape& input_shape, const float* input_data,
+   198	                    const RuntimeShape& filter_shape, const float* filter_data,
+   199	                    const RuntimeShape& bias_shape, const float* bias_data,
+   200	                    const RuntimeShape& output_shape, float* output_data);
+   201	
+   202	void AddElementWise(const int16_t* input_1, const int16_t* input_2, int n_batch,
+   203	                    int n_input, int16_t* output);
+   204	
+   205	void AddElementWise(const float* input_1, const float* input_2, int n_batch,
+   206	                    int n_input, float* output);
+   207	
+   208	void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+   209	              int16_t* vector);
+   210	
+   211	void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+   212	              float* vector);
+   213	
+   214	// Manages the slice position (offset), slice length (sliced tensor shape),
+   215	// and update rules for input/output/hidden state/cell state tensors at each
+   216	// time step.
+   217	class LstmStepManager {
+   218	 public:
+   219	  LstmStepManager() = delete;
+   220	  // Does not take any ownership, and all pointers must refer to valid objects
+   221	  // that outlive the one constructed.
+   222	  explicit LstmStepManager(const LstmSizeInfo* size_info)
+   223	      : size_info_(*size_info) {}
+   224	
+   225	  void UpdateTime();
+   226	  void UpdateBatch();
+   227	
+   228	  void ResetTime() { current_time_ = 0; }
+   229	  RuntimeShape InputShape() const;
+   230	  RuntimeShape StateShape() const;
+   231	
+   232	  int InputOffset() const { return input_offset_; }
+   233	  int OutputOffset() const { return output_offset_; }
+   234	  int HiddenStateOffset() const { return hidden_state_offset_; }
+   235	  int CellStateOffset() const { return cell_state_offset_; }
+   236	
+   237	 private:
+   238	  int current_time_ = 0;
+   239	  int current_batch_ = 0;
+   240	  int input_offset_ = 0;
+   241	  int output_offset_ = 0;
+   242	  int hidden_state_offset_ = 0;
+   243	  int cell_state_offset_ = 0;
+   244	  // Sizeinfo is from LstmOpData, which reside in the memory arena
+   245	  // (guarante to outlast LSTMStepManager, which reside in stack)
+   246	  const LstmSizeInfo& size_info_;
+   247	};
+   248	
+   249	// Calculates a single LSTM gate.
+   250	// Implements the following formula:
+   251	//   gate = activate(FC(input) + FC(recurrent))
+   252	// Activation is sigmoid except for the "cell" gate (configurable, usually tanh)
+   253	template <typename ActivationType, typename WeightType, typename CellType,
+   254	          typename BiasType>
+   255	void CalculateLstmGate(
+   256	    const LstmStepManager& step_info, const GateParameters& gate_params,
+   257	    // Input FC
+   258	    const TfLiteEvalTensor* input, const TfLiteEvalTensor* input_weight,
+   259	    const TfLiteEvalTensor* input_bias,
+   260	    // Recurrent FC
+   261	    const TfLiteEvalTensor* recurrent, const TfLiteEvalTensor* recurrent_weight,
+   262	    const TfLiteEvalTensor* recurrent_bias,
+   263	    // Output
+   264	    CellType* gate_output,
+   265	    // Scratch arrays
+   266	    CellType* fc_output_buffer, const TfLiteFusedActivation activation) {
+   267	  const auto gate_output_shape = step_info.StateShape();
+   268	  // Check offset validity to avoid memory overflow
+   269	  TFLITE_DCHECK_LE(step_info.InputOffset() + step_info.InputShape().FlatSize(),
+   270	                   tflite::micro::GetTensorShape(input).FlatSize());
+   271	  TFLITE_DCHECK_LE(
+   272	      step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+   273	      tflite::micro::GetTensorShape(recurrent).FlatSize());
+   274	
+   275	  // Input FC
+   276	  FullyConnected(gate_params.input_fc_params, step_info.InputShape(),
+   277	                 tflite::micro::GetTensorData<ActivationType>(input) +
+   278	                     step_info.InputOffset(),
+   279	                 micro::GetTensorShape(input_weight),
+   280	                 tflite::micro::GetTensorData<WeightType>(input_weight),
+   281	                 tflite::micro::GetTensorShape(input_bias),
+   282	                 tflite::micro::GetOptionalTensorData<BiasType>(input_bias),
+   283	                 gate_output_shape, gate_output);
+   284	
+   285	  // Recurrent FC
+   286	  FullyConnected(gate_params.recurrent_fc_params, step_info.StateShape(),
+   287	                 tflite::micro::GetTensorData<ActivationType>(recurrent) +
+   288	                     step_info.HiddenStateOffset(),
+   289	                 tflite::micro::GetTensorShape(recurrent_weight),
+   290	                 tflite::micro::GetTensorData<WeightType>(recurrent_weight),
+   291	                 tflite::micro::GetTensorShape(recurrent_bias),
+   292	                 tflite::micro::GetOptionalTensorData<BiasType>(recurrent_bias),
+   293	                 gate_output_shape, fc_output_buffer);
+   294	
+   295	  AddElementWise(gate_output, fc_output_buffer,
+   296	                 /*n_batch=*/gate_output_shape.DimsData()[0],
+   297	                 /*n_state=*/gate_output_shape.DimsData()[1], gate_output);
+   298	  // Apply activation
+   299	  switch (activation) {
+   300	    case kTfLiteActSigmoid:
+   301	      Sigmoid(gate_output_shape, gate_output);
+   302	      break;
+   303	    case kTfLiteActTanh: {
+   304	      // Set the scale power to -12 to avoid shift
+   305	      Tanh(/*cell_state_scale_power=*/-12, gate_output_shape, gate_output,
+
+2. LSTM evaluator step implementation
+241-  int output_offset_ = 0;
+242-  int hidden_state_offset_ = 0;
+243-  int cell_state_offset_ = 0;
+244-  // Sizeinfo is from LstmOpData, which reside in the memory arena
+245-  // (guarante to outlast LSTMStepManager, which reside in stack)
+246-  const LstmSizeInfo& size_info_;
+247-};
+248-
+249-// Calculates a single LSTM gate.
+250-// Implements the following formula:
+251-//   gate = activate(FC(input) + FC(recurrent))
+252-// Activation is sigmoid except for the "cell" gate (configurable, usually tanh)
+253-template <typename ActivationType, typename WeightType, typename CellType,
+254-          typename BiasType>
+255:void CalculateLstmGate(
+256-    const LstmStepManager& step_info, const GateParameters& gate_params,
+257-    // Input FC
+258-    const TfLiteEvalTensor* input, const TfLiteEvalTensor* input_weight,
+259-    const TfLiteEvalTensor* input_bias,
+260-    // Recurrent FC
+261-    const TfLiteEvalTensor* recurrent, const TfLiteEvalTensor* recurrent_weight,
+262-    const TfLiteEvalTensor* recurrent_bias,
+263-    // Output
+264-    CellType* gate_output,
+265-    // Scratch arrays
+266-    CellType* fc_output_buffer, const TfLiteFusedActivation activation) {
+267-  const auto gate_output_shape = step_info.StateShape();
+268-  // Check offset validity to avoid memory overflow
+269-  TFLITE_DCHECK_LE(step_info.InputOffset() + step_info.InputShape().FlatSize(),
+270-                   tflite::micro::GetTensorShape(input).FlatSize());
+271-  TFLITE_DCHECK_LE(
+272-      step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+273-      tflite::micro::GetTensorShape(recurrent).FlatSize());
+274-
+275-  // Input FC
+276-  FullyConnected(gate_params.input_fc_params, step_info.InputShape(),
+277-                 tflite::micro::GetTensorData<ActivationType>(input) +
+278-                     step_info.InputOffset(),
+279-                 micro::GetTensorShape(input_weight),
+280-                 tflite::micro::GetTensorData<WeightType>(input_weight),
+281-                 tflite::micro::GetTensorShape(input_bias),
+282-                 tflite::micro::GetOptionalTensorData<BiasType>(input_bias),
+283-                 gate_output_shape, gate_output);
+284-
+285-  // Recurrent FC
+286-  FullyConnected(gate_params.recurrent_fc_params, step_info.StateShape(),
+287-                 tflite::micro::GetTensorData<ActivationType>(recurrent) +
+288-                     step_info.HiddenStateOffset(),
+289-                 tflite::micro::GetTensorShape(recurrent_weight),
+290-                 tflite::micro::GetTensorData<WeightType>(recurrent_weight),
+291-                 tflite::micro::GetTensorShape(recurrent_bias),
+292-                 tflite::micro::GetOptionalTensorData<BiasType>(recurrent_bias),
+293-                 gate_output_shape, fc_output_buffer);
+--
+386-  // Update the hidden state
+387-  Mul(cell_state_shape, mul_params, buffer, output_gate_output,
+388-      tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+389-          step_info.HiddenStateOffset());
+390-}
+391-
+392-template <typename ActivationType, typename WeightType, typename CellType,
+393-          typename BiasType>
+394-void LstmStep(const LstmStepManager& step_info, const OpDataLSTM& op_data,
+395-              LSTMKernelContents& kernel_content,
+396-              const LSTMBuffers<CellType>& buffers) {
+397-  /*Step1: Calculate gate outputs to prepare cell state update*/
+398-  CellType* gate_internal_buffer = buffers.buffer3;
+399-  CellType* forget_gate_output = buffers.buffer0;
+400:  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+401-      step_info, op_data.forget_gate_parameters,
+402-      // Input FC
+403-      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+404-      kernel_content.GetInternalTensor(tflite::kLstmInputToForgetWeightsTensor),
+405-      kernel_content.GetInternalTensor(tflite::kLstmForgetGateBiasTensor),
+406-      // Recurrent FC
+407-      kernel_content.HiddenStateTensor(),
+408-      kernel_content.GetInternalTensor(
+409-          tflite::kLstmRecurrentToForgetWeightsTensor),
+410-      /*recurrent_bias*/ nullptr,
+411-      // Output
+412-      forget_gate_output,
+413-      // Scratch arrays
+414-      gate_internal_buffer, kTfLiteActSigmoid);
+415-
+416-  // Input Gate calculation;
+417-  CellType* input_gate_output = buffers.buffer1;
+418:  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+419-      step_info, op_data.input_gate_parameters,
+420-      // Input FC
+421-      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+422-      kernel_content.GetInternalTensor(tflite::kLstmInputToInputWeightsTensor),
+423-      kernel_content.GetInternalTensor(tflite::kLstmInputGateBiasTensor),
+424-      // Recurrent FC
+425-      kernel_content.HiddenStateTensor(),
+426-      kernel_content.GetInternalTensor(
+427-          tflite::kLstmRecurrentToInputWeightsTensor),
+428-      /*recurrent_bias*/ nullptr,
+429-      // Output
+430-      input_gate_output,
+431-      // Scratch arrays
+432-      gate_internal_buffer, kTfLiteActSigmoid);
+433-
+434-  // Cell Gate calculation
+435-  CellType* cell_gate_output = buffers.buffer2;
+436:  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+437-      step_info, op_data.cell_gate_parameters,
+438-      // Input FC
+439-      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+440-      kernel_content.GetInternalTensor(tflite::kLstmInputToCellWeightsTensor),
+441-      kernel_content.GetInternalTensor(tflite::kLstmCellGateBiasTensor),
+442-      // Recurrent FC
+443-      kernel_content.HiddenStateTensor(),
+444-      kernel_content.GetInternalTensor(
+445-          tflite::kLstmRecurrentToCellWeightsTensor),
+446-      /*recurrent_bias*/ nullptr,
+447-      // Output
+448-      cell_gate_output,
+449-      // Scratch arrays
+450-      gate_internal_buffer, op_data.cell_gate_nonlinear_type);
+451-
+452-  /*Step2: update the cell state */
+453-  const InterGateParameters& inter_gate_params = op_data.inter_gate_parameters;
+454-  CellType* updated_input_buffer = buffers.buffer1;  // reuse buffer
+455-
+456-  UpdateLstmCell<CellType>(step_info, kernel_content.CellStateTensor(),
+457-                           forget_gate_output, input_gate_output,
+458-                           cell_gate_output,
+459-                           inter_gate_params.forget_cell_mul_params,
+460-                           inter_gate_params.input_mul_params,
+461-                           op_data.cell_state_info, updated_input_buffer);
+462-
+463-  /*Step3: update the hidden state */
+464-  CellType* output_gate_output = buffers.buffer1;  // reuse buffer
+465:  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+466-      step_info, op_data.output_gate_parameters,
+467-      // Input FC
+468-      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+469-      kernel_content.GetInternalTensor(tflite::kLstmInputToOutputWeightsTensor),
+470-      kernel_content.GetInternalTensor(tflite::kLstmOutputGateBiasTensor),
+471-      // Recurrent FC
+472-      kernel_content.HiddenStateTensor(),
+473-      kernel_content.GetInternalTensor(
+474-          tflite::kLstmRecurrentToOutputWeightsTensor),
+475-      /*recurrent_bias*/ nullptr,
+476-      // Output
+477-      output_gate_output,
+478-      // Scratch arrays
+479-      gate_internal_buffer, kTfLiteActSigmoid);
+480-
+481-  CellType* tanh_activated_cell_buffer = buffers.buffer0;  // reuse buffer
+482-  tflite::lstm_internal::UpdateLstmHidden<CellType, ActivationType>(
+483-      step_info, kernel_content.CellStateTensor(),
+484-      kernel_content.HiddenStateTensor(), output_gate_output,
+485-      inter_gate_params.output_mul_params,
+486-      op_data.cell_state_info.cell_state_scale_power,
+487-      tanh_activated_cell_buffer);
+488-
+489-  /*Step4: copy the update the hidden state to output*/
+490-  // Check offset validity to avoid memory overflow
+491-  TFLITE_DCHECK_LE(
+492-      step_info.OutputOffset() + step_info.StateShape().FlatSize(),
+493-      tflite::micro::GetTensorShape(kernel_content.output_tensor).FlatSize());
+494-  // record the output (from the updated hidden state)
+495-  ActivationType* output_ptr = tflite::micro::GetTensorData<ActivationType>(
+496-      kernel_content.output_tensor);
+497-  const auto* hidden_state = kernel_content.HiddenStateTensor();
+498-  std::memcpy(output_ptr + step_info.OutputOffset(),
+499-              tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+500-                  step_info.HiddenStateOffset(),
+501-              step_info.StateShape().FlatSize() * sizeof(ActivationType));
+502-}
+503-
+
+3. LSTM step manager declaration and accessors
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-227-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-228-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-229-void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-230-              float* vector) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-231-  for (int i = 0; i < v_size; i++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-232-    vector[i] = std::max(std::min(cell_state_info.cell_clip, vector[i]),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-233-                         -cell_state_info.cell_clip);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-234-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-235-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-236-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-237-// Increment the data offset so the sigle time step invocation call can access
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-238-// the corresponding input/output tensor data at the time step
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc:239:void LstmStepManager::UpdateTime() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-240-  current_time_ += 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-241-  TFLITE_DCHECK_LE(current_time_, size_info_.time_steps);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-242-  // default as one batch per inference
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-243-  int input_step = size_info_.input_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-244-  int output_step = size_info_.state_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-245-  // time major: batch inference
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-246-  if (size_info_.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-247-    input_step = input_step * size_info_.batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-248-    output_step = output_step * size_info_.batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-249-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-250-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-251-  input_offset_ += input_step;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-252-  output_offset_ += output_step;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-253-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-254-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-255-// Increment the data offset so the sigle time step invocation call can access
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-256-// the corresponding hidden/cell state tensor data at the time step (for single
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-257-// batch inference only)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc:258:void LstmStepManager::UpdateBatch() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-259-  current_batch_ += 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-260-  TFLITE_DCHECK_LE(current_batch_, size_info_.batch_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-261-  // batch inference for time major: no action needed
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-262-  if (size_info_.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-263-    return;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-264-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-265-  // otherwise: singe batch inference, go to the next batch
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-266-  hidden_state_offset_ += size_info_.state_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-267-  cell_state_offset_ += size_info_.state_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-268-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-269-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-270-// Input shape for each single time LSTM invocation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-271-// Multi-batch for time_major input
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc:272:RuntimeShape LstmStepManager::InputShape() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-273-  int batch_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-274-  if (size_info_.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-275-    batch_size = size_info_.batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-276-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-277-  const int dims[2] = {batch_size, size_info_.input_dimension};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-278-  const int32_t* dims_data = reinterpret_cast<const int32_t*>(dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-279-  return RuntimeShape(2, dims_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-280-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-281-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-282-// State shape (both hidden and cell) for each single time LSTM invocation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-283-// Multi-batch for time_major input
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc:284:RuntimeShape LstmStepManager::StateShape() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-285-  int batch_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-286-  if (size_info_.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-287-    batch_size = size_info_.batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-288-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-289-  const int dims[2] = {batch_size, size_info_.state_dimension};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-290-  const int32_t* dims_data = reinterpret_cast<const int32_t*>(dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-291-  return RuntimeShape(2, dims_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-292-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-293-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-294-}  // namespace lstm_internal
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc-295-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-344-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-345-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-346-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-347-void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-348-              float* vector) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-349-  for (int i = 0; i < v_size; i++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-350-    vector[i] = std::max(std::min(cell_state_info.cell_clip, vector[i]),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-351-                         -cell_state_info.cell_clip);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-352-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-353-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-354-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-355-#if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc:356:void UpdateLstmCell(const LstmStepManager& step_info,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-357-                    TfLiteEvalTensor* cell_state,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-358-                    // Gate outputs
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-359-                    int16_t* forget_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-360-                    const int16_t* input_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-361-                    const int16_t* cell_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-362-                    // Mul parameters
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-363-                    const ArithmeticParams& forget_cell_mul_params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-364-                    const ArithmeticParams& input_mul_params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-365-                    const CellStateInfo& cell_state_info, int16_t* buffer) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-366-  auto cell_state_shape = step_info.StateShape();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-367-  // Check offset validity to avoid memory overflow
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-368-  TFLITE_DCHECK_LE(step_info.CellStateOffset() + cell_state_shape.FlatSize(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-369-                   tflite::micro::GetTensorShape(cell_state).FlatSize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-370-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-371-  // Multiplier is equivalent to 0.5 here so adding 1 to shifts
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-372-  xa_nn_lstm_cell_state_update_16(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-373-      tflite::micro::GetTensorData<int16_t>(cell_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-374-          step_info.CellStateOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-375-      forget_gate_output, cell_gate_output, input_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-376-      forget_cell_mul_params.output_shift - 1,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-377-      input_mul_params.output_shift - 1, cell_state_info.quantized_cell_clip,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-378-      cell_state_shape.FlatSize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-379-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-380-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc:381:void UpdateLstmCell(const LstmStepManager& step_info,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-382-                    TfLiteEvalTensor* cell_state,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-383-                    // Gate outputs
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-384-                    float* forget_gate_output, const float* input_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-385-                    const float* cell_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-386-                    // Mul parameters
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-387-                    const ArithmeticParams& forget_cell_mul_params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-388-                    const ArithmeticParams& input_mul_params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-389-                    const CellStateInfo& cell_state_info, float* buffer) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-390-  // Check offset validity to avoid memory overflow
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-391-  TFLITE_DCHECK_LE(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-392-      step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-393-      tflite::micro::GetTensorShape(cell_state).FlatSize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-394-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-395-  auto cell_state_shape = step_info.StateShape();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-396-  // Forget Gate x Cell State
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-397-  Mul(forget_cell_mul_params, forget_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-398-      tflite::micro::GetTensorData<float>(cell_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-399-          step_info.CellStateOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-400-      tflite::micro::GetTensorData<float>(cell_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-401-          step_info.CellStateOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-402-      cell_state_shape.FlatSize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-403-  // Input Gate x Cell Gate
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-404-  Mul(input_mul_params, input_gate_output, cell_gate_output, buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-405-      cell_state_shape.FlatSize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-406-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-407-  // Update the cell state
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-408-  AddElementWise(tflite::micro::GetTensorData<float>(cell_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-409-                     step_info.CellStateOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-410-                 buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-411-                 /*n_batch=*/cell_state_shape.DimsData()[0],
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-412-                 /*n_state=*/cell_state_shape.DimsData()[1],
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-413-                 tflite::micro::GetTensorData<float>(cell_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-414-                     step_info.CellStateOffset());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-415-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-416-  if (cell_state_info.cell_clip > 0) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-417-    Clipping(cell_state_shape.FlatSize(), cell_state_info,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-418-             tflite::micro::GetTensorData<float>(cell_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-419-                 step_info.CellStateOffset());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-420-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-421-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-422-#endif  // #if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-423-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-424-// Increment the data offset so the sigle time step invocation call can access
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-425-// the corresponding input/output tensor data at the time step
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc:426:void LstmStepManager::UpdateTime() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-427-  current_time_ += 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-428-  TFLITE_DCHECK_LE(current_time_, size_info_.time_steps);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-429-  // default as one batch per inference
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-430-  int input_step = size_info_.input_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-431-  int output_step = size_info_.state_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-432-  // time major: batch inference
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-433-  if (size_info_.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-434-    input_step = input_step * size_info_.batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-435-    output_step = output_step * size_info_.batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-436-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-437-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-438-  input_offset_ += input_step;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-439-  output_offset_ += output_step;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-440-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-441-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-442-// Increment the data offset so the sigle time step invocation call can access
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-443-// the corresponding hidden/cell state tensor data at the time step (for single
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-444-// batch inference only)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc:445:void LstmStepManager::UpdateBatch() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-446-  current_batch_ += 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-447-  TFLITE_DCHECK_LE(current_batch_, size_info_.batch_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-448-  // batch inference for time major: no action needed
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-449-  if (size_info_.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-450-    return;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-451-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-452-  // otherwise: singe batch inference, go to the next batch
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-453-  hidden_state_offset_ += size_info_.state_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-454-  cell_state_offset_ += size_info_.state_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-455-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-456-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-457-// Input shape for each single time LSTM invocation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-458-// Multi-batch for time_major input
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc:459:RuntimeShape LstmStepManager::InputShape() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-460-  int batch_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-461-  if (size_info_.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-462-    batch_size = size_info_.batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-463-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-464-  const int dims[2] = {batch_size, size_info_.input_dimension};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-465-  const int32_t* dims_data = reinterpret_cast<const int32_t*>(dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-466-  return RuntimeShape(2, dims_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-467-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-468-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-469-// State shape (both hidden and cell) for each single time LSTM invocation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-470-// Multi-batch for time_major input
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc:471:RuntimeShape LstmStepManager::StateShape() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-472-  int batch_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-473-  if (size_info_.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-474-    batch_size = size_info_.batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-475-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-476-  const int dims[2] = {batch_size, size_info_.state_dimension};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-477-  const int32_t* dims_data = reinterpret_cast<const int32_t*>(dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-478-  return RuntimeShape(2, dims_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-479-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-480-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-481-}  // namespace lstm_internal
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc-482-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-244-void AddElementWise(const float* input_1, const float* input_2, int n_batch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-245-                    int n_input, float* output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-246-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-247-void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-248-              int16_t* vector);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-249-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-250-void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-251-              float* vector);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-252-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-253-// Manages the slice position (offset), slice length (sliced tensor shape),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-254-// and update rules for input/output/hidden state/cell state tensors at each
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-255-// time step.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:256:class LstmStepManager {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-257- public:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:258:  LstmStepManager() = delete;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-259-  // Does not take any ownership, and all pointers must refer to valid objects
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-260-  // that outlive the one constructed.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:261:  explicit LstmStepManager(const LstmSizeInfo* size_info)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-262-      : size_info_(*size_info) {}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-263-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-264-  void UpdateTime();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-265-  void UpdateBatch();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-266-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-267-  void ResetTime() { current_time_ = 0; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-268-  RuntimeShape InputShape() const;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-269-  RuntimeShape StateShape() const;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-270-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:271:  int InputOffset() const { return input_offset_; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:272:  int OutputOffset() const { return output_offset_; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-273-  int HiddenStateOffset() const { return hidden_state_offset_; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-274-  int CellStateOffset() const { return cell_state_offset_; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-275-#if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-276-  int time_major() const { return size_info_.time_major; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-277-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-278-  int batch_size() const { return size_info_.batch_size; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-279-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-280-  int input_dimension() const { return size_info_.input_dimension; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-281-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-282-  int state_dimension() const { return size_info_.state_dimension; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-283-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-284-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-285- private:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-286-  int current_time_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-287-  int current_batch_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-288-  int input_offset_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-289-  int output_offset_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-290-  int hidden_state_offset_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-291-  int cell_state_offset_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-292-  // Sizeinfo is from LstmOpData, which reside in the memory arena
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:293:  // (guarante to outlast LSTMStepManager, which reside in stack)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-294-  const LstmSizeInfo& size_info_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-295-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-296-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-297-// Calculates a single LSTM gate.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-298-// Implements the following formula:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-299-//   gate = activate(FC(input) + FC(recurrent))
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-300-// Activation is sigmoid except for the "cell" gate (configurable, usually tanh)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-301-#if !(defined(HIFI3) || defined(HIFI4) || defined(HIFI5))
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-302-template <typename ActivationType, typename WeightType, typename CellType,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-303-          typename BiasType>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-304-void CalculateLstmGate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:305:    const LstmStepManager& step_info, const GateParameters& gate_params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-306-    // Input FC
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-307-    const TfLiteEvalTensor* input, const TfLiteEvalTensor* input_weight,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-308-    const TfLiteEvalTensor* input_bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-309-    // Recurrent FC
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-310-    const TfLiteEvalTensor* recurrent, const TfLiteEvalTensor* recurrent_weight,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-311-    const TfLiteEvalTensor* recurrent_bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-312-    // Output
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-313-    CellType* gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-314-    // Scratch arrays
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-315-    CellType* fc_output_buffer, const TfLiteFusedActivation activation) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-316-  const auto gate_output_shape = step_info.StateShape();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-317-  // Check offset validity to avoid memory overflow
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:318:  TFLITE_DCHECK_LE(step_info.InputOffset() + step_info.InputShape().FlatSize(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-319-                   tflite::micro::GetTensorShape(input).FlatSize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-320-  TFLITE_DCHECK_LE(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-321-      step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-322-      tflite::micro::GetTensorShape(recurrent).FlatSize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-323-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-324-  // Input FC
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-325-  FullyConnected(gate_params.input_fc_params, step_info.InputShape(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-326-                 tflite::micro::GetTensorData<ActivationType>(input) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:327:                     step_info.InputOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-328-                 micro::GetTensorShape(input_weight),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-329-                 tflite::micro::GetTensorData<WeightType>(input_weight),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-330-                 tflite::micro::GetTensorShape(input_bias),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-331-                 tflite::micro::GetOptionalTensorData<BiasType>(input_bias),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-332-                 gate_output_shape, gate_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-333-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-334-  // Recurrent FC
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-335-  FullyConnected(gate_params.recurrent_fc_params, step_info.StateShape(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-336-                 tflite::micro::GetTensorData<ActivationType>(recurrent) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-337-                     step_info.HiddenStateOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-338-                 tflite::micro::GetTensorShape(recurrent_weight),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-339-                 tflite::micro::GetTensorData<WeightType>(recurrent_weight),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-340-                 tflite::micro::GetTensorShape(recurrent_bias),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-341-                 tflite::micro::GetOptionalTensorData<BiasType>(recurrent_bias),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-342-                 gate_output_shape, fc_output_buffer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-343-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-344-  AddElementWise(gate_output, fc_output_buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-345-                 /*n_batch=*/gate_output_shape.DimsData()[0],
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-346-                 /*n_state=*/gate_output_shape.DimsData()[1], gate_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-347-  // Apply activation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-348-  switch (activation) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-349-    case kTfLiteActSigmoid:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-350-      Sigmoid(gate_output_shape, gate_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-351-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-352-    case kTfLiteActTanh: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-353-      // Set the scale power to -12 to avoid shift
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-354-      Tanh(/*cell_state_scale_power=*/-12, gate_output_shape, gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-355-           gate_output_shape, gate_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-356-    } break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-357-    default:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-358-      // Only Sigmoid or Tanh is used.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-359-      TFLITE_ASSERT_FALSE;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-360-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-361-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-362-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-363-// Update the cell state using the output from the forget gate, input gate, and
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-364-// cell gate Formula: updated_cell_state = forget_gate_output*cell_state +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-365-// input_gate_output * cell_gate_output, where * denotes element wise
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-366-// multiplication
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-367-template <typename CellType>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:368:void UpdateLstmCell(const LstmStepManager& step_info,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-369-                    TfLiteEvalTensor* cell_state,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-370-                    // Gate outputs
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-371-                    CellType* forget_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-372-                    const CellType* input_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-373-                    const CellType* cell_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-374-                    // Mul parameters
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-375-                    const ArithmeticParams& forget_cell_mul_params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-376-                    const ArithmeticParams& input_mul_params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-377-                    const CellStateInfo& cell_state_info, CellType* buffer) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-378-  // Check offset validity to avoid memory overflow
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-379-  TFLITE_DCHECK_LE(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-380-      step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-381-      tflite::micro::GetTensorShape(cell_state).FlatSize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-382-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-383-  auto cell_state_shape = step_info.StateShape();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-384-  // Forget Gate x Cell State
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-385-  Mul(cell_state_shape, forget_cell_mul_params, forget_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-386-      tflite::micro::GetTensorData<CellType>(cell_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-387-          step_info.CellStateOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-388-      tflite::micro::GetTensorData<CellType>(cell_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-389-          step_info.CellStateOffset());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-390-  // Input Gate x Cell Gate
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-391-  Mul(cell_state_shape, input_mul_params, input_gate_output, cell_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-392-      buffer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-393-
+
+4. OpDataLSTM and LstmSizeInfo definitions
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-72-  FullyConnectedParams recurrent_fc_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-73-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-74-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-75-// Paramaters for the element wise multiplications between gate outputs
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-76-struct InterGateParameters {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-77-  ArithmeticParams forget_cell_mul_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-78-  ArithmeticParams input_mul_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-79-  ArithmeticParams output_mul_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-80-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-81-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-82-// Size information about the LSTM kernel, which is deduced from tensors stored
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-83-// in the flat buffer file.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h:84:struct LstmSizeInfo {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-85-  bool time_major;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-86-  int batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-87-  int time_steps;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-88-  int input_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-89-  int state_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-90-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-91-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-92-// Contains information about the cell state tensor
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-93-struct CellStateInfo {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-94-  float cell_clip;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-95-  // clipping range for cell state only 16 bits cell is supported (could be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-96-  // generalized through templatation)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-97-  int16_t quantized_cell_clip;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-98-  // 2^-cell_state_scale_power = cell state scale, required by integer tanh
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-99-  // computation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-100-  int32_t cell_state_scale_power;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-101-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-102-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-103-// Contains required computation information for LSTM kernel evaluation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-104-// Specifically, it includes shape and quantization settings for the LSTM
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-105-// internal operations. Formatted to support operations defined in the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-106-// tensorflow/lite/kernels/internal/reference/integer_ops
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-107-// Should be constructed during the preparation phase
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h:108:struct OpDataLSTM {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-109-  LstmSizeInfo size_info;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-110-  CellStateInfo cell_state_info;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-111-  TfLiteFusedActivation cell_gate_nonlinear_type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-112-  GateParameters forget_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-113-  GateParameters input_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-114-  GateParameters cell_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-115-  GateParameters output_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-116-  InterGateParameters inter_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-117-  int buffer_indices[4];  // TFLM only
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-118-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-119-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-120-// Provide an interface to access the internal tensors and buffers used for LSTM
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-121-// invocation. Constructed during the invocation phase
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-122-struct LSTMKernelContents {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-123- public:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-124-  // Internal tensors, fixed (const). see lstm_shared.h for tensor names
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-125-  const TfLiteEvalTensor* GetInternalTensor(const int tensor_index) const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-126-    return internal_tensors[tensor_index];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-127-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-128-  // Variable tensors (will be changed, can not be const)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-129-  TfLiteEvalTensor* HiddenStateTensor() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-130-    return internal_tensors[kLstmOutputStateTensor];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-131-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-132-  TfLiteEvalTensor* CellStateTensor() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-133-    return internal_tensors[kLstmCellStateTensor];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-134-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-135-  // Node internal tensors with indexes defined at the beginning of the file
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-136-  TfLiteEvalTensor* internal_tensors[24];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-137-  TfLiteEvalTensor* output_tensor;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-138-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-139-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-140-template <typename CellType>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-141-struct LSTMBuffers {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-142-  // TFLM buffers requires buffer index from LstmOpData.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-143-  CellType* buffer0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-144-  CellType* buffer1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-145-  CellType* buffer2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-146-  CellType* buffer3;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-147-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-148-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-149-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-150-#endif  // TENSORFLOW_LITE_MICRO_KERNELS_LSTM_SHARED_H_
+
+5. TfLiteEvalTensor structure and data union
+
+6. Current application kernel hash
+8d4b0a724119dcb7783c46a6e5feb1b57b02d1b8839bdc6574ad6205a1770eac  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+
+============================================================
+PREFLIGHT COMPLETE - NO FILES MODIFIED
+============================================================
