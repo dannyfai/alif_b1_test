@@ -1,0 +1,416 @@
+============================================================
+EXPERIMENTAL MODEL AND RESOLVER INTEGRATION AUDIT
+============================================================
+
+1. CMake model-selection implementation
+110-if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+111-    if (CONFIG_ARM_ETHOS_U85_256)
+112-        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+113-    elseif (CONFIG_ARM_ETHOS_U55_256)
+114-        set(ETHOS_U_NPU_CONFIG_ID "H256")
+115-    else()
+116-        set(ETHOS_U_NPU_CONFIG_ID "H128")
+117-    endif()
+118-endif()
+119-
+120-# Combined PolyU heat-stress model (Vela Ethos-U55-128).
+121-# FORCE prevents a previous ASR model path in CMakeCache.txt from winning.
+122:set(POLYU_MODEL_PATH
+123:    "${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite"
+124-    CACHE FILEPATH "Combined PolyU heat-stress model" FORCE)
+125-
+126:if (NOT EXISTS "${POLYU_MODEL_PATH}")
+127:    message(FATAL_ERROR "Combined PolyU model not found: ${POLYU_MODEL_PATH}")
+128-endif()
+129-
+130:set(POLYU_MODEL_SHA256_EXPECTED "b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3")
+131:file(SHA256 "${POLYU_MODEL_PATH}" POLYU_MODEL_SHA256_ACTUAL)
+132:if (NOT "${POLYU_MODEL_SHA256_ACTUAL}" STREQUAL "${POLYU_MODEL_SHA256_EXPECTED}")
+133-    message(FATAL_ERROR
+134:        "Combined PolyU model SHA256 mismatch. "
+135:        "Expected ${POLYU_MODEL_SHA256_EXPECTED}, got ${POLYU_MODEL_SHA256_ACTUAL}")
+136-endif()
+137-
+138:message(STATUS "Using combined heat-stress model: ${POLYU_MODEL_PATH}")
+139:message(STATUS "Combined model SHA256: ${POLYU_MODEL_SHA256_ACTUAL}")
+140-
+141-# The generator output filename is the complete model filename plus .cc.
+142-generate_model_code(
+143:    MODEL_PATH "${POLYU_MODEL_PATH}"
+144-    DESTINATION "${SRC_GEN_DIR}"
+145-    NAMESPACE "arm" "app" "polyu_heatstroke")
+146-
+147:get_filename_component(POLYU_MODEL_FILENAME "${POLYU_MODEL_PATH}" NAME)
+148:set(POLYU_MODEL_CPP "${SRC_GEN_DIR}/${POLYU_MODEL_FILENAME}.cc")
+149-set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+150-
+151-# Application-local includes for the heat-stress TFLM model.
+152-target_include_directories(app PRIVATE
+153-    src/application/main/include
+154-    src/use_case/alif_asr/include
+155-    src/power
+156-    "${INC_GEN_DIR}"
+157-)
+158-
+159-target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+160-
+161-
+162-if (CONFIG_USE_APP_MENU)
+163-target_compile_definitions(app PRIVATE USE_APP_MENU)
+164-endif()
+165-
+166-target_sources(app PRIVATE
+167-    src/application/main/Main.cc
+168-    src/use_case/alif_asr/src/MainLoop.cc
+169-    src/use_case/alif_asr/src/reverse_v2.cc
+170-    src/use_case/alif_asr/src/PolyUModel1.cc
+171-    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+172-    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+173-    src/power/power_mgr.c
+174-    "${POLYU_MODEL_CPP}"
+175-)
+176-
+177-set(SRC_MAIN "src/application/main/Main.cc")
+178-
+179-list(APPEND SRC_MAIN_DEFS
+180-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+181-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+182-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+183-
+
+2. Current CMake cache model-related variables
+//Combined PolyU heat-stress model
+POLYU_MODEL_PATH:FILEPATH=/home/user/sdk-alif/beeinventor/test_heatstroke/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+//Zephyr hardware model version
+//Zephyr hardware model
+
+3. Model resolver registration
+119-
+120-    if (input_count > 0 &&
+121-        (input_data == nullptr || output_data == nullptr)) {
+122-        MicroPrintf(
+123-            "Heatstroke SIGN received a null tensor data pointer.");
+124-        return kTfLiteError;
+125-    }
+126-
+127-    for (int i = 0; i < input_count; ++i) {
+128-        const int32_t value = input_data[i];
+129-
+130-        output_data[i] =
+131-            (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+132-    }
+133-
+134-    return kTfLiteOk;
+135-}
+136-
+137:TFLMRegistration RegisterHeatstrokeSignKernel()
+138-{
+139-    return tflite::micro::RegisterOp(
+140-        nullptr,
+141-        nullptr,
+142-        HeatstrokeSignEval);
+143-}
+144-
+145-} // namespace
+146-
+147-
+148-namespace tflite {
+149-namespace {
+150-
+151-constexpr int kHsGatherInput = 0;
+152-constexpr int kHsGatherIndices = 1;
+153-constexpr int kHsGatherOutput = 0;
+154-
+155-bool HeatstrokeGatherCheckedMultiply(
+156-    size_t a, size_t b, size_t* result)
+157-{
+158-    if (result == nullptr ||
+159-        (b != 0U &&
+160-         a > (std::numeric_limits<size_t>::max)() / b)) {
+161-        return false;
+162-    }
+163-
+164-    *result = a * b;
+165-    return true;
+166-}
+167-
+168-template <typename InputT, typename IndexT>
+169-TfLiteStatus HeatstrokeGatherCopy(
+170-    const TfLiteGatherParams* params,
+171-    const TfLiteEvalTensor* input,
+172-    const TfLiteEvalTensor* indices,
+--
+542-                    params, input, indices, output);
+543-
+544-            default:
+545-                break;
+546-        }
+547-    }
+548-
+549-    MicroPrintf(
+550-        "Heatstroke GATHER unsupported data/index type combination: "
+551-        "data=%s indices=%s.",
+552-        TfLiteTypeGetName(input->type),
+553-        TfLiteTypeGetName(indices->type));
+554-
+555-    return kTfLiteError;
+556-}
+557-
+558-}  // namespace
+559-
+560:TFLMRegistration RegisterHeatstrokeGatherKernel()
+561-{
+562-    return micro::RegisterOp(
+563-        nullptr,
+564-        HeatstrokeGatherPrepare,
+565-        HeatstrokeGatherEval);
+566-}
+567-
+568-}  // namespace tflite
+569-
+570-/*
+571- * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+572- * Keep its existing parser and implementation unchanged.
+573- */
+574:TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+575-    const tflite::Operator* op,
+576-    tflite::ErrorReporter* error_reporter,
+577-    tflite::BuiltinDataAllocator* allocator,
+578-    void** builtin_data)
+579-{
+580-    return tflite::ParseOpData(
+581-        op,
+582-        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+583-        error_reporter,
+584-        allocator,
+585-        builtin_data);
+586-}
+587-
+588-bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+589-{
+590-#define HS_ADD_REQUIRED(method)                                      \
+591-    do {                                                              \
+592-        const TfLiteStatus status = this->m_opResolver.method();      \
+593-        if (status != kTfLiteOk) {                                    \
+594-            printf_err(                                               \
+595-                "Failed to register heat-stress operator: %s\n",     \
+596-                #method);                                             \
+597-            return false;                                             \
+598-        }                                                             \
+599-    } while (0)
+600-
+601-    /*
+602-     * 28 stock ordinary built-in operators; GATHER is registered separately below.
+603:     * These CPU registrations must remain available with Ethos-U enabled.
+604-     */
+605-    HS_ADD_REQUIRED(AddAdd);
+606-    HS_ADD_REQUIRED(AddBroadcastArgs);
+607-    HS_ADD_REQUIRED(AddBroadcastTo);
+608-    HS_ADD_REQUIRED(AddCast);
+609-    HS_ADD_REQUIRED(AddConcatenation);
+610-    HS_ADD_REQUIRED(AddCumSum);
+611-    HS_ADD_REQUIRED(AddDequantize);
+612-    HS_ADD_REQUIRED(AddDiv);
+613-    HS_ADD_REQUIRED(AddEqual);
+614-    HS_ADD_REQUIRED(AddFloorMod);
+615-    /*
+616-     * Application-local GATHER replacement supporting INT32 and INT64
+617-     * indices. It reuses the existing output tensor and allocates no
+618-     * index-conversion or scratch buffer.
+619-     */
+620-    {
+621-        const TFLMRegistration registration =
+622:            tflite::RegisterHeatstrokeGatherKernel();
+623-
+624:        if (this->m_opResolver.AddBuiltin(
+625-                tflite::BuiltinOperator_GATHER,
+626-                registration,
+627-                tflite::ParseGather) != kTfLiteOk) {
+628-            printf_err(
+629-                "Failed to register heat-stress INT64 GATHER.\n");
+630-            return false;
+631-        }
+632-    }
+633-    HS_ADD_REQUIRED(AddGreater);
+634-    HS_ADD_REQUIRED(AddLogicalAnd);
+635-    HS_ADD_REQUIRED(AddLogicalNot);
+636-    HS_ADD_REQUIRED(AddMaximum);
+637-    HS_ADD_REQUIRED(AddMean);
+638-    HS_ADD_REQUIRED(AddMul);
+639-    HS_ADD_REQUIRED(AddNeg);
+640-    HS_ADD_REQUIRED(AddQuantize);
+641-    HS_ADD_REQUIRED(AddReshape);
+642-    HS_ADD_REQUIRED(AddRsqrt);
+643-    HS_ADD_REQUIRED(AddSelectV2);
+644-    HS_ADD_REQUIRED(AddSoftmax);
+645-    HS_ADD_REQUIRED(AddSplitV);
+646-    HS_ADD_REQUIRED(AddSqrt);
+647-    HS_ADD_REQUIRED(AddSquare);
+648-    HS_ADD_REQUIRED(AddSub);
+649-    HS_ADD_REQUIRED(AddSum);
+650-    HS_ADD_REQUIRED(AddTopKV2);
+651-
+652-#undef HS_ADD_REQUIRED
+653-
+654-    /*
+655-     * Custom SIGN registration under the built-in SIGN opcode.
+656-     */
+657-    {
+658-        const TFLMRegistration registration =
+659:            RegisterHeatstrokeSignKernel();
+660-
+661:        if (this->m_opResolver.AddBuiltin(
+662-                tflite::BuiltinOperator_SIGN,
+663-                registration,
+664-                ParseHeatstrokeSign) != kTfLiteOk) {
+665-            printf_err("Failed to register heat-stress SIGN.\n");
+666-            return false;
+667-        }
+668-    }
+669-
+670-    /*
+671-     * Custom compact bidirectional LSTM registration.
+672-     */
+673-    {
+674-        const TFLMRegistration registration =
+675:            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+676-
+677:        if (this->m_opResolver.AddBuiltin(
+678-                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+679-                registration,
+680:                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+681-            printf_err(
+682-                "Failed to register heat-stress bidirectional LSTM.\n");
+683-            return false;
+684-        }
+685-    }
+686-
+687-    /*
+688:     * Ethos-U registration.
+689-     *
+690:     * AddEthosU() in this SDK can report success even when the hardware
+691-     * registration is null. Therefore, explicitly verify FindOp().
+692-     */
+693:    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+694:        printf_err("Failed to add Ethos-U to the resolver.\n");
+695-        return false;
+696-    }
+697-
+698:    const char* ethos_name = tflite::GetString_ETHOSU();
+699-
+700:    if (ethos_name == nullptr ||
+701:        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+702-        printf_err(
+703:            "Ethos-U registration is missing from the resolver.\n");
+704-        return false;
+705-    }
+706-
+707-    /*
+708-     * Verify all built-in registrations and parser callbacks.
+709-     */
+710-    const tflite::BuiltinOperator required_ops[] = {
+711-        tflite::BuiltinOperator_ADD,
+712-        tflite::BuiltinOperator_BROADCAST_ARGS,
+713-        tflite::BuiltinOperator_BROADCAST_TO,
+714-        tflite::BuiltinOperator_CAST,
+715-        tflite::BuiltinOperator_CONCATENATION,
+716-        tflite::BuiltinOperator_CUMSUM,
+717-        tflite::BuiltinOperator_DEQUANTIZE,
+718-        tflite::BuiltinOperator_DIV,
+719-        tflite::BuiltinOperator_EQUAL,
+720-        tflite::BuiltinOperator_FLOOR_MOD,
+721-        tflite::BuiltinOperator_GATHER,
+722-        tflite::BuiltinOperator_GREATER,
+723-        tflite::BuiltinOperator_LOGICAL_AND,
+724-        tflite::BuiltinOperator_LOGICAL_NOT,
+725-        tflite::BuiltinOperator_MAXIMUM,
+726-        tflite::BuiltinOperator_MEAN,
+727-        tflite::BuiltinOperator_MUL,
+728-        tflite::BuiltinOperator_NEG,
+729-        tflite::BuiltinOperator_QUANTIZE,
+730-        tflite::BuiltinOperator_RESHAPE,
+731-        tflite::BuiltinOperator_RSQRT,
+732-        tflite::BuiltinOperator_SELECT_V2,
+733-        tflite::BuiltinOperator_SIGN,
+734-        tflite::BuiltinOperator_SOFTMAX,
+735-        tflite::BuiltinOperator_SPLIT_V,
+736-        tflite::BuiltinOperator_SQRT,
+737-        tflite::BuiltinOperator_SQUARE,
+738-        tflite::BuiltinOperator_SUB,
+--
+743-
+744-    for (const auto op : required_ops) {
+745-        if (this->m_opResolver.FindOp(op) == nullptr) {
+746-            printf_err(
+747-                "Required heat-stress builtin registration is missing: %d\n",
+748-                static_cast<int>(op));
+749-            return false;
+750-        }
+751-
+752-        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+753-            printf_err(
+754-                "Required heat-stress builtin parser is missing: %d\n",
+755-                static_cast<int>(op));
+756-            return false;
+757-        }
+758-    }
+759-
+760-    info(
+761:        "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+762:        ethos_name);
+763-
+764-    return true;
+765-}
+
+4. Existing and experimental kernel registration declarations
+415-
+416-  return kTfLiteOk;
+417-}
+418-}  // namespace
+419-
+420:TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental() {
+421-  return micro::RegisterOp(
+422-      HeatstrokeBidirectionalLstmInit,
+423-      HeatstrokeBidirectionalLstmPrepare,
+424-      HeatstrokeBidirectionalLstmEval);
+425-}
+426-
+427-}  // namespace tflite
+
+5. MainLoop model initialization and invocation
+
+6. Candidate and production model identities
+72bf7dba9d0234458108fc413915cdb161050edccf4327dd6cf34597e1cb556a  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+-rw-rw-r-- 1 user user 11026208 Nov  8 22:00 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+-rw-rw-r-- 1 user user 11025968 Nov  9 16:01 /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+
+7. Compare LSTM operator codes in both models
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794214694.695500  137405 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794214694.695670  137405 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794214694.725158  137405 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794214695.512547  137405 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794214695.512827  137405 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+
+MODEL /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+OPERATORS 305
+OP 170 BUILTIN BIDIRECTIONAL_SEQUENCE_LSTM CUSTOM '' INPUT_COUNT 29 OUTPUT_COUNT 1
+OP 260 BUILTIN BIDIRECTIONAL_SEQUENCE_LSTM CUSTOM '' INPUT_COUNT 29 OUTPUT_COUNT 1
+
+MODEL /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+OPERATORS 306
+OP 170 BUILTIN BIDIRECTIONAL_SEQUENCE_LSTM CUSTOM '' INPUT_COUNT 29 OUTPUT_COUNT 1
+OP 261 BUILTIN BIDIRECTIONAL_SEQUENCE_LSTM CUSTOM '' INPUT_COUNT 29 OUTPUT_COUNT 1
+
+8. Existing source and experiment hashes
+8d4b0a724119dcb7783c46a6e5feb1b57b02d1b8839bdc6574ad6205a1770eac  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+b9268b3a33e0771ad161ae08f1f59e479d0e52ff40e213f43ee7812722563e2d  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+572aa39c5a1ca7bfa55c57d14694b97a43d661044cbbd390dc503b160f92c2fd  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+6ef9b75fdc91bc9983d860a0242e2cbae6abaf4a7132e1567448d59c053e9e81  /home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
