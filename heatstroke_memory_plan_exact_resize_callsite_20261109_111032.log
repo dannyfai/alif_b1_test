@@ -1,0 +1,629 @@
+===== EXACT MEMORY PLAN RESIZE CALL-SITE =====
+Mon Nov  9 11:10:32 AM HKT 2026
+
+===== 1. MICROALLOCATOR CREATION =====
+517-                      AlignSizeUp<SubgraphAllocations>();
+518-  if (!is_memory_planner_given) {
+519-    total_size += AlignSizeUp<GreedyMemoryPlanner>();
+520-  }
+521-  return total_size;
+522-}
+523-
+524-MicroAllocator::MicroAllocator(SingleArenaBufferAllocator* memory_allocator,
+525-                               MicroMemoryPlanner* memory_planner)
+526-    : non_persistent_buffer_allocator_(memory_allocator),
+527-      persistent_buffer_allocator_(memory_allocator),
+528-      memory_planner_(memory_planner),
+529-      model_is_allocating_(false) {}
+530-
+531-MicroAllocator::MicroAllocator(
+532-    IPersistentBufferAllocator* persistent_buffer_allocator,
+533-    INonPersistentBufferAllocator* non_persistent_buffer_allocator,
+534-    MicroMemoryPlanner* memory_planner)
+535-    : non_persistent_buffer_allocator_(non_persistent_buffer_allocator),
+536-      persistent_buffer_allocator_(persistent_buffer_allocator),
+537-      memory_planner_(memory_planner),
+538-      model_is_allocating_(false) {}
+539-
+540-MicroAllocator::~MicroAllocator() {}
+541-
+542:MicroAllocator* MicroAllocator::Create(uint8_t* tensor_arena, size_t arena_size,
+543-                                       MicroMemoryPlanner* memory_planner) {
+544-  uint8_t* aligned_arena =
+545-      AlignPointerUp(tensor_arena, MicroArenaBufferAlignment());
+546-  size_t aligned_arena_size = tensor_arena + arena_size - aligned_arena;
+547-  SingleArenaBufferAllocator* memory_allocator =
+548-      SingleArenaBufferAllocator::Create(aligned_arena, aligned_arena_size);
+549-
+550-  return Create(memory_allocator, memory_planner);
+551-}
+552-
+553:MicroAllocator* MicroAllocator::Create(uint8_t* tensor_arena, size_t arena_size,
+554-                                       MemoryPlannerType memory_planner_type) {
+555-  uint8_t* aligned_arena =
+556-      AlignPointerUp(tensor_arena, MicroArenaBufferAlignment());
+557-  size_t aligned_arena_size = tensor_arena + arena_size - aligned_arena;
+558-  SingleArenaBufferAllocator* memory_allocator =
+559-      SingleArenaBufferAllocator::Create(aligned_arena, aligned_arena_size);
+560-
+561-  // By default create GreedyMemoryPlanner.
+562-  // If a different MemoryPlanner is needed, use the other api.
+563-  MicroMemoryPlanner* memory_planner =
+564-      CreateMemoryPlanner(memory_planner_type, memory_allocator);
+565-
+566-  return Create(memory_allocator, memory_planner);
+567-}
+568-
+569:MicroAllocator* MicroAllocator::Create(
+570-    SingleArenaBufferAllocator* memory_allocator,
+571-    MicroMemoryPlanner* memory_planner) {
+572-  TFLITE_DCHECK(memory_allocator != nullptr);
+573-  TFLITE_DCHECK(memory_planner != nullptr);
+574-
+575-  uint8_t* allocator_buffer = memory_allocator->AllocatePersistentBuffer(
+576-      sizeof(MicroAllocator), alignof(MicroAllocator));
+577-  MicroAllocator* allocator = new (allocator_buffer)
+578-      MicroAllocator(memory_allocator, memory_allocator, memory_planner);
+579-  return allocator;
+580-}
+581-
+582:MicroAllocator* MicroAllocator::Create(uint8_t* persistent_tensor_arena,
+583-                                       size_t persistent_arena_size,
+584-                                       uint8_t* non_persistent_tensor_arena,
+585-                                       size_t non_persistent_arena_size,
+586-                                       MemoryPlannerType memory_planner_type) {
+587-  TFLITE_DCHECK(persistent_tensor_arena != nullptr);
+588-  TFLITE_DCHECK(non_persistent_tensor_arena != nullptr);
+589-  TFLITE_DCHECK(persistent_tensor_arena != non_persistent_tensor_arena);
+590-
+591-  IPersistentBufferAllocator* persistent_buffer_allocator =
+592-      CreatePersistentArenaAllocator(persistent_tensor_arena,
+593-                                     persistent_arena_size);
+594-  INonPersistentBufferAllocator* non_persistent_buffer_allocator =
+595-      CreateNonPersistentArenaAllocator(non_persistent_tensor_arena,
+596-                                        non_persistent_arena_size,
+597-                                        persistent_buffer_allocator);
+598-
+599-  // TODO(b/297821738): this should be changed to CreateMemoryPlanner if
+600-  // possible once  it's figured out why it breaks the HifiMini Build
+601-  uint8_t* memory_planner_buffer = nullptr;
+602-  MicroMemoryPlanner* memory_planner = nullptr;
+603-
+604-  if (memory_planner_type == MemoryPlannerType::kGreedy) {
+605-    memory_planner_buffer =
+606-        persistent_buffer_allocator->AllocatePersistentBuffer(
+607-            sizeof(GreedyMemoryPlanner), alignof(GreedyMemoryPlanner));
+608-    memory_planner = new (memory_planner_buffer) GreedyMemoryPlanner();
+609-  } else if (memory_planner_type == MemoryPlannerType::kLinear) {
+610-    memory_planner_buffer =
+611-        persistent_buffer_allocator->AllocatePersistentBuffer(
+612-            sizeof(LinearMemoryPlanner), alignof(LinearMemoryPlanner));
+613-    memory_planner = new (memory_planner_buffer) LinearMemoryPlanner();
+614-  }
+615-
+616-  uint8_t* micro_allocator_buffer =
+617-      persistent_buffer_allocator->AllocatePersistentBuffer(
+618-          sizeof(MicroAllocator), alignof(MicroAllocator));
+619-  MicroAllocator* allocator = new (micro_allocator_buffer)
+620-      MicroAllocator(persistent_buffer_allocator,
+621-                     non_persistent_buffer_allocator, memory_planner);
+622-  return allocator;
+623-}
+624-
+625-SubgraphAllocations* MicroAllocator::StartModelAllocation(const Model* model) {
+626-  TFLITE_DCHECK(model != nullptr);
+627-
+628-  if (model_is_allocating_) {
+629-    MicroPrintf(
+630-        "MicroAllocator: Model allocation started before "
+631-        "finishing previously allocated model");
+632-    return nullptr;
+633-  }
+634-
+635-  model_is_allocating_ = true;
+636-
+637-  uint8_t* data_allocator_buffer =
+638-      persistent_buffer_allocator_->AllocatePersistentBuffer(
+639-          sizeof(MicroBuiltinDataAllocator),
+640-          alignof(MicroBuiltinDataAllocator));
+641-  builtin_data_allocator_ = new (data_allocator_buffer)
+642-      MicroBuiltinDataAllocator(persistent_buffer_allocator_);
+643-
+644-  if (InitScratchBufferData() != kTfLiteOk) {
+645-    return nullptr;
+646-  }
+647-
+
+===== 2. MEMORY PLAN AND RESIZE CALLS =====
+727-
+728-  // Assign the current request index to the out-param:
+729-  *buffer_idx = scratch_buffer_request_count_;
+730-
+731-  // Bump the request count to prepare for the next request:
+732-  ++scratch_buffer_request_count_;
+733-  return kTfLiteOk;
+734-}
+735-
+736-TfLiteStatus MicroAllocator::FinishPrepareNodeAllocations(int node_id) {
+737-  // When a node has finished preparing, all temp allocations performed by the
+738-  // kernel should be cleaned up:
+739-  TF_LITE_ENSURE_STATUS(ResetTempAllocations());
+740-
+741-  // Find and update any new scratch buffer requests for the current node:
+742-  internal::ScratchBufferRequest* requests = GetScratchBufferRequests();
+743-
+744-  for (size_t i = 0; i < scratch_buffer_request_count_; ++i) {
+745-    // A request with a node_idx of -1 is a sentinel value used to indicate this
+746-    // was a new request for the current node. The allocator finally knows the
+747-    // node index at this point. Assign the value and update the list of new
+748-    // requests so the head section can be adjusted to allow for the next kernel
+749-    // to allocate at most kMaxScratchBuffersPerOp requests:
+750-    if (requests[i].node_idx == kUnassignedScratchBufferRequestIndex) {
+751-      requests[i].node_idx = node_id;
+752-    }
+753-  }
+754-
+755-  // Ensure that the head is re-adjusted to allow for another at-most
+756-  // kMaxScratchBuffersPerOp scratch buffer requests in the next operator:
+757:  TF_LITE_ENSURE_STATUS(non_persistent_buffer_allocator_->ResizeBuffer(
+758-      scratch_buffer_head_,
+759-      sizeof(internal::ScratchBufferRequest) *
+760-          (scratch_buffer_request_count_ + kMaxScratchBuffersPerOp),
+761-      alignof(internal::ScratchBufferRequest)));
+762-
+763-  return kTfLiteOk;
+764-}
+765-
+766-size_t MicroAllocator::used_bytes() const {
+767-  return non_persistent_buffer_allocator_->GetNonPersistentUsedBytes() +
+768-         persistent_buffer_allocator_->GetPersistentUsedBytes();
+769-}
+770-
+771-TfLiteStatus MicroAllocator::AllocateNodeAndRegistrations(
+772-    const Model* model, SubgraphAllocations* subgraph_allocations) {
+773-  TFLITE_DCHECK(subgraph_allocations != nullptr);
+774-
+775-  for (size_t subgraph_idx = 0; subgraph_idx < model->subgraphs()->size();
+776-       subgraph_idx++) {
+777-    const SubGraph* subgraph = model->subgraphs()->Get(subgraph_idx);
+778-    TFLITE_DCHECK(subgraph != nullptr);
+779-
+780-    uint32_t operators_size = NumSubgraphOperators(subgraph);
+781-
+782-    // Initialize NodeAndRegistrations for the subgraph.
+783-    NodeAndRegistration* output = reinterpret_cast<NodeAndRegistration*>(
+784-        persistent_buffer_allocator_->AllocatePersistentBuffer(
+785-            sizeof(NodeAndRegistration) * operators_size,
+786-            alignof(NodeAndRegistration)));
+787-    if (output == nullptr) {
+788-      MicroPrintf("Failed to allocate memory for node_and_registrations.");
+789-      return kTfLiteError;
+790-    }
+791-    subgraph_allocations[subgraph_idx].node_and_registrations = output;
+792-  }
+--
+1159-          MicroArenaBufferAlignment());
+1160-  uint8_t* planner_arena = non_persistent_buffer_allocator_->AllocateTemp(
+1161-      remaining_arena_size, MicroArenaBufferAlignment());
+1162-
+1163-  if (planner_arena == nullptr) {
+1164-    return kTfLiteError;
+1165-  }
+1166-
+1167-  memory_planner_->Init(planner_arena, remaining_arena_size);
+1168-  TF_LITE_ENSURE_STATUS(
+1169-      CreatePlan(memory_planner_, allocation_info, allocation_info_count));
+1170-
+1171-  // Commit the plan.
+1172-  TF_LITE_ENSURE_STATUS(
+1173-      CommitPlan(memory_planner_,
+1174-                 non_persistent_buffer_allocator_->GetOverlayMemoryAddress(),
+1175-                 allocation_info, allocation_info_count));
+1176-
+1177-  // Reset all temp allocations used above:
+1178-  builder.FreeAllocationInfo();
+1179-  non_persistent_buffer_allocator_->DeallocateTemp(planner_arena);
+1180-  TF_LITE_ENSURE_STATUS(
+1181-      non_persistent_buffer_allocator_->ResetTempAllocations());
+1182-  TF_LITE_ENSURE_STATUS(
+1183-      non_persistent_buffer_allocator_->DeallocateResizableBuffer(
+1184-          scratch_buffer_head_));
+1185-
+1186-#ifdef TF_LITE_SHOW_MEMORY_USE
+1187-  memory_planner_->PrintMemoryPlan();
+1188-#endif
+1189:  head_usage = memory_planner_->GetMaximumMemorySize();
+1190-
+1191-  // The head is used to store memory plans for one model at a time during the
+1192-  // model preparation stage, and is re-purposed to store scratch buffer handles
+1193-  // during model invocation. The head must be as large as the greater of the
+1194-  // largest model memory plan's size and the total space required for all
+1195-  // scratch buffer handles.
+1196-  if (max_head_buffer_usage_ < head_usage) {
+1197-    max_head_buffer_usage_ = head_usage;
+1198-  }
+1199-
+1200-  // The head is used for storing scratch buffer allocations before finalizing a
+1201-  // memory plan in this function. Ensure that the head is set to the largest
+1202-  // memory plan sent through the allocator:
+1203-  TF_LITE_ENSURE_STATUS(
+1204:      non_persistent_buffer_allocator_->ReserveNonPersistentOverlayMemory(
+1205-          max_head_buffer_usage_, MicroArenaBufferAlignment()));
+1206-  return kTfLiteOk;
+1207-}
+1208-
+1209-TfLiteStatus MicroAllocator::AllocateScratchBufferHandles(
+1210-    ScratchBufferHandle** scratch_buffer_handles, size_t handle_count) {
+1211-  TFLITE_DCHECK(scratch_buffer_handles != nullptr);
+1212-
+1213-  if (scratch_buffer_request_count_ == 0) {
+1214-    // No scratch buffer requests were requested during model allocation.
+1215-    return kTfLiteOk;
+1216-  }
+1217-
+1218-  // Allocate a consecutive block of memory store the scratch buffer handles.
+1219-  // This alignment ensures quick lookup during inference time for the model:
+1220-  *scratch_buffer_handles = reinterpret_cast<ScratchBufferHandle*>(
+1221-      persistent_buffer_allocator_->AllocatePersistentBuffer(
+1222-          sizeof(ScratchBufferHandle) * handle_count,
+1223-          alignof(ScratchBufferHandle)));
+1224-
+1225-  return kTfLiteOk;
+1226-}
+1227-
+1228-TfLiteStatus MicroAllocator::InitScratchBufferData() {
+1229-  // A model is preparing to allocate resources, ensure that scratch buffer
+1230-  // request counter is cleared:
+1231-  scratch_buffer_request_count_ = 0;
+1232-
+1233-  // All requests will be stored in the head section. Each kernel is allowed at
+1234-  // most kMaxScratchBuffersPerOp requests. Adjust the head to reserve at most
+1235-  // that many requests to begin:
+1236-  scratch_buffer_head_ =
+1237:      non_persistent_buffer_allocator_->AllocateResizableBuffer(
+1238-          sizeof(internal::ScratchBufferRequest) * kMaxScratchBuffersPerOp,
+1239-          alignof(internal::ScratchBufferRequest));
+1240-  if (scratch_buffer_head_ == nullptr) {
+1241-    return kTfLiteError;
+1242-  }
+1243-
+1244-  return kTfLiteOk;
+1245-}
+1246-
+1247-internal::ScratchBufferRequest* MicroAllocator::GetScratchBufferRequests() {
+1248-  return reinterpret_cast<internal::ScratchBufferRequest*>(AlignPointerUp(
+1249-      scratch_buffer_head_, alignof(internal::ScratchBufferRequest)));
+1250-}
+1251-
+1252-TfLiteBridgeBuiltinDataAllocator* MicroAllocator::GetBuiltinDataAllocator() {
+1253-  return builtin_data_allocator_;
+1254-}
+1255-
+1256-}  // namespace tflite
+
+===== 3. SINGLE-ARENA IMPLEMENTATION =====
+    45	    uint8_t* buffer_head, size_t buffer_size) {
+    46	  TFLITE_DCHECK(buffer_head != nullptr);
+    47	  SingleArenaBufferAllocator tmp =
+    48	      SingleArenaBufferAllocator(buffer_head, buffer_size);
+    49	
+    50	  // Allocate enough bytes from the buffer to create a
+    51	  // SingleArenaBufferAllocator. The new instance will use the current adjusted
+    52	  // tail buffer from the tmp allocator instance.
+    53	  uint8_t* allocator_buffer = tmp.AllocatePersistentBuffer(
+    54	      sizeof(SingleArenaBufferAllocator), alignof(SingleArenaBufferAllocator));
+    55	  // Use the default copy constructor to populate internal states.
+    56	  return new (allocator_buffer) SingleArenaBufferAllocator(tmp);
+    57	}
+    58	
+    59	SingleArenaBufferAllocator::~SingleArenaBufferAllocator() {}
+    60	
+    61	uint8_t* SingleArenaBufferAllocator::AllocateResizableBuffer(size_t size,
+    62	                                                             size_t alignment) {
+    63	  // Only supports one resizable buffer, which starts at the buffer head.
+    64	  uint8_t* expect_resizable_buf = AlignPointerUp(buffer_head_, alignment);
+    65	  if (ResizeBuffer(expect_resizable_buf, size, alignment) == kTfLiteOk) {
+    66	    return expect_resizable_buf;
+    67	  }
+    68	  return nullptr;
+    69	}
+    70	
+    71	TfLiteStatus SingleArenaBufferAllocator::DeallocateResizableBuffer(
+    72	    uint8_t* resizable_buf) {
+    73	  return ResizeBuffer(resizable_buf, 0, 1);
+    74	}
+    75	
+    76	TfLiteStatus SingleArenaBufferAllocator::ReserveNonPersistentOverlayMemory(
+    77	    size_t size, size_t alignment) {
+    78	  uint8_t* expect_resizable_buf = AlignPointerUp(buffer_head_, alignment);
+    79	  return ResizeBuffer(expect_resizable_buf, size, alignment);
+    80	}
+    81	
+    82	TfLiteStatus SingleArenaBufferAllocator::ResizeBuffer(uint8_t* resizable_buf,
+    83	                                                      size_t size,
+    84	                                                      size_t alignment) {
+    85	  // Only supports one resizable buffer, which starts at the buffer head.
+    86	  uint8_t* expect_resizable_buf = AlignPointerUp(buffer_head_, alignment);
+    87	  if (head_ != temp_ || resizable_buf != expect_resizable_buf) {
+    88	    MicroPrintf(
+    89	        "Internal error: either buffer is not resizable or "
+    90	        "ResetTempAllocations() is not called before ResizeBuffer().");
+    91	    return kTfLiteError;
+    92	  }
+    93	
+    94	  uint8_t* const aligned_result = AlignPointerUp(buffer_head_, alignment);
+    95	  const size_t available_memory = tail_ - aligned_result;
+    96	  if (available_memory < size) {
+    97	    MicroPrintf(
+    98	        "Failed to resize buffer. Requested: %u, available %u, missing: %u",
+    99	        size, available_memory, size - available_memory);
+   100	    return kTfLiteError;
+   101	  }
+   102	  head_ = aligned_result + size;
+   103	  temp_ = head_;
+   104	
+   105	  return kTfLiteOk;
+   106	}
+   107	
+   108	uint8_t* SingleArenaBufferAllocator::AllocatePersistentBuffer(
+   109	    size_t size, size_t alignment) {
+   110	  uint8_t* const aligned_result = AlignPointerDown(tail_ - size, alignment);
+   111	  if (aligned_result < head_) {
+   112	#ifndef TF_LITE_STRIP_ERROR_STRINGS
+   113	    const size_t missing_memory = head_ - aligned_result;
+   114	    MicroPrintf(
+   115	        "Failed to allocate tail memory. Requested: %u, "
+   116	        "available %u, missing: %u",
+   117	        size, size - missing_memory, missing_memory);
+   118	#endif
+   119	    return nullptr;
+   120	  }
+   121	  tail_ = aligned_result;
+   122	  return aligned_result;
+   123	}
+   124	
+   125	uint8_t* SingleArenaBufferAllocator::AllocateTemp(size_t size,
+
+===== 4. NON-PERSISTENT ARENA IMPLEMENTATION =====
+    35	  const size_t available_memory = buffer_tail_ - aligned_result;
+    36	  if (available_memory < size) {
+    37	    MicroPrintf(
+    38	        "Failed to allocate temp memory. Requested: %u, "
+    39	        "available %u, missing: %u",
+    40	        size, available_memory, size - available_memory);
+    41	    return nullptr;
+    42	  }
+    43	  next_temp_ = aligned_result + size;
+    44	  temp_buffer_ptr_check_sum_ ^= reinterpret_cast<intptr_t>(aligned_result);
+    45	  temp_buffer_count_++;
+    46	  return aligned_result;
+    47	}
+    48	
+    49	// Signals that a temporary buffer is no longer needed.
+    50	void NonPersistentArenaBufferAllocator::DeallocateTemp(uint8_t* temp_buf) {
+    51	  temp_buffer_ptr_check_sum_ ^= reinterpret_cast<intptr_t>(temp_buf);
+    52	  temp_buffer_count_--;
+    53	}
+    54	
+    55	// Returns true if all temporary buffers are already deallocated.
+    56	bool NonPersistentArenaBufferAllocator::IsAllTempDeallocated() {
+    57	  if (temp_buffer_count_ != 0 || temp_buffer_ptr_check_sum_ != 0) {
+    58	    MicroPrintf(
+    59	        "Number of allocated temp buffers: %d. Checksum passing status: %d",
+    60	        temp_buffer_count_, !temp_buffer_ptr_check_sum_);
+    61	    return false;
+    62	  }
+    63	  return true;
+    64	}
+    65	
+    66	// Signals that all temporary allocations can be reclaimed. TFLM calls this
+    67	// API when it knows that all temporary buffers that it requested has been
+    68	// deallocated. The goal of API is to facilitate implementations of
+    69	// INonPersistentBufferAllocator can reuse buffer with some reasonable
+    70	// complexity.
+    71	TfLiteStatus NonPersistentArenaBufferAllocator::ResetTempAllocations() {
+    72	  if (!IsAllTempDeallocated()) {
+    73	    MicroPrintf(
+    74	        "All temp buffers must be freed before calling ResetTempAllocations()");
+    75	    return kTfLiteError;
+    76	  }
+    77	  next_temp_ = head_temp_;
+    78	  return kTfLiteOk;
+    79	}
+    80	
+    81	// Returns a buffer that is resizable viable ResizeBuffer().
+    82	uint8_t* NonPersistentArenaBufferAllocator::AllocateResizableBuffer(
+    83	    size_t size, size_t alignment) {
+    84	  // Only supports one resizable buffer, which starts at the buffer head.
+    85	  uint8_t* expected_resizable_buf = AlignPointerUp(buffer_head_, alignment);
+    86	
+    87	  if (resizable_buffer_allocated_) {
+    88	    MicroPrintf(
+    89	        "Cannot allocate a new resizable buffer when one is already allocated");
+    90	    return nullptr;
+    91	  }
+    92	
+    93	  if (ResizeBuffer(expected_resizable_buf, size, alignment) == kTfLiteOk) {
+    94	    resizable_buffer_allocated_ = true;
+    95	    return expected_resizable_buf;
+    96	  }
+    97	  return nullptr;
+    98	}
+    99	
+   100	// Resizes a buffer that is previously returned by the AllocateResizableBuffer.
+   101	// Note that ResizeBuffer(old_resizable_buf, 0, 1) effectively deallocates
+   102	// a previous allocated resizable buffer.
+   103	TfLiteStatus NonPersistentArenaBufferAllocator::ResizeBuffer(
+   104	    uint8_t* resizable_buf, size_t size, size_t alignment) {
+   105	  // Only supports one resizable buffer, which starts at the buffer head.
+   106	  uint8_t* expect_resizable_buf = AlignPointerUp(buffer_head_, alignment);
+   107	  if (resizable_buf != expect_resizable_buf) {
+   108	    MicroPrintf("Internal error: buffer is not resizable");
+   109	    return kTfLiteError;
+   110	  }
+   111	  if (head_temp_ != next_temp_) {
+   112	    MicroPrintf("ResetTempAllocations() is not called before ResizeBuffer().");
+   113	    return kTfLiteError;
+   114	  }
+   115	
+   116	  const size_t available_memory = buffer_tail_ - expect_resizable_buf;
+   117	  if (available_memory < size) {
+   118	    MicroPrintf(
+   119	        "Failed to resize buffer. Requested: %u, available %u, missing: %u",
+   120	        size, available_memory, size - available_memory);
+   121	    return kTfLiteError;
+   122	  }
+   123	  head_temp_ = expect_resizable_buf + size;
+   124	  next_temp_ = head_temp_;
+   125	
+   126	  return kTfLiteOk;
+   127	}
+   128	
+   129	// Frees up the memory occupied by the resizable buffer.
+   130	TfLiteStatus NonPersistentArenaBufferAllocator::DeallocateResizableBuffer(
+   131	    uint8_t* resizable_buf) {
+   132	  TfLiteStatus status = ResizeBuffer(resizable_buf, 0, 1);
+   133	  if (status == kTfLiteOk) {
+   134	    resizable_buffer_allocated_ = false;
+   135	  }
+   136	  return status;
+   137	}
+   138	
+   139	// Returns a pointer pointing to the start of the overlay memory, which is
+   140	// used for activation tensors and scratch buffers by kernels at Invoke stage.
+   141	uint8_t* NonPersistentArenaBufferAllocator::GetOverlayMemoryAddress() const {
+   142	  return buffer_head_;
+   143	}
+   144	
+   145	// Reserves the size of the overlay memory. This overlay is reserved for the
+   146	// kernels at Invoke stage. This is referred to as the overlay because before
+   147	// Invoket state, the same memory can be used for temp buffers. The layout of
+   148	// the memory is planned by the memory planner separately at Invoke stage.
+   149	TfLiteStatus
+   150	NonPersistentArenaBufferAllocator::ReserveNonPersistentOverlayMemory(
+   151	    size_t size, size_t alignment) {
+   152	  uint8_t* expect_resizable_buf = AlignPointerUp(buffer_head_, alignment);
+   153	  return ResizeBuffer(expect_resizable_buf, size, alignment);
+   154	}
+   155	
+   156	// Returns the size of non-persistent buffer in use.
+   157	size_t NonPersistentArenaBufferAllocator::GetNonPersistentUsedBytes() const {
+   158	  return (next_temp_ - buffer_head_);
+   159	}
+   160	
+   161	// Returns the number of bytes available with a given alignment. This number
+   162	// takes in account any temporary allocations.
+   163	size_t NonPersistentArenaBufferAllocator::GetAvailableMemory(
+   164	    size_t alignment) const {
+   165	  uint8_t* const aligned_temp = AlignPointerUp(next_temp_, alignment);
+   166	  uint8_t* const aligned_tail = AlignPointerDown(buffer_tail_, alignment);
+   167	  return aligned_tail - aligned_temp;
+   168	}
+   169	
+   170	}  // namespace tflite
+
+===== 5. MLEK COMPUTE BUFFER AND ALLOCATOR =====
+   105	/* Initialise the model */
+   106	bool TflmModel::Init(iface::MemoryRegion& computeBuffer,
+   107	                     iface::MemoryRegion& nnModel,
+   108	                     const void* backendData)
+   109	{
+   110	    /* Following tf lite micro example:
+   111	     * Map the model into a usable data structure. This doesn't involve any
+   112	     * copying or parsing, it's a very lightweight operation. */
+   113	    debug("loading model from @ 0x%p\n", nnModel.data);
+   114	    debug("model size: %" PRIu32 " bytes.\n", nnModel.size);
+   115	
+   116	    /* Enable logging before we start interacting with the framework. */
+   117	    EnableTFLMLog();
+   118	
+   119	    this->m_backendData.m_pModel = ::tflite::GetModel(nnModel.data);
+   120	
+   121	    if (this->m_backendData.m_pModel->version() != TFLITE_SCHEMA_VERSION) {
+   122	        printf_err("Model's schema version %" PRIu32 " is not equal "
+   123	                   "to supported version %d.",
+   124	                   this->m_backendData.m_pModel->version(),
+   125	                   TFLITE_SCHEMA_VERSION);
+   126	        return false;
+   127	    }
+   128	
+   129	    this->m_computeBuffer = computeBuffer;
+   130	    this->m_modelBuffer   = nnModel;
+   131	
+   132	    /* Pull in only the operation implementations we need.
+   133	     * This relies on a complete list of all the ops needed by this graph.
+   134	     * An easier approach is to just use the AllOpsResolver, but this will
+   135	     * incur some penalty in code space for op implementations that are not
+   136	     * needed by this graph.
+   137	     * static ::tflite::ops::micro::AllOpsResolver resolver; */
+   138	    /* NOLINTNEXTLINE(runtime-global-variables) */
+   139	    debug("loading op resolver\n");
+   140	
+   141	    this->EnlistOperations();
+   142	
+   143	    /** If backend data has been provided, re-use the allocator */
+   144	    if (backendData) {
+   145	        this->m_backendData.m_pAllocator =
+   146	            reinterpret_cast<const TflmBackendData*>(backendData)->m_pAllocator;
+   147	    }
+   148	
+   149	    /* Create allocator instance, if it doesn't exist */
+   150	    if (!this->m_backendData.m_pAllocator) {
+   151	        /* Create an allocator instance */
+   152	        info("Creating allocator using tensor arena at 0x%p\n", computeBuffer.data);
+   153	
+   154	        this->m_backendData.m_pAllocator =
+   155	            tflite::MicroAllocator::Create(computeBuffer.data, computeBuffer.size);
+   156	
+   157	        if (!this->m_backendData.m_pAllocator) {
+   158	            printf_err("Failed to create allocator\n");
+   159	            return false;
+   160	        }
+   161	        debug("Created new allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   162	    } else {
+   163	        debug("Using existing allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   164	    }
+   165	
+   166	    this->m_backendData.m_pInterpreter = std::make_unique<tflite::MicroInterpreter>(
+   167	        this->m_backendData.m_pModel, this->GetOpResolver(), this->m_backendData.m_pAllocator);
+   168	
+   169	    if (!this->m_backendData.m_pInterpreter) {
+   170	        printf_err("Failed to allocate interpreter\n");
+   171	        return false;
+   172	    }
+   173	
+   174	    /* Allocate memory from the tensor_arena for the model's tensors. */
+   175	    info("Allocating tensors\n");
+   176	    TfLiteStatus allocate_status = this->m_backendData.m_pInterpreter->AllocateTensors();
+   177	
+   178	    if (allocate_status != kTfLiteOk) {
+   179	        printf_err("tensor allocation failed!\n");
+   180	        return false;
+   181	    }
+   182	
+   183	    /* Get information about the memory area to use for the model's input. */
+   184	    this->m_input.resize(this->GetNumInputs());
+   185	    for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   186	        this->m_input[inIndex] =
+   187	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->input(inIndex));
+   188	    }
+   189	
+   190	    this->m_output.resize(this->GetNumOutputs());
+
+===== 6. MEMORY PLAN PRINT CONFIGURATION =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc:1186:#ifdef TF_LITE_SHOW_MEMORY_USE
+
+===== 7. BUILD OBJECT SELECTION =====
+9757:build modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/recording_micro_allocator.cc.obj: CXX_COMPILER__modules__tflite-micro_unscanned_Release /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/recording_micro_allocator.cc || cmake_object_order_depends_target_modules__tflite-micro
+9759:  DEP_FILE = modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/recording_micro_allocator.cc.obj.d
+9829:build modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc.obj: CXX_COMPILER__modules__tflite-micro_unscanned_Release /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc || cmake_object_order_depends_target_modules__tflite-micro
+9831:  DEP_FILE = modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc.obj.d
+9877:build modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/non_persistent_arena_buffer_allocator.cc.obj: CXX_COMPILER__modules__tflite-micro_unscanned_Release /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/non_persistent_arena_buffer_allocator.cc || cmake_object_order_depends_target_modules__tflite-micro
+9879:  DEP_FILE = modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/non_persistent_arena_buffer_allocator.cc.obj.d
+9893:build modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/recording_single_arena_buffer_allocator.cc.obj: CXX_COMPILER__modules__tflite-micro_unscanned_Release /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/recording_single_arena_buffer_allocator.cc || cmake_object_order_depends_target_modules__tflite-micro
+9895:  DEP_FILE = modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/recording_single_arena_buffer_allocator.cc.obj.d
+9901:build modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/single_arena_buffer_allocator.cc.obj: CXX_COMPILER__modules__tflite-micro_unscanned_Release /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/single_arena_buffer_allocator.cc || cmake_object_order_depends_target_modules__tflite-micro
+9903:  DEP_FILE = modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/single_arena_buffer_allocator.cc.obj.d
+10893:build modules/tflite-micro/libmodules__tflite-micro.a: CXX_STATIC_LIBRARY_LINKER__modules__tflite-micro_Release modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/python/tflite_micro/python_ops_resolver.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/micro/kernels/fft_flexbuffers_generated_data.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/micro/kernels/rfft.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/micro/kernels/window.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/micro/kernels/window_flexbuffers_generated_data.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/src/rfft_float.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/src/rfft_int16.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/src/rfft_int32.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/src/window.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/src/kiss_fft_wrappers/kiss_fft_float.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/src/kiss_fft_wrappers/kiss_fft_int16.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/signal/src/kiss_fft_wrappers/kiss_fft_int32.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/compiler/mlir/lite/core/api/error_reporter.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/compiler/mlir/lite/schema/schema_utils.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/array.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/debug_log.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/hexdump.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/fake_micro_context.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_helpers.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocation_info.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/recording_micro_allocator.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_time.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_utils.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/flatbuffer_utils.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/mock_micro_graph.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_context.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_graph.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_op_resolver.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_resource_variable.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/system_setup.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/non_persistent_arena_buffer_allocator.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/persistent_arena_buffer_allocator.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/recording_single_arena_buffer_allocator.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/single_arena_buffer_allocator.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tflite_bridge/micro_error_reporter.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/greedy_memory_planner.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/quantization_util.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/tensor_ctypes.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/tensor_utils.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/comparisons.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/kernel_util.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/tensor_utils.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/activations.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/activations_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/add.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/add_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/add_n.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arg_min_max.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/assign_variable.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/batch_matmul.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/batch_to_space_nd.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/broadcast_args.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/broadcast_to.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/call_once.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceil.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/circular_buffer.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/circular_buffer_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/comparisons.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/concatenation.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/conv.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/conv_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cumsum.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/topk_int8.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/decompress.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/decompress_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/depth_to_space.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/depthwise_conv.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/depthwise_conv_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elementwise.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elu.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/embedding_lookup.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/exp.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/expand_dims.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/fill.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_mod.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/fully_connected.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/fully_connected_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/gather_nd.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/hard_swish.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/hard_swish_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/if.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_runner.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/l2norm.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/l2_pool_2d.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/leaky_relu.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/leaky_relu_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/logical.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/logical_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/logistic.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/logistic_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/log_softmax.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/maximum_minimum.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_tensor_utils.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/mirror_pad.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/mul.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/mul_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/neg.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pack.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pad.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/prelu.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/prelu_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/read_variable.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/resize_bilinear.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/resize_nearest_neighbor.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/round.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/select.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/shape.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/slice.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/softmax.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/softmax_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/space_to_batch_nd.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/space_to_depth.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/split.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/split_v.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/squared_difference.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/squeeze.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/strided_slice.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/strided_slice_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/svdf.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/svdf_common.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/tanh.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/transpose_conv.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unpack.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/var_handle.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/while.cc.obj modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/zeros_like.cc.obj || modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a zephyr/device_api_ld_target zephyr/driver_validation_h_target zephyr/kobj_types_h_target zephyr/syscall_list_h_target zephyr/zephyr_generated_headers
+
+===== END =====
