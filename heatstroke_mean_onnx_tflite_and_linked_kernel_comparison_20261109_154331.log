@@ -1,0 +1,848 @@
+===== MEAN ONNX / TFLITE / LINKED KERNEL COMPARISON =====
+Mon Nov  9 03:43:31 PM HKT 2026
+
+===== 1. MODEL FILES =====
+-rw-rw-r-- 1 user user 12M Nov  4 22:43 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/layernorm_variance_eps_variants/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx
+-rw------- 1 user user 12M Nov  8 21:55 /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+-rw-rw-r-- 1 user user 12M Nov  9 15:05 /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_noreshape_exp.tflite
+5ca56b6bb6650ed79460fefe897a79d86bbaffbdfa1b6d35dac4ddb0d5fb4e3c  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/layernorm_variance_eps_variants/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx
+db0cdb5443b63adb22e6253da1c5e11fba36cc142dce57e2e609a225ed949290  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+53f9e6f8c8b683de6e0d45cd7d1b7d5b601e9e741598337f4e23ce13fe079e12  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_noreshape_exp.tflite
+
+===== 2. ACTUAL MEAN KERNEL SOURCE IMPLEMENTATIONS =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-44-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-45-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-46-TfLiteStatus XtensaPrepareMax(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-47-  OpDataReduce* op_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-48-      &(static_cast<XtensaReduceOpData*>(node->user_data)->reference_op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-49-  TF_LITE_ENSURE_OK(context, PrepareMaxHelper(context, node, op_data));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-50-#if defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-51-  TF_LITE_ENSURE_OK(context, ReducePrepareVision(context, node));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-52-#endif  // VISION_P6
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-53-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-54-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-55-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc:56:TfLiteStatus XtensaPrepareMeanOrSum(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-57-  OpDataReduce* op_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-58-      &(static_cast<XtensaReduceOpData*>(node->user_data)->reference_op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc:59:  return PrepareMeanOrSumHelper(context, node, op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-60-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-61-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc:62:TfLiteStatus XtensaEvalMean(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-63-  OpDataReduce* op_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-64-      &(static_cast<XtensaReduceOpData*>(node->user_data)->reference_op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc:65:  return EvalMeanHelper(context, node, op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-66-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-67-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-68-TfLiteStatus XtensaEvalMax(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-69-  XtensaReduceOpData* op_data_xtensa =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-70-      static_cast<XtensaReduceOpData*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-71-  OpDataReduce* op_data = &(op_data_xtensa->reference_op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-72-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-73-#if defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-74-  const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-75-  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-76-  TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-77-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-78-  switch (input->type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-79-    case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-80-      TF_LITE_ENSURE_EQ(context, static_cast<double>(op_data->input_scale),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-81-                        static_cast<double>(op_data->output_scale));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-82-      TF_LITE_ENSURE_EQ(context, op_data->input_zp, op_data->output_zp);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-83-      ReduceEvalVision(*op_data_xtensa, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-84-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-85-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-86-    default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-87-      // Use the reference EvalMax for all other cases.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-88-      return EvalMaxHelper(context, node, op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-89-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-90-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-91-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-92-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-93-  return EvalMaxHelper(context, node, op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-94-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-95-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-96-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-97-TfLiteStatus XtensaEvalSum(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-98-  OpDataReduce* op_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-99-      &(static_cast<XtensaReduceOpData*>(node->user_data)->reference_op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-100-  return EvalSumHelper(context, node, op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-101-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-102-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc:103:TFLMRegistration Register_MEAN() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc:104:  return tflite::micro::RegisterOp(XtensaInitReduce, XtensaPrepareMeanOrSum,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc:105:                                   XtensaEvalMean);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-106-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-107-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-108-TFLMRegistration Register_REDUCE_MAX() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-109-  return tflite::micro::RegisterOp(XtensaInitReduce, XtensaPrepareMax,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-110-                                   XtensaEvalMax);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-111-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-112-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-113-TFLMRegistration Register_SUM() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc:114:  return tflite::micro::RegisterOp(XtensaInitReduce, XtensaPrepareMeanOrSum,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-115-                                   XtensaEvalSum);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-116-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-117-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc-118-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-167-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-168-TF_LITE_MICRO_TESTS_BEGIN
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-169-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-170-TF_LITE_MICRO_TEST(MeanFloat2DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-171-  float output_data[tflite::testing::kOutputElements2D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-172-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-173-  TfLiteReducerParams params = {true};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-174-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-175-  tflite::testing::TestReduceOpFloat(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-176-      tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-177-      tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-178-      tflite::testing::kOutputShape2D, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:179:      tflite::testing::kGoldenData2D, tflite::Register_MEAN(), &params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-180-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-181-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-182-TF_LITE_MICRO_TEST(MeanInt82DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-183-  int8_t expected_output_data_quant[tflite::testing::kOutputElements2D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-184-  int8_t output_data_quant[tflite::testing::kOutputElements2D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-185-  int8_t input_data_quant[tflite::testing::kInputElements2D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-186-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-187-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-188-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-189-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-190-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-191-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-192-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-193-      true  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-194-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-195-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-196-  tflite::testing::TestReduceOpQuantized<int8_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-197-      tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-198-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-199-      tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-200-      tflite::testing::kOutputShape2D, tflite::testing::kGoldenData2D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-201-      output_data_quant, expected_output_data_quant, output_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:202:      output_zero_point, tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-203-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-204-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-205-TF_LITE_MICRO_TEST(MeanInt162DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-206-  int16_t expected_output_data_quant[tflite::testing::kOutputElements2D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-207-  int16_t output_data_quant[tflite::testing::kOutputElements2D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-208-  int16_t input_data_quant[tflite::testing::kInputElements2D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-209-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-210-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-211-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-212-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-213-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-214-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-215-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-216-      true  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-217-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-218-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-219-  tflite::testing::TestReduceOpQuantized<int16_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-220-      tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-221-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-222-      tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-223-      tflite::testing::kOutputShape2D, tflite::testing::kGoldenData2D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-224-      output_data_quant, expected_output_data_quant, output_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:225:      output_zero_point, tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-226-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-227-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-228-TF_LITE_MICRO_TEST(MeanFloat3DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-229-  float output_data[tflite::testing::kOutputElements3D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-230-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-231-  TfLiteReducerParams params = {true};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-232-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-233-  tflite::testing::TestReduceOpFloat(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-234-      tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-235-      tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-236-      tflite::testing::kOutputShape3D, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:237:      tflite::testing::kGoldenData3D, tflite::Register_MEAN(), &params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-238-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-239-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-240-TF_LITE_MICRO_TEST(MeanInt83DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-241-  int8_t expected_output_data_quant[tflite::testing::kOutputElements3D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-242-  int8_t output_data_quant[tflite::testing::kOutputElements3D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-243-  int8_t input_data_quant[tflite::testing::kInputElements3D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-244-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-245-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-246-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-247-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-248-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-249-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-250-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-251-      true  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-252-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-253-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-254-  tflite::testing::TestReduceOpQuantized<int8_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-255-      tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-256-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-257-      tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-258-      tflite::testing::kOutputShape3D, tflite::testing::kGoldenData3D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-259-      output_data_quant, expected_output_data_quant, output_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:260:      output_zero_point, tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-261-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-262-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-263-TF_LITE_MICRO_TEST(MeanInt163DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-264-  int16_t expected_output_data_quant[tflite::testing::kOutputElements3D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-265-  int16_t output_data_quant[tflite::testing::kOutputElements3D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-266-  int16_t input_data_quant[tflite::testing::kInputElements3D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-267-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-268-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-269-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-270-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-271-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-272-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-273-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-274-      true  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-275-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-276-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-277-  tflite::testing::TestReduceOpQuantized<int16_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-278-      tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-279-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-280-      tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-281-      tflite::testing::kOutputShape3D, tflite::testing::kGoldenData3D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-282-      output_data_quant, expected_output_data_quant, output_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:283:      output_zero_point, tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-284-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-285-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-286-TF_LITE_MICRO_TEST(MeanFloat4DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-287-  float output_data[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-288-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-289-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-290-      true  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-291-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-292-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-293-  tflite::testing::TestReduceOpFloat(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-294-      tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-295-      tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-296-      tflite::testing::kOutputShape4D, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:297:      tflite::testing::kGoldenData4D, tflite::Register_MEAN(), &params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-298-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-299-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-300-TF_LITE_MICRO_TEST(MeanInt84DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-301-  int8_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-302-  int8_t output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-303-  int8_t input_data_quant[tflite::testing::kInputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-304-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-305-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-306-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-307-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-308-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-309-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-310-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-311-      true  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-312-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-313-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-314-  tflite::testing::TestReduceOpQuantized<int8_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-315-      tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-316-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-317-      tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-318-      tflite::testing::kOutputShape4D, tflite::testing::kGoldenData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-319-      output_data_quant, expected_output_data_quant, output_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:320:      output_zero_point, tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-321-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-322-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-323-TF_LITE_MICRO_TEST(MeanInt164DKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-324-  int16_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-325-  int16_t output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-326-  int16_t input_data_quant[tflite::testing::kInputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-327-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-328-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-329-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-330-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-331-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-332-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-333-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-334-      true  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-335-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-336-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-337-  tflite::testing::TestReduceOpQuantized<int16_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-338-      tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-339-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-340-      tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-341-      tflite::testing::kOutputShape4D, tflite::testing::kGoldenData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-342-      output_data_quant, expected_output_data_quant, output_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:343:      output_zero_point, tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-344-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-345-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-346-TF_LITE_MICRO_TEST(MeanFloat4DWithoutKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-347-  int kOutputShape4D[] = {2, 2, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-348-  float output_data[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-349-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-350-      false  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-351-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-352-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-353-  tflite::testing::TestReduceOpFloat(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-354-      tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-355-      tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-356-      kOutputShape4D, output_data, tflite::testing::kGoldenData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:357:      tflite::Register_MEAN(), &params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-358-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-359-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-360-TF_LITE_MICRO_TEST(MeanInt84DWithoutKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-361-  int8_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-362-  int8_t output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-363-  int8_t input_data_quant[tflite::testing::kInputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-364-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-365-  int kOutputShape4D[] = {2, 2, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-366-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-367-      false  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-368-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-369-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-370-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-371-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-372-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-373-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-374-  tflite::testing::TestReduceOpQuantized<int8_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-375-      tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-376-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-377-      tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-378-      kOutputShape4D, tflite::testing::kGoldenData4D, output_data_quant,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-379-      expected_output_data_quant, output_scale, output_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:380:      tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-381-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-382-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-383-TF_LITE_MICRO_TEST(MeanInt164DWithoutKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-384-  int16_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-385-  int16_t output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-386-  int16_t input_data_quant[tflite::testing::kInputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-387-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-388-  int kOutputShape4D[] = {2, 2, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-389-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-390-      false  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-391-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-392-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-393-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-394-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-395-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-396-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-397-  tflite::testing::TestReduceOpQuantized<int16_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-398-      tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-399-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-400-      tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-401-      kOutputShape4D, tflite::testing::kGoldenData4D, output_data_quant,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-402-      expected_output_data_quant, output_scale, output_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:403:      tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-404-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-405-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-406-TF_LITE_MICRO_TEST(MeanInt164DWithoutKeepDimsDifferentScaleAndZeroPoint) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-407-  int16_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-408-  int16_t output_data_quant[tflite::testing::kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-409-  int16_t input_data_quant[tflite::testing::kInputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-410-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-411-  int kOutputShape4D[] = {2, 2, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-412-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-413-      false  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-414-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-415-  float input_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-416-  int input_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-417-  float output_scale = 0.7f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-418-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-419-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-420-  tflite::testing::TestReduceOpQuantized<int16_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-421-      tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-422-      input_data_quant, input_scale, input_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-423-      tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-424-      kOutputShape4D, tflite::testing::kGoldenData4D, output_data_quant,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-425-      expected_output_data_quant, output_scale, output_zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:426:      tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-427-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-428-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-429-TF_LITE_MICRO_TEST(MeanFloat4DWithoutKeepDimsWithPrecision) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-430-  int kInputShape4D[] = {4, 2, 2, 3, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-431-  const float kInputData4D[] = {1.0,  24.0, 13.0, 3.0,  9.0,  17.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-432-                                11.0, 36.0, 14.0, 19.0, 17.0, 22.0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-433-  const int kOutputElements4D = 2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-434-  int kOutputShape4D[] = {2, 2, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-435-  const float kGoldenData4D[] = {11.166667, 19.833334};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-436-  float output_data[kOutputElements4D];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-437-  TfLiteReducerParams params = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-438-      false  // keep_dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-439-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-440-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-441-  tflite::testing::TestReduceOpFloat(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-442-      kInputShape4D, kInputData4D, tflite::testing::kAxisShape4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-443-      tflite::testing::kAxisData4D, kOutputShape4D, output_data, kGoldenData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:444:      tflite::Register_MEAN(), &params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-445-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-446-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-447-TF_LITE_MICRO_TEST(FloatMaxOpTestNotKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-448-  int input_shape[] = {3, 4, 3, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-449-  const float input_data[] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-450-                              9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-451-                              17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-452-  int axis_shape[] = {1, 4};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-453-  const int32_t axis_data[] = {1, 0, -3, -3};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-454-  int output_shape[] = {1, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-455-  const float expected_output_data[] = {23, 24};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-456-  float output_data[2];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-457-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-458-  TfLiteReducerParams params = {false};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-459-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-460-  tflite::testing::TestReduceOpFloat(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-461-      input_shape, input_data, axis_shape, axis_data, output_shape, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-462-      expected_output_data, tflite::Register_REDUCE_MAX(), &params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-463-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-464-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-465-TF_LITE_MICRO_TEST(FloatMaxOpTestKeepDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-466-  int input_shape[] = {3, 4, 3, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-467-  const float input_data[] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-468-                              9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-469-                              17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-470-  int axis_shape[] = {1, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-471-  const int32_t axis_data[] = {0, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-472-  int output_shape[] = {1, 3};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-473-  const float expected_output_data[] = {20, 22, 24};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-474-  float output_data[3];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-475-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-476-  TfLiteReducerParams params = {true};
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-544-  float output_scale = 0.5f;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-545-  int output_zero_point = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-546-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-547-  int8_t output_data_quant[2];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-548-  int8_t expected_output_data_quant[2];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-549-  int8_t input_data_quant[12];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-550-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-551-  tflite::testing::TestReduceOpQuantized<int8_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-552-      kInputShape4D, kInputData4D, input_data_quant, input_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-553-      input_zero_point, tflite::testing::kAxisShape4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-554-      tflite::testing::kAxisData4D, kOutputShape4D, kGoldenData4D,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-555-      output_data_quant, expected_output_data_quant, output_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:556:      output_zero_point, tflite::Register_MEAN(), &params, 1.0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-557-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-558-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-559-TF_LITE_MICRO_TEST(SumFloatFlatten2ReduceDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-560-  int input_shape[] = {3, 4, 3, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-561-  int output_shape[] = {1, 4};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-562-  int axis_shape[] = {1, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-563-  int32_t axis_data[] = {2, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-564-  float input_data[] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-565-                        9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-566-                        17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-567-  float expected_output[] = {21.0, 57.0, 93.0, 129.0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-568-  float actual_output_data[4];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-569-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-570-  TfLiteReducerParams params = {false};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-571-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-572-  tflite::testing::TestReduceOpFloat(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-573-      input_shape, input_data, axis_shape, axis_data, output_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-574-      actual_output_data, expected_output, tflite::Register_SUM(), &params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-575-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-576-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-577-TF_LITE_MICRO_TEST(SumFloatFlatten2NonReduceDims) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-578-  int input_shape[] = {3, 4, 3, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-579-  int output_shape[] = {1, 12};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-580-  int axis_shape[] = {1, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-581-  int32_t axis_data[] = {2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-582-  float input_data[] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-583-                        9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-584-                        17.0, 18.0, 19.0, 20.0, 21.0, 22.0, 23.0, 24.0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-585-  float expected_output[] = {3.0,  7.0,  11.0, 15.0, 19.0, 23.0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-586-                             27.0, 31.0, 35.0, 39.0, 43.0, 47.0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-587-  float actual_output_data[12];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc-588-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-83-  context->RequestScratchBufferInArena(context, sizeof(int) * input->dims->size,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-84-                                       &op_data->temp_buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-85-  context->RequestScratchBufferInArena(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-86-      context, sizeof(int) * static_cast<int>(ElementCount(*axis->dims)),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-87-      &op_data->resolved_axis_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-88-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-89-  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-90-  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-91-  micro_context->DeallocateTempTfLiteTensor(axis);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-92-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-93-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-94-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc:95:TfLiteStatus PrepareMeanOrSumHelper(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-96-                                    OpDataReduce* op_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-97-  MicroContext* micro_context = GetMicroContext(context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-98-  TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-99-  TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-100-  TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-101-  if (input->type == kTfLiteInt8 || input->type == kTfLiteInt16) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-102-    const double real_multiplier = static_cast<double>(input->params.scale) /
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-103-                                   static_cast<double>(output->params.scale);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-104-    QuantizeMultiplier(real_multiplier, &op_data->multiplier, &op_data->shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-105-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-106-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-107-  int output_size = NumElements(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-108-  op_data->num_axis = NumElements(axis);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-109-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-110-  if (input->type == kTfLiteInt8 || input->type == kTfLiteInt16) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-111-    context->RequestScratchBufferInArena(context, output_size * sizeof(int32_t),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-112-                                         &op_data->temp_buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-113-    op_data->input_zp = input->params.zero_point;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-114-    op_data->input_scale = input->params.scale;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-115-    op_data->output_zp = output->params.zero_point;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-116-    op_data->output_scale = output->params.scale;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-117-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-118-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-119-  TF_LITE_ENSURE_OK(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-120-      context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-121-      PrepareSimple(context, node, &(op_data->multiplier), &(op_data->shift)));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-122-  // TODO(b/144955155): Support uint8_t(b/144955155) and int8_t(b/144955018)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-123-  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-124-  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-125-  micro_context->DeallocateTempTfLiteTensor(axis);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-126-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-127-}
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-166-TfLiteStatus EvalIntegerMean(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-167-                             int num_axis, OpDataReduce* op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-168-                             int* temp_index, int* resolved_axis) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-169-  int32_t* temp_sum = static_cast<int32_t*>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-170-      context->GetScratchBuffer(context, op_data->temp_buffer_idx));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-171-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-172-  QuantizedMeanOrSum<integer_type>(context, node, temp_index, resolved_axis,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-173-                                   temp_sum, op_data, /*compute_sum=*/false);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-174-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-175-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-176-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-177-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc:178:TfLiteStatus EvalMeanHelper(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-179-                            OpDataReduce* op_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-180-  const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-181-  const TfLiteEvalTensor* axis = tflite::micro::GetEvalInput(context, node, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-182-  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-183-  TfLiteReducerParams* params =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-184-      reinterpret_cast<TfLiteReducerParams*>(node->builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-185-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-186-  int num_axis = static_cast<int>(ElementCount(*axis->dims));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-187-  int temp_index[kMaxNumberOfAxis];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-188-  int resolved_axis[kMaxNumberOfReducedAxis];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-189-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-190-  switch (input->type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-191-    case kTfLiteFloat32: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-192-      tflite::MeanParams op_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-193-      ResolveAxis(tflite::micro::GetTensorData<int>(axis), num_axis,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-194-                  &op_params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-195-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-196-      // Special case mean implementation exists for 4D mean across axes 1
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-197-      // and 2.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-198-      bool special_case_4d_axes_1_and_2 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-199-          input->dims->size == 4 && op_params.axis_count == 2 &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-200-          ((op_params.axis[0] == 1 && op_params.axis[1] == 2) ||
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-201-           (op_params.axis[0] == 2 && op_params.axis[1] == 1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-202-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-203-      // Defer to specialized implementation for 4D Mean across axes 1 & 2.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-204-      if (params->keep_dims && special_case_4d_axes_1_and_2) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-205-        reference_ops::Mean(op_params, tflite::micro::GetTensorShape(input),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-206-                            tflite::micro::GetTensorData<float>(input),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-207-                            tflite::micro::GetTensorShape(output),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-208-                            tflite::micro::GetTensorData<float>(output));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-209-      } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc-210-        TF_LITE_ENSURE(
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-31-void* InitReduce(TfLiteContext* context, const char* buffer, size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-32-  void* op_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-33-      context->AllocatePersistentBuffer(context, sizeof(OpDataReduce));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-34-  return new (op_data) OpDataReduce();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-35-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-36-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-37-TfLiteStatus PrepareMax(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-38-  return PrepareMaxHelper(context, node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-39-                          static_cast<OpDataReduce*>(node->user_data));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-40-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-41-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-42-TfLiteStatus PrepareMeanOrSum(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc:43:  return PrepareMeanOrSumHelper(context, node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-44-                                static_cast<OpDataReduce*>(node->user_data));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-45-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-46-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-47-TfLiteStatus EvalMean(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc:48:  return EvalMeanHelper(context, node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-49-                        static_cast<OpDataReduce*>(node->user_data));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-50-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-51-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-52-TfLiteStatus EvalMax(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-53-  OpDataReduce* op_data = static_cast<OpDataReduce*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-54-  return EvalMaxHelper(context, node, op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-55-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-56-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-57-TfLiteStatus EvalSum(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-58-  return EvalSumHelper(context, node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-59-                       static_cast<OpDataReduce*>(node->user_data));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-60-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-61-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc:62:TFLMRegistration Register_MEAN() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-63-  return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalMean);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-64-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-65-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-66-TFLMRegistration Register_REDUCE_MAX() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-67-  return tflite::micro::RegisterOp(InitReduce, PrepareMax, EvalMax);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-68-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-69-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-70-TFLMRegistration Register_SUM() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-71-  return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalSum);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-72-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-73-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc-74-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-34-  int resolved_axis_idx;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-35-  int input_zp;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-36-  float input_scale;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-37-  int output_zp;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-38-  float output_scale;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-39-  int num_output_elements;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-40-  int num_axis;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-41-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-42-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-43-TfLiteStatus PrepareMaxHelper(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-44-                              OpDataReduce* op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-45-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h:46:TfLiteStatus PrepareMeanOrSumHelper(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-47-                                    OpDataReduce* op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-48-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-49-TfLiteStatus EvalMaxHelper(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-50-                           OpDataReduce* op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h:51:TfLiteStatus EvalMeanHelper(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-52-                            OpDataReduce* op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-53-TfLiteStatus EvalSumHelper(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-54-                           OpDataReduce* op_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-55-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-56-void ReduceResolveAxis(const int* axis_data, int axis_count,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-57-                       MeanParams* op_params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-58-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h:59:TFLMRegistration Register_MEAN();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-60-TFLMRegistration Register_REDUCE_MAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-61-TFLMRegistration Register_SUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-62-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-63-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-64-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.h-65-#endif  // TENSORFLOW_LITE_MICRO_KERNELS_REDUCE_H_
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-79-TFLMRegistration Register_L2_POOL_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-80-TFLMRegistration Register_LEAKY_RELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-81-TFLMRegistration Register_LESS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-82-TFLMRegistration Register_LESS_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-83-TFLMRegistration Register_LOG();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-84-TFLMRegistration Register_LOG_SOFTMAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-85-TFLMRegistration Register_LOGICAL_AND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-86-TFLMRegistration Register_LOGICAL_NOT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-87-TFLMRegistration Register_LOGICAL_OR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-88-TFLMRegistration Register_LOGISTIC();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-89-TFLMRegistration Register_MAX_POOL_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-90-TFLMRegistration Register_MAXIMUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:91:TFLMRegistration Register_MEAN();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-92-TFLMRegistration Register_MINIMUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-93-TFLMRegistration Register_MIRROR_PAD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-94-TFLMRegistration Register_MUL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-95-TFLMRegistration Register_NEG();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-96-TFLMRegistration Register_NOT_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-97-TFLMRegistration Register_PACK();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-98-TFLMRegistration Register_PAD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-99-TFLMRegistration Register_PADV2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-100-TFLMRegistration Register_PRELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-101-TFLMRegistration Register_QUANTIZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-102-TFLMRegistration Register_READ_VARIABLE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-103-TFLMRegistration Register_REDUCE_MAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-104-TFLMRegistration Register_RELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-105-TFLMRegistration Register_RELU6();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-106-TFLMRegistration Register_RESHAPE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-107-TFLMRegistration Register_RESIZE_BILINEAR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-108-TFLMRegistration Register_RESIZE_NEAREST_NEIGHBOR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-109-TFLMRegistration Register_ROUND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-110-TFLMRegistration Register_RSQRT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-111-TFLMRegistration Register_SELECT_V2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-112-TFLMRegistration Register_SHAPE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-113-TFLMRegistration Register_SIN();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-114-TFLMRegistration Register_SLICE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-115-TFLMRegistration Register_SOFTMAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-116-TFLMRegistration Register_SPACE_TO_BATCH_ND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-117-TFLMRegistration Register_SPACE_TO_DEPTH();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-118-TFLMRegistration Register_SPLIT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-119-TFLMRegistration Register_SPLIT_V();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-120-TFLMRegistration Register_SQRT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-121-TFLMRegistration Register_SQUARE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-122-TFLMRegistration Register_SQUARED_DIFFERENCE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-123-TFLMRegistration Register_SQUEEZE();
+
+===== 3. WHICH REDUCE IMPLEMENTATION IS IN THE BUILD =====
+10629:build modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc.obj: CXX_COMPILER__modules__tflite-micro_unscanned_Release /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc || cmake_object_order_depends_target_modules__tflite-micro
+10637:build modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc.obj: CXX_COMPILER__modules__tflite-micro_unscanned_Release /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc || cmake_object_order_depends_target_modules__tflite-micro
+
+===== 4. LINKED MEAN KERNEL SYMBOLS =====
+80018529 T tflite::Register_MEAN()
+80018c31 T tflite::EvalMeanHelper(TfLiteContext*, TfLiteNode*, tflite::OpDataReduce*)
+8002a453 T tflite::PrepareMeanOrSum(TfLiteContext*, TfLiteNode*)
+8002a529 T tflite::PrepareMeanOrSumHelper(TfLiteContext*, TfLiteNode*, tflite::OpDataReduce*)
+8002a459 T tflite::EvalMean(TfLiteContext*, TfLiteNode*)
+
+===== 5. ONNX REDUCEMEAN OUTPUT SHAPES =====
+ONNX_SHAPE_INFERENCE=SUCCESS
+ONNX OPSET: [('', 18), ('ai.onnx.ml', 5), ('ai.onnx.training', 1), ('ai.onnx.preview.training', 1), ('com.microsoft', 1), ('com.microsoft.experimental', 1), ('com.microsoft.nchwc', 1), ('org.pytorch.aten', 1)]
+
+ReduceMean: node_layer_norm_ReduceMean
+  inputs: ['conv1d_1_DequantizeLinear_Output_1', 'node_layer_norm_axes']
+  outputs: ['node_layer_norm_mean']
+  axes: [2]
+  keepdims: 1
+  INPUT SHAPE 'conv1d_1_DequantizeLinear_Output_1': [1, 32, 900]
+  INPUT SHAPE 'node_layer_norm_axes': NOT IN VALUE_INFO
+  OUTPUT SHAPE 'node_layer_norm_mean': [1, 32, 1]
+
+ReduceMean: node_layer_norm_Variance
+  inputs: ['node_layer_norm_squared_DequantizeLinear_Output', 'node_layer_norm_axes']
+  outputs: ['node_layer_norm_variance']
+  axes: [2]
+  keepdims: 1
+  INPUT SHAPE 'node_layer_norm_squared_DequantizeLinear_Output': [1, 32, 900]
+  INPUT SHAPE 'node_layer_norm_axes': NOT IN VALUE_INFO
+  OUTPUT SHAPE 'node_layer_norm_variance': [1, 32, 1]
+
+ReduceMean: node_layer_norm_1_ReduceMean
+  inputs: ['conv1d_3_DequantizeLinear_Output_1', 'node_layer_norm_1_axes']
+  outputs: ['node_layer_norm_1_mean']
+  axes: [2]
+  keepdims: 1
+  INPUT SHAPE 'conv1d_3_DequantizeLinear_Output_1': [1, 128, 900]
+  INPUT SHAPE 'node_layer_norm_1_axes': NOT IN VALUE_INFO
+  OUTPUT SHAPE 'node_layer_norm_1_mean': [1, 128, 1]
+
+ReduceMean: node_layer_norm_1_Variance
+  inputs: ['node_layer_norm_1_squared_DequantizeLinear_Output', 'node_layer_norm_1_axes']
+  outputs: ['node_layer_norm_1_variance']
+  axes: [2]
+  keepdims: 1
+  INPUT SHAPE 'node_layer_norm_1_squared_DequantizeLinear_Output': [1, 128, 900]
+  INPUT SHAPE 'node_layer_norm_1_axes': NOT IN VALUE_INFO
+  OUTPUT SHAPE 'node_layer_norm_1_variance': [1, 128, 1]
+
+TOTAL_ONNX_REDUCEMEAN: 4
+
+===== 6. TFLITE INTERPRETER ALLOCATED MEAN OUTPUT SHAPES =====
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794210211.864461  133489 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794210211.864651  133489 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794210211.894290  133489 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794210212.598251  133489 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794210212.598460  133489 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+/home/user/zephyrproject/.py3.12_venv/lib/python3.12/site-packages/tensorflow/lite/python/interpreter.py:457: UserWarning:     Warning: tf.lite.Interpreter is deprecated and is scheduled for deletion in
+    TF 2.20. Please use the LiteRT interpreter from the ai_edge_litert package.
+    See the [migration guide](https://ai.google.dev/edge/litert/migration)
+    for details.
+    
+  warnings.warn(_INTERPRETER_DELETION_WARNING)
+/home/user/zephyrproject/.py3.12_venv/lib/python3.12/site-packages/tensorflow/lite/python/interpreter.py:465: UserWarning: Warning: Enabling `experimental_preserve_all_tensors` with the BUILTIN or AUTO op resolver is intended for debugging purposes only. Be aware that this can significantly increase memory usage by storing all intermediate tensors. If you encounter memory problems or are not actively debugging, consider disabling this option.
+  warnings.warn(
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+
+==========================================================================================
+TFLITE MODEL: /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+BEFORE ALLOCATION: input tensors:
+{'name': 'x_values', 'index': 2, 'shape': [1, 900, 6], 'dtype': "<class 'numpy.float32'>"}
+{'name': 'missing_mask', 'index': 3, 'shape': [1, 900, 6], 'dtype': "<class 'numpy.float32'>"}
+{'name': 'x_mark', 'index': 4, 'shape': [1, 900, 3], 'dtype': "<class 'numpy.float32'>"}
+{'name': 'worker_features', 'index': 5, 'shape': [1, 30], 'dtype': "<class 'numpy.float32'>"}
+ALLOCATE_TENSORS=SUCCESS
+ALLOCATED INTERMEDIATE TENSORS:
+{'index': 320, 'name': 'node_layer_norm_mean_QuantizeLinear_Output', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.int8'>"}
+{'index': 333, 'name': 'node_layer_norm_mean_DequantizeLinear_Output', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.float32'>"}
+{'index': 351, 'name': 'node_layer_norm_variance_QuantizeLinear_Output', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.int8'>"}
+{'index': 353, 'name': 'node_layer_norm_variance_DequantizeLinear_Output', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.float32'>"}
+{'index': 355, 'name': 'node_layer_norm_variance_eps', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.float32'>"}
+{'index': 399, 'name': 'node_layer_norm_1_mean_QuantizeLinear_Output', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.int8'>"}
+{'index': 400, 'name': 'node_layer_norm_1_mean_DequantizeLinear_Output', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 404, 'name': 'node_layer_norm_1_variance_QuantizeLinear_Output', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.int8'>"}
+{'index': 405, 'name': 'node_layer_norm_1_variance_DequantizeLinear_Output', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 406, 'name': 'node_layer_norm_1_variance_eps', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 450, 'name': 'linear_7_DequantizeLinear_Output', 'shape': [1, 900, 128], 'shape_signature': [1, 900, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 451, 'name': 'linear_9_DequantizeLinear_Output', 'shape': [1, 900, 128], 'shape_signature': [1, 900, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 652, 'name': 'node_layer_norm_mean_QuantizeLinear_Output0', 'shape': [1, 32, 1], 'shape_signature': [1, 32, 1], 'dtype': "<class 'numpy.int8'>"}
+{'index': 662, 'name': 'node_layer_norm_variance_QuantizeLinear_Output0', 'shape': [1, 32, 1], 'shape_signature': [1, 32, 1], 'dtype': "<class 'numpy.int8'>"}
+{'index': 688, 'name': 'node_layer_norm_1_mean_QuantizeLinear_Output0', 'shape': [1, 128, 1], 'shape_signature': [1, 128, 1], 'dtype': "<class 'numpy.int8'>"}
+{'index': 692, 'name': 'node_layer_norm_1_variance_QuantizeLinear_Output0', 'shape': [1, 128, 1], 'shape_signature': [1, 128, 1], 'dtype': "<class 'numpy.int8'>"}
+{'index': 755, 'name': 'var', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 756, 'name': 'var_eps', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 759, 'name': 'mean', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 765, 'name': 'var0', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 766, 'name': 'var_eps0', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 769, 'name': 'mean0', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 775, 'name': 'var1', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 776, 'name': 'var_eps1', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 779, 'name': 'mean1', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 785, 'name': 'var2', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 786, 'name': 'var_eps2', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 789, 'name': 'mean2', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 795, 'name': 'var3', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 796, 'name': 'var_eps3', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 799, 'name': 'mean3', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 805, 'name': 'var4', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 806, 'name': 'var_eps4', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 809, 'name': 'mean4', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 875, 'name': 'var5', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 876, 'name': 'var_eps5', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 879, 'name': 'mean5', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 885, 'name': 'var6', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 886, 'name': 'var_eps6', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 889, 'name': 'mean6', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 898, 'name': 'var7', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 899, 'name': 'var_eps7', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 902, 'name': 'mean7', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 909, 'name': 'var8', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 910, 'name': 'var_eps8', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 913, 'name': 'mean8', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+
+==========================================================================================
+TFLITE MODEL: /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_noreshape_exp.tflite
+BEFORE ALLOCATION: input tensors:
+{'name': 'x_values', 'index': 2, 'shape': [1, 900, 6], 'dtype': "<class 'numpy.float32'>"}
+{'name': 'missing_mask', 'index': 3, 'shape': [1, 900, 6], 'dtype': "<class 'numpy.float32'>"}
+{'name': 'x_mark', 'index': 4, 'shape': [1, 900, 3], 'dtype': "<class 'numpy.float32'>"}
+{'name': 'worker_features', 'index': 5, 'shape': [1, 30], 'dtype': "<class 'numpy.float32'>"}
+ALLOCATE_TENSORS=SUCCESS
+ALLOCATED INTERMEDIATE TENSORS:
+{'index': 320, 'name': 'node_layer_norm_mean_QuantizeLinear_Output', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.int8'>"}
+{'index': 333, 'name': 'node_layer_norm_mean_DequantizeLinear_Output', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.float32'>"}
+{'index': 351, 'name': 'node_layer_norm_variance_QuantizeLinear_Output', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.int8'>"}
+{'index': 353, 'name': 'node_layer_norm_variance_DequantizeLinear_Output', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.float32'>"}
+{'index': 355, 'name': 'node_layer_norm_variance_eps', 'shape': [1, 1, 32], 'shape_signature': [1, 1, 32], 'dtype': "<class 'numpy.float32'>"}
+{'index': 399, 'name': 'node_layer_norm_1_mean_QuantizeLinear_Output', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.int8'>"}
+{'index': 400, 'name': 'node_layer_norm_1_mean_DequantizeLinear_Output', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 404, 'name': 'node_layer_norm_1_variance_QuantizeLinear_Output', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.int8'>"}
+{'index': 405, 'name': 'node_layer_norm_1_variance_DequantizeLinear_Output', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 406, 'name': 'node_layer_norm_1_variance_eps', 'shape': [1, 1, 128], 'shape_signature': [1, 1, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 450, 'name': 'linear_7_DequantizeLinear_Output', 'shape': [1, 900, 128], 'shape_signature': [1, 900, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 451, 'name': 'linear_9_DequantizeLinear_Output', 'shape': [1, 900, 128], 'shape_signature': [1, 900, 128], 'dtype': "<class 'numpy.float32'>"}
+{'index': 652, 'name': 'node_layer_norm_mean_QuantizeLinear_Output0', 'shape': [1, 32, 1], 'shape_signature': [1, 32, 1], 'dtype': "<class 'numpy.int8'>"}
+{'index': 662, 'name': 'node_layer_norm_variance_QuantizeLinear_Output0', 'shape': [1, 32, 1], 'shape_signature': [1, 32, 1], 'dtype': "<class 'numpy.int8'>"}
+{'index': 688, 'name': 'node_layer_norm_1_mean_QuantizeLinear_Output0', 'shape': [1, 128, 1], 'shape_signature': [1, 128, 1], 'dtype': "<class 'numpy.int8'>"}
+{'index': 692, 'name': 'node_layer_norm_1_variance_QuantizeLinear_Output0', 'shape': [1, 128, 1], 'shape_signature': [1, 128, 1], 'dtype': "<class 'numpy.int8'>"}
+{'index': 755, 'name': 'var', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 756, 'name': 'var_eps', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 759, 'name': 'mean', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 765, 'name': 'var0', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 766, 'name': 'var_eps0', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 769, 'name': 'mean0', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 775, 'name': 'var1', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 776, 'name': 'var_eps1', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 779, 'name': 'mean1', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 785, 'name': 'var2', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 786, 'name': 'var_eps2', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 789, 'name': 'mean2', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 795, 'name': 'var3', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 796, 'name': 'var_eps3', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 799, 'name': 'mean3', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 805, 'name': 'var4', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 806, 'name': 'var_eps4', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 809, 'name': 'mean4', 'shape': [1, 900, 1], 'shape_signature': [1, 900, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 875, 'name': 'var5', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 876, 'name': 'var_eps5', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 879, 'name': 'mean5', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 885, 'name': 'var6', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 886, 'name': 'var_eps6', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 889, 'name': 'mean6', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 898, 'name': 'var7', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 899, 'name': 'var_eps7', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 902, 'name': 'mean7', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 909, 'name': 'var8', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 910, 'name': 'var_eps8', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+{'index': 913, 'name': 'mean8', 'shape': [1, 1], 'shape_signature': [1, 1], 'dtype': "<class 'numpy.float32'>"}
+
+===== TFLITE INTERPRETER INSPECTION COMPLETE =====
+
+===== 7. END =====
