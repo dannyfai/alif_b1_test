@@ -1,0 +1,708 @@
+===== BILSTM RANK-4 OUTPUT CONTRACT REVIEW =====
+Mon Nov  9 02:09:42 PM HKT 2026
+8d4b0a724119dcb7783c46a6e5feb1b57b02d1b8839bdc6574ad6205a1770eac  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+db0cdb5443b63adb22e6253da1c5e11fba36cc142dce57e2e609a225ed949290  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+
+===== 1. BILSTM PREPARE OUTPUT VALIDATION =====
+   175	
+   176	  if (data != nullptr) {
+   177	    std::memset(data, 0, sizeof(*data));
+   178	  }
+   179	  return data;
+   180	}
+   181	
+   182	TfLiteStatus HeatstrokeBidirectionalLstmPrepare(TfLiteContext* context,
+   183	                                                TfLiteNode* node) {
+   184	  if (node == nullptr || node->builtin_data == nullptr ||
+   185	      node->inputs == nullptr || node->outputs == nullptr ||
+   186	      node->inputs->size != 29 || node->outputs->size != 1 ||
+   187	      node->user_data == nullptr) {
+   188	    MicroPrintf("Heatstroke BiLSTM: invalid node configuration");
+   189	    return kTfLiteError;
+   190	  }
+   191	
+   192	  auto* op_data =
+   193	      static_cast<HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+   194	
+   195	  const auto* params =
+   196	      static_cast<const TfLiteBidirectionalSequenceLSTMParams*>(
+   197	          node->builtin_data);
+   198	
+   199	  if (!params->time_major || !params->merge_outputs ||
+   200	      params->activation != kTfLiteActTanh) {
+   201	    MicroPrintf("Heatstroke BiLSTM: unsupported LSTM options");
+   202	    return kTfLiteError;
+   203	  }
+   204	
+   205	  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+   206	  TfLiteEvalTensor* output =
+   207	      context->GetEvalTensor(context, node->outputs->data[0]);
+   208	
+   209	  if (!IsFloatTensorType(input) || !IsFloatTensorType(output) ||
+   210	      input->dims == nullptr || output->dims == nullptr ||
+   211	      input->dims->size != 3 || output->dims->size != 3) {
+   212	    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+   213	    return kTfLiteError;
+   214	  }
+   215	
+   216	  const int time_steps = input->dims->data[0];
+   217	  const int batch_size = input->dims->data[1];
+   218	  const int input_dimension = input->dims->data[2];
+   219	
+   220	  // The supplied heat-stress model uses time-major, single-batch sequences.
+   221	  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+   222	    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+   223	    return kTfLiteError;
+   224	  }
+   225	
+   226	  int forward_hidden = 0;
+   227	  int backward_hidden = 0;
+   228	
+   229	  if (!ValidateDirection(context, node, 1, 5, 9, 25, 26, input_dimension, batch_size, &forward_hidden) ||
+   230	      !ValidateDirection(context, node, 13, 17, 21, 27, 28, input_dimension, batch_size, &backward_hidden) ||
+   231	      forward_hidden != backward_hidden) {
+   232	    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+   233	    return kTfLiteError;
+   234	  }
+   235	
+   236	  const int hidden = forward_hidden;
+   237	
+   238	  if (output->dims->data[0] != time_steps ||
+   239	      output->dims->data[1] != batch_size ||
+   240	      output->dims->data[2] != 2 * hidden) {
+   241	    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+   242	    return kTfLiteError;
+   243	  }
+   244	
+   245	  // The directional evaluator must see [time_steps, batch_size, hidden],
+   246	  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+   247	  const size_t staged_dims_bytes =
+   248	      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+   249	  op_data->staged_output_dims =
+   250	      static_cast<TfLiteIntArray*>(
+   251	          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+   252	
+   253	  if (op_data->staged_output_dims == nullptr) {
+   254	    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+   255	    return kTfLiteError;
+   256	  }
+   257	
+   258	  op_data->staged_output_dims->size = 3;
+   259	  op_data->staged_output_dims->data[0] = time_steps;
+   260	  op_data->staged_output_dims->data[1] = batch_size;
+   261	  op_data->staged_output_dims->data[2] = hidden;
+   262	
+   263	  // Compact 29-slot model: no separate auxiliary input slots exist.
+   264	
+   265	  InitializeFloatLstmParameters(
+
+===== 2. BILSTM EVAL OUTPUT WRITES =====
+   353	TfLiteStatus HeatstrokeBidirectionalLstmEval(TfLiteContext* context,
+   354	                                             TfLiteNode* node) {
+   355	  if (node == nullptr || node->user_data == nullptr) {
+   356	    return kTfLiteError;
+   357	  }
+   358	
+   359	  const auto* op_data =
+   360	      static_cast<const HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+   361	
+   362	  const TfLiteEvalTensor* input =
+   363	      GetInputEvalTensor(context, node, 0);
+   364	
+   365	  TfLiteEvalTensor* output =
+   366	      context->GetEvalTensor(context, node->outputs->data[0]);
+   367	
+   368	  if (!IsFloatTensor(input) || !IsFloatTensor(output)) {
+   369	    return kTfLiteError;
+   370	  }
+   371	
+   372	  const int time_steps = op_data->forward.size_info.time_steps;
+   373	  const int input_dimension = op_data->forward.size_info.input_dimension;
+   374	  const int hidden = op_data->forward.size_info.state_dimension;
+   375	
+   376	  auto* reversed_input = static_cast<float*>(
+   377	      context->GetScratchBuffer(
+   378	          context, op_data->reverse_input_buffer));
+   379	
+   380	  auto* staged_output = static_cast<float*>(
+   381	      context->GetScratchBuffer(
+   382	          context, op_data->stage_output_buffer));
+   383	
+   384	  if (reversed_input == nullptr || staged_output == nullptr) {
+   385	    MicroPrintf("Heatstroke BiLSTM: scratch buffer unavailable");
+   386	    return kTfLiteError;
+   387	  }
+   388	
+   389	  const float* input_data = input->data.f;
+   390	  float* output_data = output->data.f;
+   391	
+   392	  // Reverse the time dimension for the backward direction.
+   393	  for (int t = 0; t < time_steps; ++t) {
+   394	    std::memcpy(
+   395	        reversed_input + t * input_dimension,
+   396	        input_data + (time_steps - 1 - t) * input_dimension,
+   397	        input_dimension * sizeof(float));
+   398	  }
+   399	
+   400	  TfLiteEvalTensor reversed_input_tensor = *input;
+   401	  reversed_input_tensor.data.f = reversed_input;
+   402	
+   403	  TfLiteEvalTensor staged_output_tensor = *output;
+   404	  staged_output_tensor.data.f = staged_output;
+   405	  staged_output_tensor.dims = op_data->staged_output_dims;
+   406	
+   407	  LSTMKernelContents forward_contents{};
+   408	  PopulateDirectionContents(context, node, 1, 5, 9, 25, 26, input, &staged_output_tensor, &forward_contents);
+   409	
+   410	  LSTMBuffers<float> buffers =
+   411	      CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+   412	
+   413	  TfLiteStatus forward_status =
+   414	      EvalLstm<float, float, float, float>(
+   415	          op_data->forward, forward_contents, buffers);
+   416	  if (forward_status != kTfLiteOk) {
+   417	    return forward_status;
+   418	  }
+   419	
+   420	  // Copy forward outputs into the first half of the merged output.
+   421	  for (int t = 0; t < time_steps; ++t) {
+   422	    std::memcpy(
+   423	        output_data + t * (2 * hidden),
+   424	        staged_output + t * hidden,
+   425	        hidden * sizeof(float));
+   426	  }
+   427	
+   428	  LSTMKernelContents backward_contents{};
+   429	  PopulateDirectionContents(context, node, 13, 17, 21, 27, 28, &reversed_input_tensor, &staged_output_tensor, &backward_contents);
+   430	
+   431	  TfLiteStatus backward_status =
+   432	      EvalLstm<float, float, float, float>(
+   433	          op_data->backward, backward_contents, buffers);
+   434	  if (backward_status != kTfLiteOk) {
+   435	    return backward_status;
+   436	  }
+   437	
+   438	  // Restore backward outputs to original time order and copy them
+   439	  // into the second half of the merged output.
+   440	  for (int t = 0; t < time_steps; ++t) {
+   441	    std::memcpy(
+   442	        output_data + t * (2 * hidden) + hidden,
+   443	        staged_output + (time_steps - 1 - t) * hidden,
+   444	        hidden * sizeof(float));
+   445	  }
+   446	
+   447	  return kTfLiteOk;
+   448	}
+   449	
+   450	}  // namespace
+
+===== 3. TFLM RESHAPE IMPLEMENTATION =====
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc ---
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	#include "tensorflow/lite/micro/kernels/reshape.h"
+    17	
+    18	#include <cstring>
+    19	
+    20	#include "tensorflow/lite/c/builtin_op_data.h"
+    21	#include "tensorflow/lite/c/common.h"
+    22	#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+    23	#include "tensorflow/lite/kernels/kernel_util.h"
+    24	#include "tensorflow/lite/kernels/op_macros.h"
+    25	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    26	#include "tensorflow/lite/micro/memory_helpers.h"
+    27	#include "tensorflow/lite/micro/micro_utils.h"
+    28	
+    29	namespace tflite {
+    30	namespace {
+    31	
+    32	TfLiteStatus EvalReshapeReference(TfLiteContext* context, TfLiteNode* node) {
+    33	  const TfLiteEvalTensor* input =
+    34	      tflite::micro::GetEvalInput(context, node, kReshapeInputTensor);
+    35	  TfLiteEvalTensor* output =
+    36	      tflite::micro::GetEvalOutput(context, node, kReshapeOutputTensor);
+    37	
+    38	  // TODO(b/162522304): storing input bytes in OpData increases some models
+    39	  // significantly, possibly due to alignment issues.
+    40	  size_t input_bytes;
+    41	  TF_LITE_ENSURE_STATUS(TfLiteTypeSizeOf(input->type, &input_bytes));
+    42	  input_bytes *= ElementCount(*input->dims);
+    43	
+    44	  // Do nothing for in-place reshape.
+    45	  if (input->data.raw != output->data.raw) {
+    46	    // Otherwise perform reshape with copy.
+    47	    memcpy(output->data.raw, input->data.raw, input_bytes);
+    48	  }
+    49	  return kTfLiteOk;
+    50	}
+    51	
+    52	}  // namespace
+    53	
+    54	TFLMRegistration Register_RESHAPE() {
+    55	  return tflite::micro::RegisterOp(nullptr, PrepareReshapeReference,
+    56	                                   EvalReshapeReference);
+    57	}
+    58	
+    59	}  // namespace tflite
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_common.cc ---
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	#include <cstring>
+    17	
+    18	#include "tensorflow/lite/c/builtin_op_data.h"
+    19	#include "tensorflow/lite/c/common.h"
+    20	#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+    21	#include "tensorflow/lite/kernels/kernel_util.h"
+    22	#include "tensorflow/lite/kernels/op_macros.h"
+    23	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    24	#include "tensorflow/lite/micro/kernels/reshape.h"
+    25	#include "tensorflow/lite/micro/memory_helpers.h"
+    26	#include "tensorflow/lite/micro/micro_utils.h"
+    27	
+    28	namespace tflite {
+    29	
+    30	namespace {
+    31	
+    32	TfLiteStatus ReshapeOutput(TfLiteContext* context, TfLiteNode* node) {
+    33	  MicroContext* micro_context = GetMicroContext(context);
+    34	
+    35	  TfLiteTensor* input =
+    36	      micro_context->AllocateTempInputTensor(node, kReshapeInputTensor);
+    37	  TF_LITE_ENSURE(context, input != nullptr);
+    38	  TfLiteTensor* output =
+    39	      micro_context->AllocateTempOutputTensor(node, kReshapeOutputTensor);
+    40	  TF_LITE_ENSURE(context, output != nullptr);
+    41	  // Tensorflow's Reshape allows one of the shape components to have the
+    42	  // special -1 value, meaning it will be calculated automatically based on the
+    43	  // input. Here we calculate what that dimension should be so that the number
+    44	  // of output elements in the same as the number of input elements.
+    45	  int num_input_elements = NumElements(input);
+    46	  TfLiteIntArray* output_shape = output->dims;
+    47	
+    48	  if (NumInputs(node) == 1 &&  // Legacy scalar supported with params.
+    49	      output_shape->size == 1 && output_shape->data[0] == 0) {
+    50	    // Legacy tflite models use a shape parameter of [0] to indicate scalars,
+    51	    // so adjust accordingly. TODO(b/111614235): Allow zero-sized buffers during
+    52	    // toco conversion.
+    53	    output_shape->size = 0;
+    54	  }
+    55	
+    56	  int num_output_elements = 1;
+    57	  int stretch_dim = -1;
+    58	  for (int i = 0; i < output_shape->size; ++i) {
+    59	    int value = output_shape->data[i];
+    60	    if (value == -1) {
+    61	      TF_LITE_ENSURE_EQ(context, stretch_dim, -1);
+    62	      stretch_dim = i;
+    63	    } else {
+    64	      num_output_elements *= value;
+    65	    }
+    66	  }
+    67	  if (stretch_dim != -1) {
+    68	    TfLiteEvalTensor* output_eval =
+    69	        tflite::micro::GetEvalOutput(context, node, kReshapeOutputTensor);
+    70	    TF_LITE_ENSURE_STATUS(tflite::micro::CreateWritableTensorDimsWithCopy(
+    71	        context, output, output_eval));
+    72	    output_shape = output->dims;  // output tensor dims were moved
+    73	    output_shape->data[stretch_dim] = num_input_elements / num_output_elements;
+    74	    num_output_elements *= output_shape->data[stretch_dim];
+    75	  }
+    76	
+    77	  TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
+    78	  TF_LITE_ENSURE_EQ(context, num_input_elements, num_output_elements);
+    79	
+    80	  micro_context->DeallocateTempTfLiteTensor(input);
+    81	  micro_context->DeallocateTempTfLiteTensor(output);
+    82	  return kTfLiteOk;
+    83	}
+    84	
+    85	}  // namespace
+    86	
+    87	TfLiteStatus PrepareReshapeReference(TfLiteContext* context, TfLiteNode* node) {
+    88	  TF_LITE_ENSURE(context, NumInputs(node) == 1 || NumInputs(node) == 2);
+    89	  TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+    90	  TF_LITE_ENSURE_EQ(context, ReshapeOutput(context, node), kTfLiteOk);
+    91	  return kTfLiteOk;
+    92	}
+    93	
+    94	}  // namespace tflite
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.h ---
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	#include "tensorflow/lite/c/builtin_op_data.h"
+    17	#include "tensorflow/lite/c/common.h"
+    18	
+    19	namespace tflite {
+    20	
+    21	constexpr int kReshapeInputTensor = 0;
+    22	constexpr int kReshapeOutputTensor = 0;
+    23	
+    24	TfLiteStatus PrepareReshapeReference(TfLiteContext* context, TfLiteNode* node);
+    25	
+    26	}  // namespace tflite
+
+===== 4. RESHAPE REGISTRATION AND KERNEL SELECTION =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-32-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-33-inline void OperandDims4D(uint32_t* dims, TfLiteTensor* opnd) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-34-  for (int i = NumDimensions(opnd) - 1, j = 0; i >= 0; i--, j++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-35-    dims[j] = SizeOfDimension(opnd, i);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-36-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-37-  return;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-38-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-39-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc:40:TfLiteStatus ReshapePrepareVision(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-41-  TFLITE_DCHECK(node->user_data != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-42-  XtensaReshapeData* data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-43-      reinterpret_cast<XtensaReshapeData*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-44-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-45-  MicroContext* micro_context = GetMicroContext(context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-46-  TfLiteTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-47-      micro_context->AllocateTempInputTensor(node, kReshapeInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-48-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-49-  uint32_t inputRank = NumDimensions(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-50-  uint32_t inputDims[4] = {1, 1, 1, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-51-  OperandDims4D(inputDims, input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-52-  uint32_t context_size = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-53-  uint32_t status = xiReshapeGetMemReqd_Context(&context_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-54-  TFLITE_DCHECK(status == 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-55-  if (context_size) {
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-67-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-68-  if (status) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-69-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-70-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-71-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-72-  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-73-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-74-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc:75:TfLiteStatus ReshapeEvalVision(const XtensaReshapeData& data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-76-                               const TfLiteEvalTensor* input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-77-                               TfLiteEvalTensor* output) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-78-  const uint32_t input_size = NumElements(input->dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-79-  const uint32_t output_size = NumElements(output->dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-80-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-81-  xiReshape(data.p_context, data.context_size,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-82-            const_cast<int8_t*>(tflite::micro::GetTensorData<int8_t>(input)),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-83-            input_size, tflite::micro::GetTensorData<int8_t>(output),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-84-            output_size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-85-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-86-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-87-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape_vision.cc-88-#endif  // defined(VISION_P6)
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-27-struct XtensaReshapeData {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-28-  uint8_t* p_context;  // persistent lib context for this instance saved here
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-29-  uint32_t context_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-30-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-31-#endif  // VISION_P6
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-32-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-33-#if defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-34-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h:35:TfLiteStatus ReshapePrepareVision(TfLiteContext* context, TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-36-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h:37:TfLiteStatus ReshapeEvalVision(const XtensaReshapeData& data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-38-                               const TfLiteEvalTensor* input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-39-                               TfLiteEvalTensor* output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-40-#endif  // VISION_P6
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-41-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-42-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-43-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h-44-#endif  // TENSORFLOW_LITE_MICRO_KERNELS_XTENSA_XTENSA_RESHAPE_H_
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-47-  TF_LITE_ENSURE_STATUS(PrepareReshapeReference(context, node));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-48-#if defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-49-  {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-50-    MicroContext* micro_context = GetMicroContext(context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-51-    TfLiteTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-52-        micro_context->AllocateTempInputTensor(node, kReshapeInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-53-    // Vision P6 currently only supports up to 4D int8 input tensors
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-54-    if (NumDimensions(input) <= 4 && input->type == kTfLiteInt8) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc:55:      TF_LITE_ENSURE_OK(context, ReshapePrepareVision(context, node));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-56-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-57-    micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-58-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-59-#endif  // VISION_P6
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-60-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-61-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-62-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-63-TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-64-  const TfLiteEvalTensor* input =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-65-      tflite::micro::GetEvalInput(context, node, kReshapeInputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-66-  TfLiteEvalTensor* output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-67-      tflite::micro::GetEvalOutput(context, node, kReshapeOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-68-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-69-  // TODO(b/162522304): storing input bytes in OpData increases some models
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-70-  // significantly, possibly due to alignment issues.
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-73-  // Do nothing for in-place reshape.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-74-  if (input->data.raw != output->data.raw) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-75-    // Otherwise perform reshape with copy.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-76-#if defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-77-    // Vision P6 currently only supports upto 4D int8 input tensors
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-78-    if (input->dims->size <= 4 && input->type == kTfLiteInt8) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-79-      XtensaReshapeData* op_data_xtensa =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-80-          static_cast<XtensaReshapeData*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc:81:      ReshapeEvalVision(*op_data_xtensa, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-82-    } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-83-      memcpy(output->data.raw, input->data.raw, input_bytes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-84-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-85-#else  // !defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-86-    memcpy(output->data.raw, input->data.raw, input_bytes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-87-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-88-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-89-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-90-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-91-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-92-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-93-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc:94:TFLMRegistration Register_RESHAPE() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-95-#if defined(VISION_P6)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-96-  return tflite::micro::RegisterOp(Init, Prepare, Eval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-97-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-98-  return tflite::micro::RegisterOp(nullptr, Prepare, Eval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-99-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-100-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-101-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reshape.cc-102-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-33-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-34-void ValidateReshapeGoldens(TfLiteTensor* tensors, int tensors_size,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-35-                            TfLiteIntArray* inputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-36-                            TfLiteIntArray* outputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-37-                            const T* expected_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-38-                            const size_t expected_output_len,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-39-                            int* expected_dims, const size_t expected_dims_len,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-40-                            bool expect_failure) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc:41:  const TFLMRegistration registration = tflite::Register_RESHAPE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-42-  micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-43-                             outputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-44-                             /*builtin_data=*/nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-45-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-46-  if (expect_failure) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-47-    TF_LITE_MICRO_EXPECT_NE(kTfLiteOk, runner.InitAndPrepare());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-48-    return;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-49-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-50-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-51-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-52-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-53-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-54-  TfLiteTensor* output_tensor = &tensors[outputs_array->data[0]];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-55-  const T* output_data = GetTensorData<T>(output_tensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape_test.cc-56-  for (size_t i = 0; i < expected_output_len; ++i) {
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-46-    // Otherwise perform reshape with copy.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-47-    memcpy(output->data.raw, input->data.raw, input_bytes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-48-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-49-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-50-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-51-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-52-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-53-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc:54:TFLMRegistration Register_RESHAPE() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-55-  return tflite::micro::RegisterOp(nullptr, PrepareReshapeReference,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-56-                                   EvalReshapeReference);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-57-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-58-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reshape.cc-59-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-98-TFLMRegistration Register_PAD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-99-TFLMRegistration Register_PADV2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-100-TFLMRegistration Register_PRELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-101-TFLMRegistration Register_QUANTIZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-102-TFLMRegistration Register_READ_VARIABLE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-103-TFLMRegistration Register_REDUCE_MAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-104-TFLMRegistration Register_RELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-105-TFLMRegistration Register_RELU6();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:106:TFLMRegistration Register_RESHAPE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-107-TFLMRegistration Register_RESIZE_BILINEAR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-108-TFLMRegistration Register_RESIZE_NEAREST_NEIGHBOR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-109-TFLMRegistration Register_ROUND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-110-TFLMRegistration Register_RSQRT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-111-TFLMRegistration Register_SELECT_V2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-112-TFLMRegistration Register_SHAPE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-113-TFLMRegistration Register_SIN();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-114-TFLMRegistration Register_SLICE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-115-TFLMRegistration Register_SOFTMAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-116-TFLMRegistration Register_SPACE_TO_BATCH_ND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-117-TFLMRegistration Register_SPACE_TO_DEPTH();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-118-TFLMRegistration Register_SPLIT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-119-TFLMRegistration Register_SPLIT_V();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-120-TFLMRegistration Register_SQRT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-121-TFLMRegistration Register_SQUARE();
+
+===== 5. FIRST BILSTM, RESHAPE, AND QUANTIZE GRAPH CONTRACT =====
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794204582.616134  128872 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794204582.616328  128872 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794204582.645136  128872 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794204583.404497  128872 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794204583.404731  128872 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+
+OPERATOR 284: BIDIRECTIONAL_SEQUENCE_LSTM
+  INPUTS:
+  position 0:
+    tensor[429] 'val_156_DequantizeLinear_Output' type=FLOAT32 shape=[900, 1, 16] buffer=0 variable=False scales=[] zero_points=[]
+  position 1:
+    tensor[728] 'fw_input_to_input' type=FLOAT32 shape=[128, 16] buffer=207 variable=False scales=[] zero_points=[]
+  position 2:
+    tensor[729] 'fw_input_to_forget' type=FLOAT32 shape=[128, 16] buffer=208 variable=False scales=[] zero_points=[]
+  position 3:
+    tensor[730] 'fw_input_to_cell' type=FLOAT32 shape=[128, 16] buffer=209 variable=False scales=[] zero_points=[]
+  position 4:
+    tensor[731] 'fw_input_to_output' type=FLOAT32 shape=[128, 16] buffer=210 variable=False scales=[] zero_points=[]
+  position 5:
+    tensor[732] 'fw_recurrent_to_input' type=FLOAT32 shape=[128, 128] buffer=211 variable=False scales=[] zero_points=[]
+  position 6:
+    tensor[733] 'fw_recurrent_to_forget' type=FLOAT32 shape=[128, 128] buffer=212 variable=False scales=[] zero_points=[]
+  position 7:
+    tensor[734] 'fw_recurrent_to_cell' type=FLOAT32 shape=[128, 128] buffer=213 variable=False scales=[] zero_points=[]
+  position 8:
+    tensor[735] 'fw_recurrent_to_output' type=FLOAT32 shape=[128, 128] buffer=214 variable=False scales=[] zero_points=[]
+  position 9:
+    tensor[-1]: OPTIONAL
+  position 10:
+    tensor[-1]: OPTIONAL
+  position 11:
+    tensor[-1]: OPTIONAL
+  position 12:
+    tensor[713] 'fw_input_bias' type=FLOAT32 shape=[128] buffer=195 variable=False scales=[] zero_points=[]
+  position 13:
+    tensor[715] 'fw_forget_bias' type=FLOAT32 shape=[128] buffer=197 variable=False scales=[] zero_points=[]
+  position 14:
+    tensor[716] 'fw_cell_bias' type=FLOAT32 shape=[128] buffer=198 variable=False scales=[] zero_points=[]
+  position 15:
+    tensor[714] 'fw_output_bias' type=FLOAT32 shape=[128] buffer=196 variable=False scales=[] zero_points=[]
+  position 16:
+    tensor[-1]: OPTIONAL
+  position 17:
+    tensor[-1]: OPTIONAL
+  position 18:
+    tensor[736] 'bw_input_to_input' type=FLOAT32 shape=[128, 16] buffer=215 variable=False scales=[] zero_points=[]
+  position 19:
+    tensor[737] 'bw_input_to_forget' type=FLOAT32 shape=[128, 16] buffer=216 variable=False scales=[] zero_points=[]
+  position 20:
+    tensor[738] 'bw_input_to_cell' type=FLOAT32 shape=[128, 16] buffer=217 variable=False scales=[] zero_points=[]
+  position 21:
+    tensor[739] 'bw_input_to_output' type=FLOAT32 shape=[128, 16] buffer=218 variable=False scales=[] zero_points=[]
+  position 22:
+    tensor[740] 'bw_recurrent_to_input' type=FLOAT32 shape=[128, 128] buffer=219 variable=False scales=[] zero_points=[]
+  position 23:
+    tensor[741] 'bw_recurrent_to_forget' type=FLOAT32 shape=[128, 128] buffer=220 variable=False scales=[] zero_points=[]
+  position 24:
+    tensor[742] 'bw_recurrent_to_cell' type=FLOAT32 shape=[128, 128] buffer=221 variable=False scales=[] zero_points=[]
+  position 25:
+    tensor[743] 'bw_recurrent_to_output' type=FLOAT32 shape=[128, 128] buffer=222 variable=False scales=[] zero_points=[]
+  position 26:
+    tensor[-1]: OPTIONAL
+  position 27:
+    tensor[-1]: OPTIONAL
+  position 28:
+    tensor[-1]: OPTIONAL
+  position 29:
+    tensor[717] 'bw_input_bias' type=FLOAT32 shape=[128] buffer=199 variable=False scales=[] zero_points=[]
+  position 30:
+    tensor[719] 'bw_forget_bias' type=FLOAT32 shape=[128] buffer=201 variable=False scales=[] zero_points=[]
+  position 31:
+    tensor[720] 'bw_cell_bias' type=FLOAT32 shape=[128] buffer=202 variable=False scales=[] zero_points=[]
+  position 32:
+    tensor[718] 'bw_output_bias' type=FLOAT32 shape=[128] buffer=200 variable=False scales=[] zero_points=[]
+  position 33:
+    tensor[-1]: OPTIONAL
+  position 34:
+    tensor[-1]: OPTIONAL
+  position 35:
+    tensor[723] 'fw_output_state' type=FLOAT32 shape=[128] buffer=203 variable=True scales=[] zero_points=[]
+  position 36:
+    tensor[724] 'fw_cell_state' type=FLOAT32 shape=[128] buffer=204 variable=True scales=[] zero_points=[]
+  position 37:
+    tensor[725] 'fw_output_state0' type=FLOAT32 shape=[128] buffer=205 variable=True scales=[] zero_points=[]
+  position 38:
+    tensor[726] 'fw_cell_state0' type=FLOAT32 shape=[128] buffer=206 variable=True scales=[] zero_points=[]
+  position 39:
+    tensor[-1]: OPTIONAL
+  position 40:
+    tensor[-1]: OPTIONAL
+  position 41:
+    tensor[-1]: OPTIONAL
+  position 42:
+    tensor[-1]: OPTIONAL
+  position 43:
+    tensor[-1]: OPTIONAL
+  position 44:
+    tensor[-1]: OPTIONAL
+  position 45:
+    tensor[-1]: OPTIONAL
+  position 46:
+    tensor[-1]: OPTIONAL
+  position 47:
+    tensor[-1]: OPTIONAL
+  OUTPUTS:
+  position 0:
+    tensor[744] 'val_253_reshaped' type=FLOAT32 shape=[900, 1, 256] buffer=0 variable=False scales=[] zero_points=[]
+
+OPERATOR 285: RESHAPE
+  INPUTS:
+  position 0:
+    tensor[744] 'val_253_reshaped' type=FLOAT32 shape=[900, 1, 256] buffer=0 variable=False scales=[] zero_points=[]
+  OUTPUTS:
+  position 0:
+    tensor[430] 'val_253' type=FLOAT32 shape=[900, 1, 2, 128] buffer=0 variable=False scales=[] zero_points=[]
+
+OPERATOR 286: QUANTIZE
+  INPUTS:
+  position 0:
+    tensor[430] 'val_253' type=FLOAT32 shape=[900, 1, 2, 128] buffer=0 variable=False scales=[] zero_points=[]
+  OUTPUTS:
+  position 0:
+    tensor[431] 'val_253_DequantizeLinear_Output' type=INT8 shape=[900, 2, 1, 128] buffer=0 variable=False scales=[0.003935979213565588] zero_points=[18]
+
+===== ALL CONSUMERS OF TENSOR 744 AND 430 =====
+
+Tensor 744:
+  consumer op=285, type=RESHAPE, input_position=0
+
+Tensor 430:
+  consumer op=286, type=QUANTIZE, input_position=0
+
+===== END =====
