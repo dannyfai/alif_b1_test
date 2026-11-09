@@ -1,0 +1,422 @@
+===== QUANTIZE ACTUAL PREPROCESSOR ASSERTION CHECK =====
+Mon Nov  9 02:38:53 PM HKT 2026
+
+===== 1. QUANTIZE KERNEL IMPLEMENTATION =====
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc ---
+18-#include "tensorflow/lite/c/common.h"
+19-#include "tensorflow/lite/kernels/internal/quantization_util.h"
+20-#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+21-#include "tensorflow/lite/kernels/kernel_util.h"
+22-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+23-#include "tensorflow/lite/micro/micro_utils.h"
+24-
+25-namespace tflite {
+26-namespace {
+27-
+28-void* InitQuantizeReference(TfLiteContext* context, const char* buffer,
+29-                            size_t length) {
+30:  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+31-  return context->AllocatePersistentBuffer(context,
+32-                                           sizeof(OpDataQuantizeReference));
+33-}
+34-
+35-}  // namespace
+36-
+37-TFLMRegistration Register_QUANTIZE() {
+38-  return tflite::micro::RegisterOp(
+39:      InitQuantizeReference, PrepareQuantizeReference, EvalQuantizeReference);
+40-}
+41-
+42-}  // namespace tflite
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_common.cc ---
+19-#include "tensorflow/lite/kernels/internal/quantization_util.h"
+20-#include "tensorflow/lite/kernels/internal/reference/quantize.h"
+21-#include "tensorflow/lite/kernels/internal/reference/requantize.h"
+22-#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+23-#include "tensorflow/lite/kernels/kernel_util.h"
+24-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+25-#include "tensorflow/lite/micro/kernels/quantize.h"
+26-#include "tensorflow/lite/micro/micro_log.h"
+27-#include "tensorflow/lite/micro/micro_utils.h"
+28-
+29-namespace tflite {
+30-
+31:TfLiteStatus PrepareQuantizeReference(TfLiteContext* context,
+32-                                      TfLiteNode* node) {
+33:  TFLITE_DCHECK(node->user_data != nullptr);
+34-  auto* data = static_cast<OpDataQuantizeReference*>(node->user_data);
+35-
+36-  TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
+37-  TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+38-
+39-  MicroContext* micro_context = GetMicroContext(context);
+40-
+41-  TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+42-  TF_LITE_ENSURE(context, input != nullptr);
+43-  TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+44-  TF_LITE_ENSURE(context, output != nullptr);
+45-
+46-  // TODO(b/128934713): Add support for fixed-point per-channel quantization.
+47-  // Currently this only support affine per-layer quantization.
+48-  TF_LITE_ENSURE_EQ(context, output->quantization.type,
+49-                    kTfLiteAffineQuantization);
+50-  const auto* affine_quantization =
+51-      reinterpret_cast<TfLiteAffineQuantization*>(output->quantization.params);
+52-  TF_LITE_ENSURE(context, affine_quantization);
+53-  TF_LITE_ENSURE(context, affine_quantization->scale);
+54-  TF_LITE_ENSURE(context, affine_quantization->scale->size == 1);
+55-
+56-  TF_LITE_ENSURE(
+57-      context, input->type == kTfLiteFloat32 || input->type == kTfLiteInt32 ||
+58-                   input->type == kTfLiteInt16 || input->type == kTfLiteInt8 ||
+59-                   input->type == kTfLiteUInt8);
+60-  TF_LITE_ENSURE(context, output->type == kTfLiteInt8 ||
+61-                              output->type == kTfLiteInt16 ||
+--
+80-  }
+81-
+82-  data->quantization_params.zero_point = output->params.zero_point;
+83-  data->quantization_params.scale = static_cast<double>(output->params.scale);
+84-
+85-  data->input_zero_point = input->params.zero_point;
+86-
+87-  micro_context->DeallocateTempTfLiteTensor(input);
+88-  micro_context->DeallocateTempTfLiteTensor(output);
+89-  return kTfLiteOk;
+90-}
+91-
+92:TfLiteStatus EvalQuantizeReference(TfLiteContext* context, TfLiteNode* node) {
+93:  TFLITE_DCHECK(node->user_data != nullptr);
+94-  auto* data = static_cast<OpDataQuantizeReference*>(node->user_data);
+95-
+96:  const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+97:  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+98-
+99-  if (input->type == kTfLiteFloat32) {
+100-    switch (output->type) {
+101-      case kTfLiteInt8:
+102:        reference_ops::AffineQuantize(
+103-            data->quantization_params, tflite::micro::GetTensorShape(input),
+104-            tflite::micro::GetTensorData<float>(input),
+105-            tflite::micro::GetTensorShape(output),
+106-            tflite::micro::GetTensorData<int8_t>(output));
+107-        break;
+108-      case kTfLiteInt16:
+109:        reference_ops::AffineQuantize(
+110-            data->quantization_params, tflite::micro::GetTensorShape(input),
+111-            tflite::micro::GetTensorData<float>(input),
+112-            tflite::micro::GetTensorShape(output),
+113-            tflite::micro::GetTensorData<int16_t>(output));
+114-        return kTfLiteOk;
+115-      default:
+116-        MicroPrintf("Input %s, output %s not supported.",
+117-                    TfLiteTypeGetName(input->type),
+118-                    TfLiteTypeGetName(output->type));
+119-        return kTfLiteError;
+120-    }
+121-  } else if (input->type == kTfLiteInt32) {
+122-    size_t size = ElementCount(*input->dims);
+123-    switch (output->type) {
+124-      case kTfLiteInt8:
+125-        reference_ops::Requantize(
+126-            tflite::micro::GetTensorData<int32_t>(input), size,
+127-            data->requantize_output_multiplier, data->requantize_output_shift,
+128-            data->input_zero_point, data->quantization_params.zero_point,
+129-            tflite::micro::GetTensorData<int8_t>(output));
+130-        break;
+131-      case kTfLiteInt16:
+132-        reference_ops::Requantize(
+133-            tflite::micro::GetTensorData<int32_t>(input), size,
+134-            data->requantize_output_multiplier, data->requantize_output_shift,
+135-            data->input_zero_point, data->quantization_params.zero_point,
+136-            tflite::micro::GetTensorData<int16_t>(output));
+137-        break;
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/quantize.h ---
+20-#include <vector>
+21-
+22-#include "tensorflow/lite/kernels/internal/common.h"
+23-#include "tensorflow/lite/kernels/internal/compatibility.h"
+24-#include "tensorflow/lite/kernels/internal/cppmath.h"
+25-#include "tensorflow/lite/kernels/internal/types.h"
+26-
+27-namespace tflite {
+28-
+29-namespace reference_ops {
+30-
+31-template <typename InputT, typename OutputT>
+32:inline void AffineQuantize(const tflite::QuantizationParams& op_params,
+33-                           const RuntimeShape& input_shape,
+34-                           const InputT* input_data,
+35-                           const RuntimeShape& output_shape,
+36-                           OutputT* output_data) {
+37-  const int32_t zero_point = op_params.zero_point;
+38-  const double scale = op_params.scale;
+39:  const int flat_size = MatchingFlatSize(input_shape, output_shape);
+40-  static constexpr int32_t min_val = std::numeric_limits<OutputT>::min();
+41-  static constexpr int32_t max_val = std::numeric_limits<OutputT>::max();
+42-
+43-  for (int i = 0; i < flat_size; i++) {
+44-    const InputT val = input_data[i];
+45-    int32_t unclamped =
+46-        static_cast<int32_t>(TfLiteRound(val / static_cast<float>(scale))) +
+47-        zero_point;
+48-    int32_t clamped = std::min(std::max(unclamped, min_val), max_val);
+49-    output_data[i] = clamped;
+50-  }
+51-}
+52-
+53-// Quantizes per-channel.
+54-template <typename InputT, typename OutputT>
+55-inline void PerChannelQuantize(
+56-    const tflite::PerChannelQuantizationParams& op_params,
+57-    const RuntimeShape& input_shape, const InputT* input_data,
+58-    const RuntimeShape& output_shape, OutputT* output_data) {
+59-  // Ensure flat size is same.
+60:  MatchingFlatSize(input_shape, output_shape);
+61-
+62-  const int32_t* zero_point = op_params.zero_point;
+63-  const float* scale = op_params.scale;
+64-  const int32_t quantized_dimension = op_params.quantized_dimension;
+65-  const int32_t num_dims = input_shape.DimensionsCount();
+66-  const int32_t* dims_data = input_shape.DimsData();
+67-  std::vector<int> current_dim(num_dims, 0);
+68-  static constexpr int32_t min_val = std::numeric_limits<OutputT>::min();
+69-  static constexpr int32_t max_val = std::numeric_limits<OutputT>::max();
+70-
+71-  do {
+72-    size_t offset =
+73-        ReducedOutputOffset(num_dims, reinterpret_cast<const int*>(dims_data),
+74-                            current_dim.data(), 0, nullptr);
+75-    const InputT val = input_data[offset];
+76-    const int channel = current_dim[quantized_dimension];
+77-    int32_t unclamped = static_cast<int32_t>(TfLiteRound(
+78-                            val / static_cast<float>(scale[channel]))) +
+79-                        zero_point[channel];
+80-    int32_t clamped = std::min(std::max(unclamped, min_val), max_val);
+81-    output_data[offset] = static_cast<OutputT>(clamped);
+82-  } while (NextIndex(num_dims, reinterpret_cast<const int*>(dims_data),
+83-                     current_dim.data()));
+84-}
+85-
+86-}  // namespace reference_ops
+87-
+88-}  // namespace tflite
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/compatibility.h ---
+10-distributed under the License is distributed on an "AS IS" BASIS,
+11-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+12-See the License for the specific language governing permissions and
+13-limitations under the License.
+14-==============================================================================*/
+15-#ifndef TENSORFLOW_LITE_KERNELS_INTERNAL_COMPATIBILITY_H_
+16-#define TENSORFLOW_LITE_KERNELS_INTERNAL_COMPATIBILITY_H_
+17-
+18-#include <cstdint>
+19-
+20-#include "tensorflow/lite/kernels/op_macros.h"
+21-
+22:#ifndef TFLITE_DCHECK
+23:#define TFLITE_DCHECK(condition) (condition) ? (void)0 : TFLITE_ASSERT_FALSE
+24-#endif
+25-
+26:#ifndef TFLITE_DCHECK_EQ
+27:#define TFLITE_DCHECK_EQ(x, y) ((x) == (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+28-#endif
+29-
+30:#ifndef TFLITE_DCHECK_NE
+31:#define TFLITE_DCHECK_NE(x, y) ((x) != (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+32-#endif
+33-
+34:#ifndef TFLITE_DCHECK_GE
+35:#define TFLITE_DCHECK_GE(x, y) ((x) >= (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+36-#endif
+37-
+38:#ifndef TFLITE_DCHECK_GT
+39:#define TFLITE_DCHECK_GT(x, y) ((x) > (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+40-#endif
+41-
+42:#ifndef TFLITE_DCHECK_LE
+43:#define TFLITE_DCHECK_LE(x, y) ((x) <= (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+44-#endif
+45-
+46:#ifndef TFLITE_DCHECK_LT
+47:#define TFLITE_DCHECK_LT(x, y) ((x) < (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+48-#endif
+49-
+50-// TODO(ahentz): Clean up: We should stick to the DCHECK versions.
+51-#ifndef TFLITE_CHECK
+52-#define TFLITE_CHECK(condition) (condition) ? (void)0 : TFLITE_ABORT
+53-#endif
+54-
+55-#ifndef TFLITE_CHECK_EQ
+56-#define TFLITE_CHECK_EQ(x, y) ((x) == (y)) ? (void)0 : TFLITE_ABORT
+57-#endif
+58-
+59-#ifndef TFLITE_CHECK_NE
+60-#define TFLITE_CHECK_NE(x, y) ((x) != (y)) ? (void)0 : TFLITE_ABORT
+61-#endif
+62-
+63-#ifndef TFLITE_CHECK_GE
+64-#define TFLITE_CHECK_GE(x, y) ((x) >= (y)) ? (void)0 : TFLITE_ABORT
+65-#endif
+66-
+67-#ifndef TFLITE_CHECK_GT
+68-#define TFLITE_CHECK_GT(x, y) ((x) > (y)) ? (void)0 : TFLITE_ABORT
+69-#endif
+70-
+71-#ifndef TFLITE_CHECK_LE
+72-#define TFLITE_CHECK_LE(x, y) ((x) <= (y)) ? (void)0 : TFLITE_ABORT
+73-#endif
+74-
+75-#ifndef TFLITE_CHECK_LT
+
+===== 2. ASSERTION MACRO DEFINITIONS =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/compatibility.h:23:#define TFLITE_DCHECK(condition) (condition) ? (void)0 : TFLITE_ASSERT_FALSE
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/compatibility.h:27:#define TFLITE_DCHECK_EQ(x, y) ((x) == (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/compatibility.h:31:#define TFLITE_DCHECK_NE(x, y) ((x) != (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/compatibility.h:35:#define TFLITE_DCHECK_GE(x, y) ((x) >= (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/compatibility.h:39:#define TFLITE_DCHECK_GT(x, y) ((x) > (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/compatibility.h:43:#define TFLITE_DCHECK_LE(x, y) ((x) <= (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/compatibility.h:47:#define TFLITE_DCHECK_LT(x, y) ((x) < (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/c10/util/logging_is_not_google_glog.h:106:#define DCHECK(condition) FATAL_IF(condition) << "Check failed: " #condition " "
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/c10/util/logging_is_not_google_glog.h:110:#define DCHECK(condition) \
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/c10/util/logging_is_not_google_glog.h:106:#define DCHECK(condition) FATAL_IF(condition) << "Check failed: " #condition " "
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib64/python3.12/site-packages/torch/include/c10/util/logging_is_not_google_glog.h:110:#define DCHECK(condition) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:88:#define DCHECK(condition) ABSL_LOG_INTERNAL_DCHECK_IMPL((condition), #condition)
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:140:#define DCHECK_EQ(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:142:#define DCHECK_NE(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:144:#define DCHECK_LE(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:146:#define DCHECK_LT(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:148:#define DCHECK_GE(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:150:#define DCHECK_GT(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:169:#define DCHECK_OK(status) ABSL_LOG_INTERNAL_DCHECK_OK_IMPL((status), #status)
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:200:#define DCHECK_STREQ(s1, s2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:202:#define DCHECK_STRNE(s1, s2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:204:#define DCHECK_STRCASEEQ(s1, s2) \
+/home/user/sdk-alif/modules/lib/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:206:#define DCHECK_STRCASENE(s1, s2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:88:#define DCHECK(condition) ABSL_LOG_INTERNAL_DCHECK_IMPL((condition), #condition)
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:140:#define DCHECK_EQ(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:142:#define DCHECK_NE(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:144:#define DCHECK_LE(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:146:#define DCHECK_LT(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:148:#define DCHECK_GE(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:150:#define DCHECK_GT(val1, val2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:169:#define DCHECK_OK(status) ABSL_LOG_INTERNAL_DCHECK_OK_IMPL((status), #status)
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:200:#define DCHECK_STREQ(s1, s2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:202:#define DCHECK_STRNE(s1, s2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:204:#define DCHECK_STRCASEEQ(s1, s2) \
+/home/user/sdk-alif/modules/lib/executorch/src/executorch/extension/llm/tokenizers/third-party/abseil-cpp/absl/log/check.h:206:#define DCHECK_STRCASENE(s1, s2) \
+
+===== 3. PREPROCESS USING ACTUAL QUANTIZE COMPILER FLAGS =====
+Compiler source: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc
+Working directory: /home/user/sdk-alif/build
+Preprocessor command uses original Release flags.
+NDEBUG present: True
+PREPROCESSOR_EXIT_STATUS: 0
+
+===== EXPANDED ASSERTION MACROS =====
+#define TFLITE_DCHECK(condition) (condition) ? (void)0 : TFLITE_ASSERT_FALSE
+#define TFLITE_DCHECK_EQ(x,y) ((x) == (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+#define TFLITE_DCHECK_NE(x,y) ((x) != (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+#define TFLITE_DCHECK_GE(x,y) ((x) >= (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+#define TFLITE_DCHECK_GT(x,y) ((x) > (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+#define TFLITE_DCHECK_LE(x,y) ((x) <= (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+#define TFLITE_DCHECK_LT(x,y) ((x) < (y)) ? (void)0 : TFLITE_ASSERT_FALSE
+
+===== EXPANDED MatchingFlatSize IMPLEMENTATION =====
+21716: inline int MatchingFlatSize(const RuntimeShape& shape,
+21717:                             const RuntimeShape& check_shape_0) {
+21718:   ((shape.DimensionsCount()) == (check_shape_0.DimensionsCount())) ? (void)0 : (static_cast<void>(0));
+21719:   const int dims_count = shape.DimensionsCount();
+21720:   for (int i = 0; i < dims_count; ++i) {
+21721:     ((shape.Dims(i)) == (check_shape_0.Dims(i))) ? (void)0 : (static_cast<void>(0));
+21722:   }
+21723:   return shape.FlatSize();
+21724: }
+21725: 
+21726: inline int MatchingFlatSize(const RuntimeShape& shape,
+21727:                             const RuntimeShape& check_shape_0,
+21728:                             const RuntimeShape& check_shape_1) {
+21729:   ((shape.DimensionsCount()) == (check_shape_0.DimensionsCount())) ? (void)0 : (static_cast<void>(0));
+21730:   const int dims_count = shape.DimensionsCount();
+21731:   for (int i = 0; i < dims_count; ++i) {
+21732:     ((shape.Dims(i)) == (check_shape_0.Dims(i))) ? (void)0 : (static_cast<void>(0));
+21733:   }
+21734:   return MatchingFlatSize(shape, check_shape_1);
+21735: }
+21736: 
+21737: inline int MatchingFlatSize(const RuntimeShape& shape,
+21738:                             const RuntimeShape& check_shape_0,
+21739:                             const RuntimeShape& check_shape_1,
+21740:                             const RuntimeShape& check_shape_2) {
+21741:   ((shape.DimensionsCount()) == (check_shape_0.DimensionsCount())) ? (void)0 : (static_cast<void>(0));
+21742:   const int dims_count = shape.DimensionsCount();
+21743:   for (int i = 0; i < dims_count; ++i) {
+21744:     ((shape.Dims(i)) == (check_shape_0.Dims(i))) ? (void)0 : (static_cast<void>(0));
+21745:   }
+21746:   return MatchingFlatSize(shape, check_shape_1, check_shape_2);
+21747: }
+21748: 
+21749: inline int MatchingFlatSize(const RuntimeShape& shape,
+21750:                             const RuntimeShape& check_shape_0,
+21751:                             const RuntimeShape& check_shape_1,
+21752:                             const RuntimeShape& check_shape_2,
+21753:                             const RuntimeShape& check_shape_3) {
+21754:   ((shape.DimensionsCount()) == (check_shape_0.DimensionsCount())) ? (void)0 : (static_cast<void>(0));
+21755:   const int dims_count = shape.DimensionsCount();
+21756:   for (int i = 0; i < dims_count; ++i) {
+21757:     ((shape.Dims(i)) == (check_shape_0.Dims(i))) ? (void)0 : (static_cast<void>(0));
+21758:   }
+21759:   return MatchingFlatSize(shape, check_shape_1, check_shape_2, check_shape_3);
+21760: }
+21761: 
+21762: 
+21763: 
+21764: template <int N>
+21765: inline int MatchingFlatSize(const Dims<N>& dims, const Dims<N>& check_dims_0) {
+21766:   for (int i = 0; i < N; ++i) {
+21767:     ((ArraySize(dims, i)) == (ArraySize(check_dims_0, i))) ? (void)0 : (static_cast<void>(0));
+21768:   }
+21769:   return FlatSize(dims);
+21770: }
+
+===== EXPANDED AFFINE QUANTIZE LOOP =====
+50691: template <typename InputT, typename OutputT>
+50692: inline void AffineQuantize(const tflite::QuantizationParams& op_params,
+50693:                            const RuntimeShape& input_shape,
+50694:                            const InputT* input_data,
+50695:                            const RuntimeShape& output_shape,
+50696:                            OutputT* output_data) {
+50697:   const int32_t zero_point = op_params.zero_point;
+50698:   const double scale = op_params.scale;
+50699:   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+50700:   static constexpr int32_t min_val = std::numeric_limits<OutputT>::min();
+50701:   static constexpr int32_t max_val = std::numeric_limits<OutputT>::max();
+50702: 
+50703:   for (int i = 0; i < flat_size; i++) {
+50704:     const InputT val = input_data[i];
+50705:     int32_t unclamped =
+50706:         static_cast<int32_t>(TfLiteRound(val / static_cast<float>(scale))) +
+50707:         zero_point;
+50708:     int32_t clamped = std::min(std::max(unclamped, min_val), max_val);
+50709:     output_data[i] = clamped;
+50710:   }
+50711: }
+50712: 
+50713: 
+50714: template <typename InputT, typename OutputT>
+50715: inline void PerChannelQuantize(
+50716:     const tflite::PerChannelQuantizationParams& op_params,
+50717:     const RuntimeShape& input_shape, const InputT* input_data,
+50718:     const RuntimeShape& output_shape, OutputT* output_data) {
+50719: 
+50720:   MatchingFlatSize(input_shape, output_shape);
+50721: 
+50722:   const int32_t* zero_point = op_params.zero_point;
+50723:   const float* scale = op_params.scale;
+
+===== 4. BUILD RELEASE FLAGS =====
+157:  FLAGS = -DTF_LITE_SHOW_MEMORY_USE -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -fcheck-new -std=c++17 -Wno-register -fno-exceptions -fno-rtti -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections
+165:  FLAGS = -DTF_LITE_SHOW_MEMORY_USE -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -fcheck-new -std=c++17 -Wno-register -fno-exceptions -fno-rtti -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections
+173:  FLAGS = -DTF_LITE_SHOW_MEMORY_USE -Wno-psabi -O3 -DNDEBUG -fno-strict-aliasing -Os -fcheck-new -std=c++17 -Wno-register -fno-exceptions -fno-rtti -imacros /home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h -fno-common -g -gdwarf-4 -fdiagnostics-color=always -mcpu=cortex-m55 -mthumb -mabi=aapcs -mfpu=auto -mfloat-abi=hard -mfp16-format=ieee --sysroot=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi -imacros /home/user/sdk-alif/zephyr/include/zephyr/toolchain/zephyr_stdint.h -Wall -Wformat -Wformat-security -Wno-format-zero-length -Wdouble-promotion -Wpointer-arith -Wexpansion-to-defined -Wno-unused-but-set-variable -fno-pic -fno-pie -fno-asynchronous-unwind-tables -fno-reorder-functions --param=min-pagesize=0 -fno-defer-pop -fmacro-prefix-map=/home/user/sdk-alif/beeinventor/test_heatstroke=CMAKE_SOURCE_DIR -fmacro-prefix-map=/home/user/sdk-alif/zephyr=ZEPHYR_BASE -fmacro-prefix-map=/home/user/sdk-alif=WEST_TOPDIR -ffunction-sections -fdata-sections
+
+===== END =====
