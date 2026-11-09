@@ -1,0 +1,1083 @@
+============================================================
+TFLM ETHOS-U AND PLANNER MEMORY AUDIT
+============================================================
+
+1. Complete static memory-plan construction
+  if (compression_metadata == nullptr) {
+    // no compression metadata is available
+    return kTfLiteOk;
+  }
+  if (compression_metadata->subgraphs() == nullptr) {
+    MicroPrintf("Compression: invalid Subgraph vector");
+    return kTfLiteError;
+  }
+  if (compression_metadata->subgraphs()->size() == 0) {
+    MicroPrintf("Compression: zero length Subgraph vector");
+    return kTfLiteError;
+  }
+
+  for (size_t subgraph_index = 0;
+       subgraph_index < compression_metadata->subgraphs()->size();
+       subgraph_index++) {
+    auto subgraph = compression_metadata->subgraphs()->Get(subgraph_index);
+
+    if (subgraph->lut_tensors() == nullptr) {
+      MicroPrintf("Compression: invalid LutTensor vector");
+      return kTfLiteError;
+    }
+    if (subgraph->lut_tensors()->size() == 0) {
+      MicroPrintf("Compression: zero length LutTensor vector");
+      return kTfLiteError;
+    }
+
+    for (size_t lut_tensors_index = 0;
+         lut_tensors_index < subgraph->lut_tensors()->size();
+         lut_tensors_index++) {
+      auto lut_tensor = subgraph->lut_tensors()->Get(lut_tensors_index);
+
+      CompressionTensorData* ctd = reinterpret_cast<CompressionTensorData*>(
+          persistent_buffer_allocator_->AllocatePersistentBuffer(
+              sizeof(CompressionTensorData), alignof(CompressionTensorData)));
+      if (ctd == nullptr) {
+        MicroPrintf(
+            "Compressions: failed to allocate memory for "
+            "CompressionTensorData, %d bytes required",
+            sizeof(CompressionTensorData));
+        return kTfLiteError;
+      }
+
+      LookupTableData* lut_table = reinterpret_cast<LookupTableData*>(
+          persistent_buffer_allocator_->AllocatePersistentBuffer(
+              sizeof(LookupTableData), alignof(LookupTableData)));
+      if (lut_table == nullptr) {
+        MicroPrintf(
+            "Compressions: failed to allocate memory for LookupTableData, "
+            "%d bytes required",
+            sizeof(LookupTableData));
+        return kTfLiteError;
+      }
+      ctd->data.lut_data = lut_table;
+
+      TfLiteStatus status =
+          internal::InitializeCompressionTensorDataFromFlatbuffer(
+              *model, subgraph_index, *lut_tensor, ctd);
+      if (status != kTfLiteOk) {
+        MicroPrintf("Compression: failed to initialize data for LutTensor %u",
+                    lut_tensors_index);
+        return kTfLiteError;
+      }
+
+      if (subgraph_allocations[subgraph_index].compressed.tensors == nullptr) {
+        size_t alloc_count =
+            model->subgraphs()->Get(subgraph_index)->tensors()->size();
+        const CompressionTensorData** tensors =
+            reinterpret_cast<const CompressionTensorData**>(
+                persistent_buffer_allocator_->AllocatePersistentBuffer(
+                    sizeof(CompressionTensorData*) * alloc_count,
+                    alignof(CompressionTensorData*)));
+        if (tensors == nullptr) {
+          MicroPrintf(
+              "Compression: failed to allocate memory for compression tensor "
+              "list, %d bytes required",
+              sizeof(CompressionTensorData*) * alloc_count);
+          return kTfLiteError;
+        }
+
+        subgraph_allocations[subgraph_index].compressed.tensors = tensors;
+        std::fill(tensors, tensors + alloc_count, nullptr);
+      }
+
+      const size_t tensor_index = lut_tensor->tensor();
+      if (subgraph_allocations[subgraph_index]
+              .compressed.tensors[tensor_index] != nullptr) {
+        MicroPrintf("Compression: duplicate LutTensor subgraph %u tensor %u",
+                    subgraph_index, tensor_index);
+        return kTfLiteError;
+      } else {
+        subgraph_allocations[subgraph_index].compressed.tensors[tensor_index] =
+            ctd;
+      }
+    }
+  }
+
+  return kTfLiteOk;
+}
+
+#endif  // USE_TFLM_COMPRESSION
+
+TfLiteStatus MicroAllocator::AllocateTfLiteEvalTensors(
+    const Model* model, SubgraphAllocations* subgraph_allocations) {
+  TFLITE_DCHECK(subgraph_allocations != nullptr);
+
+  for (size_t subgraph_idx = 0; subgraph_idx < model->subgraphs()->size();
+       subgraph_idx++) {
+    const SubGraph* subgraph = model->subgraphs()->Get(subgraph_idx);
+    TFLITE_DCHECK(subgraph != nullptr);
+
+    size_t alloc_count = subgraph->tensors()->size();
+    TfLiteEvalTensor* tensors = reinterpret_cast<TfLiteEvalTensor*>(
+        persistent_buffer_allocator_->AllocatePersistentBuffer(
+            sizeof(TfLiteEvalTensor) * alloc_count, alignof(TfLiteEvalTensor)));
+    if (tensors == nullptr) {
+      MicroPrintf(
+          "Failed to allocate memory for context->eval_tensors, "
+          "%d bytes required",
+          sizeof(TfLiteEvalTensor) * alloc_count);
+      return kTfLiteError;
+    }
+
+    for (size_t i = 0; i < alloc_count; ++i) {
+      TfLiteStatus status = internal::InitializeTfLiteEvalTensorFromFlatbuffer(
+          *subgraph->tensors()->Get(i), model->buffers(), &tensors[i]);
+      if (status != kTfLiteOk) {
+        MicroPrintf("Failed to initialize tensor %d", i);
+        return kTfLiteError;
+      }
+    }
+    subgraph_allocations[subgraph_idx].tensors = tensors;
+  }
+  return kTfLiteOk;
+}
+
+TfLiteStatus MicroAllocator::AllocateVariables(
+    const SubGraph* subgraph, TfLiteEvalTensor* eval_tensors,
+    const int32_t* offline_planner_offsets) {
+  for (size_t i = 0; i < subgraph->tensors()->size(); ++i) {
+    auto* tensor = subgraph->tensors()->Get(i);
+    if (tensor->is_variable()) {
+      if (offline_planner_offsets == nullptr ||
+          offline_planner_offsets[i] == kOnlinePlannedBuffer) {
+        size_t buffer_size;
+        TF_LITE_ENSURE_STATUS(
+            TfLiteEvalTensorByteLength(&eval_tensors[i], &buffer_size));
+
+        eval_tensors[i].data.data =
+            persistent_buffer_allocator_->AllocatePersistentBuffer(
+                buffer_size, MicroArenaBufferAlignment());
+
+        if (eval_tensors[i].data.data == nullptr) {
+          MicroPrintf("Failed to allocate variable tensor of size %d",
+                      buffer_size);
+          return kTfLiteError;
+        }
+      }
+    }
+  }
+  return kTfLiteOk;
+}
+
+TfLiteTensor* MicroAllocator::AllocatePersistentTfLiteTensorInternal() {
+  return reinterpret_cast<TfLiteTensor*>(
+      persistent_buffer_allocator_->AllocatePersistentBuffer(
+          sizeof(TfLiteTensor), alignof(TfLiteTensor)));
+}
+
+TfLiteStatus MicroAllocator::PopulateTfLiteTensorFromFlatbuffer(
+    const Model* model, TfLiteTensor* tensor, int tensor_index,
+    int subgraph_idx, bool allocate_temp) {
+  // TODO(b/162311891): This method serves as a stub to ensure quantized
+  // allocations in the tail can be recorded. Once the interpreter has APIs for
+  // accessing buffers on TfLiteEvalTensor this method can be dropped.
+  return internal::InitializeTfLiteTensorFromFlatbuffer(
+      persistent_buffer_allocator_, non_persistent_buffer_allocator_,
+      allocate_temp,
+      *model->subgraphs()->Get(subgraph_idx)->tensors()->Get(tensor_index),
+      model->buffers(), tensor);
+}
+
+TfLiteStatus MicroAllocator::CommitStaticMemoryPlan(
+    const Model* model, SubgraphAllocations* allocations,
+    ScratchBufferHandle* scratch_buffer_handles) {
+  size_t head_usage = 0;
+  // Create static memory plan
+  // 1. Calculate AllocationInfo to know the lifetime of each tensor/buffer.
+  // 2. Add them into the planner (such as the GreedyMemoryPlanner).
+  // 3. Static memory planning using the planner.
+  // 4. Set tensor/buffer pointers based on the offsets from the previous step.
+  //
+  // Note that AllocationInfo is only needed for creating the plan. It will be
+  // allocated from the temp section and cleaned up at the bottom of this
+  // function.
+
+  // Use the AllocationInfoBuilder class to help determine where buffers are
+  // used in the subgraph.
+  AllocationInfoBuilder builder(model, non_persistent_buffer_allocator_);
+  TF_LITE_ENSURE_STATUS(
+      builder.CreateAllocationInfo(scratch_buffer_request_count_));
+
+  const int32_t* offline_planner_offsets = nullptr;
+  TF_LITE_ENSURE_STATUS(
+      builder.GetOfflinePlannedOffsets(&offline_planner_offsets));
+
+  // We allocate buffers for variable tensors here since the offline planner
+  // offsets are conviently available here.
+  for (size_t subgraph_idx = 0; subgraph_idx < model->subgraphs()->size();
+       subgraph_idx++) {
+    const SubGraph* subgraph = model->subgraphs()->Get(subgraph_idx);
+    TFLITE_DCHECK(subgraph != nullptr);
+    TF_LITE_ENSURE_STATUS(AllocateVariables(
+        subgraph, allocations[subgraph_idx].tensors, offline_planner_offsets));
+  }
+
+  TF_LITE_ENSURE_STATUS(
+      builder.InitializeAllocationInfo(offline_planner_offsets, allocations));
+
+  internal::ScratchBufferRequest* scratch_buffer_requests =
+      GetScratchBufferRequests();
+  TF_LITE_ENSURE_STATUS(builder.MarkAllocationLifetimes(
+      0, scratch_buffer_requests, scratch_buffer_handles, allocations));
+  int allocation_info_count = builder.AllocationCount();
+  AllocationInfo* allocation_info = builder.Finish();
+
+  // Remaining arena size that memory planner can use for calculating offsets.
+  size_t remaining_arena_size =
+      non_persistent_buffer_allocator_->GetAvailableMemory(
+          MicroArenaBufferAlignment());
+  uint8_t* planner_arena = non_persistent_buffer_allocator_->AllocateTemp(
+      remaining_arena_size, MicroArenaBufferAlignment());
+
+  if (planner_arena == nullptr) {
+    return kTfLiteError;
+  }
+
+  memory_planner_->Init(planner_arena, remaining_arena_size);
+  TF_LITE_ENSURE_STATUS(
+      CreatePlan(memory_planner_, allocation_info, allocation_info_count));
+
+  // Commit the plan.
+  TF_LITE_ENSURE_STATUS(
+      CommitPlan(memory_planner_,
+                 non_persistent_buffer_allocator_->GetOverlayMemoryAddress(),
+                 allocation_info, allocation_info_count));
+
+  // Reset all temp allocations used above:
+  builder.FreeAllocationInfo();
+  non_persistent_buffer_allocator_->DeallocateTemp(planner_arena);
+  TF_LITE_ENSURE_STATUS(
+      non_persistent_buffer_allocator_->ResetTempAllocations());
+  TF_LITE_ENSURE_STATUS(
+      non_persistent_buffer_allocator_->DeallocateResizableBuffer(
+          scratch_buffer_head_));
+
+#ifdef TF_LITE_SHOW_MEMORY_USE
+  memory_planner_->PrintMemoryPlan();
+#endif
+  head_usage = memory_planner_->GetMaximumMemorySize();
+
+  // The head is used to store memory plans for one model at a time during the
+  // model preparation stage, and is re-purposed to store scratch buffer handles
+  // during model invocation. The head must be as large as the greater of the
+  // largest model memory plan's size and the total space required for all
+  // scratch buffer handles.
+  if (max_head_buffer_usage_ < head_usage) {
+    max_head_buffer_usage_ = head_usage;
+  }
+
+  // The head is used for storing scratch buffer allocations before finalizing a
+  // memory plan in this function. Ensure that the head is set to the largest
+  // memory plan sent through the allocator:
+  TF_LITE_ENSURE_STATUS(
+      non_persistent_buffer_allocator_->ReserveNonPersistentOverlayMemory(
+          max_head_buffer_usage_, MicroArenaBufferAlignment()));
+  return kTfLiteOk;
+}
+
+TfLiteStatus MicroAllocator::AllocateScratchBufferHandles(
+    ScratchBufferHandle** scratch_buffer_handles, size_t handle_count) {
+
+2. Memory planner maximum-size implementation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-301-  virtual TfLiteTensor* AllocatePersistentTfLiteTensorInternal();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-302-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-303-  // Populates a TfLiteTensor struct with data from the model flatbuffer. Any
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-304-  // quantization data is allocated from either the tail (persistent) or temp
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-305-  // sections of the arena based on the allocation flag.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-306-  virtual TfLiteStatus PopulateTfLiteTensorFromFlatbuffer(const Model* model,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-307-                                                          TfLiteTensor* tensor,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-308-                                                          int tensor_index,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-309-                                                          int subgraph_idx,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-310-                                                          bool allocate_temp);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-311-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-312- private:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h:313:  // Commits a memory plan for all non-persistent buffer allocations in the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-314-  // 'head' section of the memory arena. The eval_tensors pointer is the list of
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-315-  // pre-allocated TfLiteEvalTensor structs that will point to the buffers that
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-316-  // will be allocated into the head section in this function call. The
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-317-  // scratch_buffer_handles pointer is the array of pre-allocated
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-318-  // ScratchBufferHandle structs that will point to allocated buffers also in
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-319-  // the head section.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h:320:  virtual TfLiteStatus CommitStaticMemoryPlan(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-321-      const Model* model, SubgraphAllocations* allocations,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-322-      ScratchBufferHandle* scratch_buffer_handles);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-323-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-324-  // Allocates an array of ScratchBufferHandle structs in the tail section for a
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-325-  // given number of handles.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-326-  virtual TfLiteStatus AllocateScratchBufferHandles(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-327-      ScratchBufferHandle** scratch_buffer_handles, size_t handle_count);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-328-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-329-  // Clears all internal scratch buffer request counts and resets the head to
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-330-  // prepare for kernels to request scratch buffer data when a model is
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-331-  // preparing.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-332-  TfLiteStatus InitScratchBufferData();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-333-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-334-  // Returns the pointer for the array of ScratchBufferRequest allocations in
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-335-  // the head section.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-336-  internal::ScratchBufferRequest* GetScratchBufferRequests();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-337-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-338-  // A simple memory allocator that always allocate from the arena tail or head.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-339-  INonPersistentBufferAllocator* non_persistent_buffer_allocator_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-340-  IPersistentBufferAllocator* persistent_buffer_allocator_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-341-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-342-  // Allocator used to allocate persistent builtin data.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-343-  TfLiteBridgeBuiltinDataAllocator* builtin_data_allocator_ =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-344-      nullptr;  // Initialized as nullptr to prevent any possible issues related
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-345-                // to accessing uninitialized memory.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-346-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-347-  // Activation buffer memory planner.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-348-  MicroMemoryPlanner* memory_planner_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-349-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-350-  bool model_is_allocating_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-351-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-352-  // Holds the number of ScratchBufferRequest instances stored in the head
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-353-  // section when a model is allocating.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-354-  size_t scratch_buffer_request_count_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h-355-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-12-See the License for the specific language governing permissions and
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-13-limitations under the License.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-14-==============================================================================*/
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-15-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-16-#include "tensorflow/lite/micro/memory_planner/linear_memory_planner.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-17-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-18-#include "tensorflow/lite/micro/testing/micro_test.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-19-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-20-TF_LITE_MICRO_TESTS_BEGIN
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-21-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-22-TF_LITE_MICRO_TEST(TestBasics) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-23-  tflite::LinearMemoryPlanner planner;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:24:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(10, 0, 1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:25:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(20, 1, 2));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-26-  TF_LITE_MICRO_EXPECT_EQ(static_cast<size_t>(30),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:27:                          planner.GetMaximumMemorySize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-28-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-29-  int offset = -1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-30-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.GetOffsetForBuffer(0, &offset));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-31-  TF_LITE_MICRO_EXPECT_EQ(0, offset);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-32-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-33-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.GetOffsetForBuffer(1, &offset));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-34-  TF_LITE_MICRO_EXPECT_EQ(10, offset);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-35-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-36-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-37-TF_LITE_MICRO_TEST(TestErrorHandling) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-38-  tflite::LinearMemoryPlanner planner;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:39:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(10, 0, 1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-40-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-41-  int offset = -1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-42-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteError, planner.GetOffsetForBuffer(1, &offset));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-43-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-44-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-45-TF_LITE_MICRO_TEST(TestPersonDetectionModel) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-46-  tflite::LinearMemoryPlanner planner;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:47:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(9216, 0, 29));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:48:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(3, 28, 29));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:49:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(256, 27, 28));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:50:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(2304, 26, 27));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:51:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(2304, 25, 26));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:52:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(2304, 24, 25));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:53:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(1152, 23, 24));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:54:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 22, 23));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:55:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 21, 22));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:56:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 20, 21));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:57:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 19, 20));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:58:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 18, 19));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:59:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 17, 18));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:60:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 16, 17));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:61:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 15, 16));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:62:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 14, 15));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:63:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 13, 14));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:64:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 12, 13));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:65:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(2304, 11, 12));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:66:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(9216, 10, 11));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:67:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(9216, 9, 10));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:68:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(9216, 8, 9));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:69:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(4608, 7, 8));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:70:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(18432, 6, 7));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:71:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(18432, 5, 6));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:72:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(18432, 4, 5));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:73:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(9216, 3, 4));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:74:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(36864, 2, 3));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:75:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(18432, 1, 2));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:76:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(18432, 0, 1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-77-  TF_LITE_MICRO_EXPECT_EQ(static_cast<size_t>(241027),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc:78:                          planner.GetMaximumMemorySize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-79-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-80-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner_test.cc-81-TF_LITE_MICRO_TESTS_END
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-59-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.GetOffsetForBuffer(1, &offset1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-60-  TF_LITE_MICRO_EXPECT_EQ(kBuffer1Offset, offset1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-61-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-62-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-63-TF_LITE_MICRO_TEST(TestErrorGetOffsetForBuffer) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-64-  tflite::NonPersistentMemoryPlannerShim planner(CreateBufferPlan());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-65-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-66-  int offset = -1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-67-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteError,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-68-                          planner.GetOffsetForBuffer(kBufferCnt, &offset));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-69-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-70-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc:71:TF_LITE_MICRO_TEST(TestAddBufferSuccess) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-72-  tflite::NonPersistentMemoryPlannerShim planner(CreateBufferPlan());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-73-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc:74:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(/*size=*/10,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-75-                                                       /*first_time_used=*/0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-76-                                                       /*last_time_used=*/1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc:77:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(/*size=*/20,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-78-                                                       /*first_time_used=*/0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-79-                                                       /*last_time_used=*/1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-80-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-81-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc:82:TF_LITE_MICRO_TEST(TestAddBufferFailWhenExceedRange) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-83-  tflite::NonPersistentMemoryPlannerShim planner(CreateBufferPlan());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-84-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc:85:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(/*size=*/10,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-86-                                                       /*first_time_used=*/0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-87-                                                       /*last_time_used=*/1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc:88:  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, planner.AddBuffer(/*size=*/20,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-89-                                                       /*first_time_used=*/0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-90-                                                       /*last_time_used=*/1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-91-  TF_LITE_MICRO_EXPECT_EQ(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-92-      kTfLiteError,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc:93:      planner.AddBuffer(/*size=*/10,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-94-                        /*first_time_used=*/0, /*last_time_used=*/1));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-95-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-96-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-97-TF_LITE_MICRO_TEST(TestBasics) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-98-  tflite::NonPersistentMemoryPlannerShim planner(CreateBufferPlan());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-99-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-100-  TF_LITE_MICRO_EXPECT_EQ(static_cast<size_t>(0),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc:101:                          planner.GetMaximumMemorySize());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-102-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-103-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim_test.cc-104-TF_LITE_MICRO_TESTS_END
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-35-  // Offset is the minimum information needed for the buffer.  The user knows
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-36-  // the model and the size of each buffer in order to lay out a valid buffer
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-37-  // plan.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-38-  int32_t offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-39-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-40-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-41-// A structure describing the lay out of buffers inside an arena.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-42-struct BufferPlan {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-43-  // Number of buffers described in this plan.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-44-  int32_t buffer_count;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-45-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-46-  // Each element describes one buffer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h:47:  // Buffer index is implicit by the order of AddBuffer() call.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-48-  // Specifically, indices of activation tensors are 0 … N-1 where N is the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-49-  // number of activation tensors.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-50-  // The rest are based on the order of OP requests.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-51-  //
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-52-  // This is a flexible array member and should ideally be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-53-  // arena_entries[]; However, in order to support a variety
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-54-  // of compilers (and without needing to add ifdef's), we
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-55-  // are implementing the flexible array member with an array of
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-56-  // length 1 as the last member of the struct. When the size of a BufferPlan
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-57-  // is needed, use the provided SizeOfBufferPlan(buffer_count) that
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-58-  // accounts for this implemenatation caveat.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-59-  BufferDescriptor buffer_plan_entries[1];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-60-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-61-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-62-// Returns size of a BufferPlan given a buffer count. This size is compile time
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-63-// known if buffer_count is a compile time constant.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-64-constexpr size_t SizeOfBufferPlan(int32_t buffer_count) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-65-  // Minus 1 because a BufferPlan struct have a BufferDescriptor already.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-66-  // Max to provide a lower bound for the corner case of buffer_count = 0.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-67-  return sizeof(BufferPlan) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-68-         sizeof(BufferDescriptor) * Max(buffer_count - 1, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-69-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-70-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-71-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-72-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/memory_plan_struct.h-73-#endif  // TENSORFLOW_LITE_MICRO_MEMORY_PLANNER_MEMORY_PLAN_STRUCT_H_
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-101-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-102-*/
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-103-class NonPersistentMemoryPlannerShim : public MicroMemoryPlanner {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-104- public:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-105-  // Does not take ownership of buffer_plan, which must refer to a valid
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-106-  // BufferPlan that outlives this object.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-107-  explicit NonPersistentMemoryPlannerShim(const BufferPlan* buffer_plan);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-108-  ~NonPersistentMemoryPlannerShim() override;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-109-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-110-  TfLiteStatus GetOffsetForBuffer(int buffer_request_index,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-111-                                  int* offset) override;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-112-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h:113:  TfLiteStatus AddBuffer(int size, int first_time_used,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-114-                         int last_time_used) override;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h:115:  size_t GetMaximumMemorySize() override;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-116-  int GetBufferCount() override;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-117-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-118-  // Returns False because the NonPersistentMemoryPlannerShim doesn't preserves
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-119-  // all tensors after invocation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-120-  bool preserves_all_tensors() const override { return false; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-121-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-122- private:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-123-  const BufferPlan* buffer_plan_;  // not owned, can't be null
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-124-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-125-  // The number of buffers requested so far. Used for error checking.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-126-  int buffer_request_count_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-127-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-128-  TF_LITE_REMOVE_VIRTUAL_DELETE
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-129-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-130-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-131-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-132-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/non_persistent_buffer_planner_shim.h-133-#endif  // TENSORFLOW_LITE_MICRO_MEMORY_PLANNER_NON_PERSISTENT_MEMORY_PLANNER_SHIM_H__
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-17-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-18-#include "tensorflow/lite/micro/micro_log.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-19-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-20-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-21-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-22-// C++11 requires defining a constexpr static class member in a .cc file
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-23-constexpr int tflite::LinearMemoryPlanner::kMaxBufferCount;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-24-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-25-LinearMemoryPlanner::LinearMemoryPlanner()
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-26-    : current_buffer_count_(0), next_free_offset_(0) {}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-27-LinearMemoryPlanner::~LinearMemoryPlanner() {}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-28-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc:29:TfLiteStatus LinearMemoryPlanner::AddBuffer(int size, int first_time_used,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-30-                                            int last_time_used) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-31-  if (current_buffer_count_ >= kMaxBufferCount) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-32-    MicroPrintf("Too many buffers (max is %d)", kMaxBufferCount);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-33-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-34-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-35-  buffer_offsets_[current_buffer_count_] = next_free_offset_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-36-  next_free_offset_ += size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-37-  ++current_buffer_count_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-38-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-39-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-40-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc:41:size_t LinearMemoryPlanner::GetMaximumMemorySize() { return next_free_offset_; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-42-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-43-int LinearMemoryPlanner::GetBufferCount() { return current_buffer_count_; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-44-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-45-TfLiteStatus LinearMemoryPlanner::GetOffsetForBuffer(int buffer_index,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-46-                                                     int* offset) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-47-  if ((buffer_index < 0) || (buffer_index >= current_buffer_count_)) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-48-    MicroPrintf("buffer index %d is outside range 0 to %d", buffer_index,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-49-                current_buffer_count_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-50-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-51-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-52-  *offset = buffer_offsets_[buffer_index];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-53-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-54-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-55-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/linear_memory_planner.cc-56-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-18-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-19-#include "tensorflow/lite/c/common.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-20-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-21-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-22-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-23-// Interface class for planning the layout of memory buffers during the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-24-// execution of a graph.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-25-// It's designed to be used by a client that iterates in any order through the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-26-// buffers it wants to lay out, and then calls the getter functions for
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-27-// information about the calculated layout. For example:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_planner/micro_memory_planner.h-28-//
+
+3. Ethos-U kernel source locations
+/home/user/sdk-alif/alif/subsys/modules/ethosu/shell/src/ethosu_shell.cpp
+/home/user/sdk-alif/build/generated/src/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite.cc
+/home/user/sdk-alif/build_asr/generated/src/wav2letter_pruned_int8_vela.tflite.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethos_u/ethosu.cc
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/external/grpc/src/core/util/gethostname.h
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/tensorflow/include/external/curl/lib/curl_gethostname.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu_ta/include/ethosu_ta_init.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu/include/ethosu_profiler.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu/include/ethosu_mem_config.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu/include/ethosu_cpu_cache.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu/include/ethosu_npu_init.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/include/ethosu_types.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/include/pmu_ethosu.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/include/ethosu_driver.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu_log.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu85_interface.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu_config_u85.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu65_interface.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu_interface.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu_config_u55.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu_device.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu_config_u65.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu_config.h
+/home/user/sdk-alif/modules/hal/infineon/mtb-dsl-pse8xxgp/pdl/drivers/third_party/COMPONENT_U55/src/ethosu55_interface.h
+/home/user/sdk-alif/modules/hal/ethos_u/include/ethosu_types.h
+/home/user/sdk-alif/modules/hal/ethos_u/include/pmu_ethosu.h
+/home/user/sdk-alif/modules/hal/ethos_u/include/ethosu_driver.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_log.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu85_interface.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_config_u85.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu65_interface.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_interface.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_config_u55.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_device.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_config_u65.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/runtime/EthosUBackend_Cortex_M.cpp
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/runtime/VelaBinStream.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/runtime/EthosUBackend_IoMemcpy.cpp
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/runtime/EthosUBackend_Internal.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/runtime/VelaBinStream.cpp
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/runtime/EthosUBackend.cpp
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/runtime/EthosUBackend_Cortex_A.cpp
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/include/ethosu_types.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/include/pmu_ethosu.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/include/ethosu_driver.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_log.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu85_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_config_u85.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu65_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_config_u55.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_device.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_config_u65.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu55_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/vulkan/runtime/graph/ops/impl/NativeLayerNorm.cpp
+/home/user/sdk-alif/modules/lib/executorch/backends/vulkan/runtime/ResolveLayouts.cpp
+/home/user/sdk-alif/modules/lib/executorch/backends/vulkan/runtime/ResolveLayouts.h
+
+4. Ethos-U Prepare and scratch-buffer allocation
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-411-    VerifyOrQuit(srpClient->IsAutoStartModeEnabled());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-412-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-413-    AdvanceTime(2000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-414-    VerifyOrQuit(srpClient->IsRunning());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-415-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-416-    SuccessOrQuit(srpClient->SetHostName(kHostName));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-417-    SuccessOrQuit(srpClient->EnableAutoHostAddress());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-418-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-419-    //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-420-    // Register a service, validate that update handler is called.
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-421-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-422-    SuccessOrQuit(srpClient->AddService(service1));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-423-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-424-    sUpdateHandlerMode       = kAccept;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-425-    sProcessedUpdateCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-426-    sProcessedClientCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-427-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-428-    AdvanceTime(2 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-429-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-430-    VerifyOrQuit(sProcessedUpdateCallback);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-431-    VerifyOrQuit(sProcessedClientCallback);
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-534-    VerifyOrQuit(srpClient->IsAutoStartModeEnabled());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-535-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-536-    AdvanceTime(15 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-537-    VerifyOrQuit(srpClient->IsRunning());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-538-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-539-    SuccessOrQuit(srpClient->SetHostName(kHostName));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-540-    SuccessOrQuit(srpClient->EnableAutoHostAddress());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-541-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-542-    sUpdateHandlerMode = kReject;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-543-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-544-    //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-545-    // Register a service, validate that update handler is called
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-546-    // and rejected and no service is registered.
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-547-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-548-    SuccessOrQuit(srpClient->AddService(service1));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-549-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-550-    sProcessedUpdateCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-551-    sProcessedClientCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-552-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-553-    AdvanceTime(2 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-554-
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-646-    VerifyOrQuit(srpClient->IsAutoStartModeEnabled());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-647-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-648-    AdvanceTime(15 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-649-    VerifyOrQuit(srpClient->IsRunning());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-650-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-651-    SuccessOrQuit(srpClient->SetHostName(kHostName));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-652-    SuccessOrQuit(srpClient->EnableAutoHostAddress());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-653-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-654-    sUpdateHandlerMode = kIgnore;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-655-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-656-    //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-657-    // Register a service, validate that update handler is called
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-658-    // and ignored the update and no service is registered.
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-659-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-660-    SuccessOrQuit(srpClient->AddService(service1));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-661-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-662-    sProcessedUpdateCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-663-    sProcessedClientCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-664-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-665-    AdvanceTime(2 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-666-
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-760-    VerifyOrQuit(srpClient->IsAutoStartModeEnabled());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-761-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-762-    AdvanceTime(15 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-763-    VerifyOrQuit(srpClient->IsRunning());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-764-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-765-    SuccessOrQuit(srpClient->SetHostName(kHostName));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-766-    SuccessOrQuit(srpClient->EnableAutoHostAddress());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-767-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-768-    //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-769-    // Register two services, validate that update handler is called.
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-770-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-771-    SuccessOrQuit(srpClient->AddService(service1));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-772-    SuccessOrQuit(srpClient->AddService(service2));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-773-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-774-    sUpdateHandlerMode       = kAccept;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-775-    sProcessedUpdateCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-776-    sProcessedClientCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-777-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-778-    AdvanceTime(2 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-779-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-780-    VerifyOrQuit(sProcessedUpdateCallback);
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-893-    VerifyOrQuit(srpClient->IsAutoStartModeEnabled());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-894-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-895-    AdvanceTime(15 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-896-    VerifyOrQuit(srpClient->IsRunning());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-897-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-898-    SuccessOrQuit(srpClient->SetHostName(kHostName));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-899-    SuccessOrQuit(srpClient->EnableAutoHostAddress());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-900-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-901-    sUpdateHandlerMode = kAccept;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-902-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-903-    //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-904-    // Change default lease intervals on SRP client and enable
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1054-    Srp::Client::Service service2;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1055-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1056-    Log("--------------------------------------------------------------------------------------------");
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1057-    Log("TestSrpClientDelayedResponse");
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1058-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1059-    InitTest();
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1060-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1061-    srpClient = &sInstance->Get<Srp::Client>();
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1102-        SuccessOrQuit(srpClient->Start(serverSockAddr));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1103-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1104-        //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1105-        // Register a service
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1106-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1107-        SuccessOrQuit(srpClient->SetHostName(kHostName));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1108-        SuccessOrQuit(srpClient->EnableAutoHostAddress());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1109-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp:1110:        PrepareService1(service1);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1111-        SuccessOrQuit(srpClient->AddService(service1));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1112-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1113-        //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1114-        // Wait for short time and make sure server receives an SRP
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1115-        // update message from client.
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1116-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1117-        AdvanceTime(1 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1118-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1119-        VerifyOrQuit(sServerRxCount == 1);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1120-        firstMsgId = sServerLastMsgId;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1121-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1122-        switch (testIter)
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1145-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1146-        AdvanceTime(20 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1147-        VerifyOrQuit(sServerRxCount > 1);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1148-        VerifyOrQuit(sServerLastMsgId != firstMsgId);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1149-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1150-        VerifyOrQuit(srpClient->GetHostInfo().GetState() != Srp::Client::kRegistered);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1151-        VerifyOrQuit(service1.GetState() != Srp::Client::kRegistered);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1152-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1153-        //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1154-        // Now send a delayed response from server using the first
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1155-        // message ID.
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1156-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1157-        response = udpSocket.NewMessage();
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1158-        VerifyOrQuit(response != nullptr);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1159-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1160-        Log("Sending response with msg-id: 0x%x", firstMsgId);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1161-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1162-        header.SetMessageId(firstMsgId);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1163-        header.SetType(Dns::UpdateHeader::kTypeResponse);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1164-        header.SetResponseCode(Dns::UpdateHeader::kResponseSuccess);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1165-        SuccessOrQuit(response->Append(header));
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1176-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1177-        switch (testIter)
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1178-        {
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1179-        case 0:
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1180-        case 1:
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1181-            VerifyOrQuit(srpClient->GetHostInfo().GetState() == Srp::Client::kRegistered);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1182-            VerifyOrQuit(service1.GetState() == Srp::Client::kRegistered);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1183-            break;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_server.cpp-1184-        case 2:
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-577-{
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-578-    Log("HandleSrpClientCallback() called with error %s", ErrorToString(aError));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-579-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-580-    VerifyOrQuit(aContext == sInstance);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-581-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-582-    sProcessedClientCallback = true;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-583-    sLastClientCallbackError = aError;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-584-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-585-    OT_UNUSED_VARIABLE(aHostInfo);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-586-    OT_UNUSED_VARIABLE(aServices);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-587-    OT_UNUSED_VARIABLE(aRemovedServices);
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1056-    VerifyOrQuit(sLastClientCallbackError == kErrorNone);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1057-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1058-    Log("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ");
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1059-    Log("Re-add service 1 on client and register with server");
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1060-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1061-    SuccessOrQuit(srpClient->SetHostName(kHostName));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1062-    SuccessOrQuit(srpClient->EnableAutoHostAddress());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp:1063:    PrepareService1(service1);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1064-    SuccessOrQuit(srpClient->AddService(service1));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1065-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1066-    sProcessedClientCallback = false;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1067-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1068-    AdvanceTime(2 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1069-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1070-    // We should see one host register and one service register
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1071-    // on DNS-SD APIs. Keys are already registered.
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1072-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1073-    dnssdCounts.mHostReg++;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1074-    dnssdCounts.mServiceReg++;
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1075-    VerifyDnnsdRequests(dnssdCounts);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_srp_adv_proxy.cpp-1076-
+--
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-636-    VerifyOrQuit(srpClient->IsAutoStartModeEnabled());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-637-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-638-    AdvanceTime(2000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-639-    VerifyOrQuit(srpClient->IsRunning());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-640-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-641-    SuccessOrQuit(srpClient->SetHostName(kHostName));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-642-    SuccessOrQuit(srpClient->EnableAutoHostAddress());
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-643-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-644-    //- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-645-    // Register two services on SRP.
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-646-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-647-    SuccessOrQuit(srpClient->AddService(service1));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-648-    SuccessOrQuit(srpClient->AddService(service2));
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-649-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-650-    AdvanceTime(2 * 1000);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-651-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-652-    VerifyOrQuit(service1.GetState() == Srp::Client::kRegistered);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-653-    VerifyOrQuit(service2.GetState() == Srp::Client::kRegistered);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-654-    ValidateHost(*srpServer, kHostName);
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-655-
+/home/user/sdk-alif/modules/lib/openthread/tests/unit/test_dns_client.cpp-656-    Log("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - ");
+--
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-192- * Starts the SRP client operation.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-193- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h:194: * SRP client will prepare and send "SRP Update" message to the SRP server once all the following conditions are met:
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-195- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-196- *  - The SRP client is started - `otSrpClientStart()` is called.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-197- *  - Host name is set - `otSrpClientSetHostName()` is called.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-198- *  - At least one host IPv6 address is set - `otSrpClientSetHostAddresses()` is called.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-199- *  - At least one service is added - `otSrpClientAddService()` is called.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-200- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-201- * It does not matter in which order these functions are called. When all conditions are met, the SRP client will
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-202- * wait for a short delay before preparing an "SRP Update" message and sending it to server. This delay allows for user
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-203- * to add multiple services and/or IPv6 addresses before the first SRP Update message is sent (ensuring a single SRP
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-204- * Update is sent containing all the info). The config `OPENTHREAD_CONFIG_SRP_CLIENT_UPDATE_TX_DELAY` specifies the
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-205- * delay interval.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-206- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-207- * @param[in] aInstance        A pointer to the OpenThread instance.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-208- * @param[in] aServerSockAddr  The socket address (IPv6 address and port number) of the SRP server.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-209- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-210- * @retval OT_ERROR_NONE       SRP client operation started successfully or it is already running with same server
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-211- *                             socket address and callback.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-212- * @retval OT_ERROR_BUSY       SRP client is busy running with a different socket address.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/srp_client.h-213- * @retval OT_ERROR_FAILED     Failed to open/connect the client's UDP socket.
+--
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-269- * @param[in]  aNameBufferSize   The size of @p aNameBuffer.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-270- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-271- * @retval OT_ERROR_NONE     The full host name was read successfully.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-272- * @retval OT_ERROR_NO_BUFS  The name does not fit in @p aNameBuffer.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-273- */
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-274-otError otDnsAddressResponseGetHostName(const otDnsAddressResponse *aResponse,
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-275-                                        char                       *aNameBuffer,
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-276-                                        uint16_t                    aNameBufferSize);
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-277-
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-278-/**
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-279- * Gets an IPv6 address associated with an address resolution DNS response.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-280- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-281- * MUST only be used from `otDnsAddressCallback`.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-282- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-283- * The response may include multiple IPv6 address records. @p aIndex can be used to iterate through the list of
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-284- * addresses. Index zero gets the first address and so on. When we reach end of the list, `OT_ERROR_NOT_FOUND` is
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-285- * returned.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-286- *
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-287- * @param[in]  aResponse     A pointer to the response.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-288- * @param[in]  aIndex        The address record index to retrieve.
+/home/user/sdk-alif/modules/lib/openthread/include/openthread/dns_client.h-289- * @param[out] aAddress      A pointer to a IPv6 address to output the address (MUST NOT be NULL).
+--
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-219-    }
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-220-
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-221-    ChipLogProgress(SoftwareUpdate, "HandleFinalize");
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-222-
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-223-    imageProcessor->ReleaseBlock();
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-224-    // Start from scratch
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-225-    imageProcessor->mParams.downloadedBytes = 0;
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-226-}
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-227-
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-228-void OTAImageProcessorImpl::HandleAbort(intptr_t context)
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-229-{
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-230-    auto * imageProcessor = reinterpret_cast<OTAImageProcessorImpl *>(context);
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-231-    if (imageProcessor == nullptr)
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-232-    {
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-233-        return;
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-234-    }
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-235-
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-236-    ChipLogProgress(SoftwareUpdate, "HandleAbort");
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-237-
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-238-    STM_EXT_FLASH_Delete_Image(EXTERNAL_FLASH_ADDRESS + SLOT_DWL_1_START, SLOT_SIZE(SLOT_DWL_1));
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-239-    STM_EXT_FLASH_Delete_Image(EXTERNAL_FLASH_ADDRESS + SLOT_DWL_4_START, SLOT_SIZE(SLOT_DWL_4));
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-240-    imageProcessor->ReleaseBlock();
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-241-    // Start from scratch
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-242-    imageProcessor->mParams.downloadedBytes = 0;
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-243-    mDownloadedBytesCPU2                    = 0;
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-244-    mSwitchDwlSlot                          = false; // start with dwl_slot1 for CPU1
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-245-}
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-246-
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-247-void OTAImageProcessorImpl::HandleProcessBlock(intptr_t context)
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-248-{
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-249-    STM_OTA_StatusTypeDef status;
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-250-    auto * imageProcessor = reinterpret_cast<OTAImageProcessorImpl *>(context);
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-251-
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-252-    if (imageProcessor == nullptr)
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-253-    {
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-254-        ChipLogError(SoftwareUpdate, "ImageProcessor context is null");
+/home/user/sdk-alif/modules/lib/matter/src/platform/stm32/OTAImageProcessorImpl.cpp-255-        return;
+--
+--
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-272-    }
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-273-
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-274-    ChipLogProgress(SoftwareUpdate, "Q: HandleAbort");
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-275-
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-276-    imageProcessor->ReleaseBlock();
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-277-    // Start from scratch
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-278-    imageProcessor->mParams.downloadedBytes = 0;
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-279-    qvCHIP_OtaResetProgressInfo();
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-280-}
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-281-
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-282-void OTAImageProcessorImpl::HandleProcessBlock(intptr_t context)
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-283-{
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-284-    auto * imageProcessor = reinterpret_cast<OTAImageProcessorImpl *>(context);
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-285-    if (imageProcessor == nullptr)
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-286-    {
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-287-        ChipLogError(SoftwareUpdate, "ImageProcessor context is null");
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-288-        return;
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-289-    }
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-290-    else if (imageProcessor->mDownloader == nullptr)
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-291-    {
+/home/user/sdk-alif/modules/lib/matter/src/platform/qpg/OTAImageProcessorImpl.cpp-292-        ChipLogError(SoftwareUpdate, "mDownloader is null");
+--
+/home/user/sdk-alif/modules/lib/executorch/examples/devtools/example_runner/example_runner.cpp-303-        file_data.data(),
+/home/user/sdk-alif/modules/lib/executorch/examples/devtools/example_runner/example_runner.cpp-304-        FLAGS_testset_idx,
+/home/user/sdk-alif/modules/lib/executorch/examples/devtools/example_runner/example_runner.cpp-305-        1e-3, // rtol
+/home/user/sdk-alif/modules/lib/executorch/examples/devtools/example_runner/example_runner.cpp-306-        1e-5 // atol
+--
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-78-#if defined(ET_ARM_BAREMETAL_FAST_SCRATCH_TEMP_ALLOCATOR_POOL_SIZE)
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-79-extern "C" {
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-80-size_t ethosu_fast_scratch_size =
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-81-    ET_ARM_BAREMETAL_FAST_SCRATCH_TEMP_ALLOCATOR_POOL_SIZE;
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-82-unsigned char __attribute__((section(".bss.ethosu_scratch"), aligned(16)))
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-83-dedicated_sram[ET_ARM_BAREMETAL_FAST_SCRATCH_TEMP_ALLOCATOR_POOL_SIZE];
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-84-unsigned char* ethosu_fast_scratch = dedicated_sram;
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-85-}
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-86-#endif
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-87-
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-88-#define MV2_NUM_OUTPUT_CLASSES 1000
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-89-#define MV2_TOP_K 5
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-90-
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-91-namespace {
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-92-
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp:93:Error prepare_input_tensors(
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-94-    Method& method,
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-95-    MemoryAllocator& allocator,
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-96-    const uint8_t* input_data,
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-97-    size_t input_size) {
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-98-  MethodMeta method_meta = method.method_meta();
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-99-  size_t num_inputs = method_meta.num_inputs();
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-100-  size_t tensor_inputs_seen = 0;
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-101-
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-102-  for (size_t i = 0; i < num_inputs; i++) {
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-103-    auto tag = method_meta.input_tag(i);
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-104-    if (!tag.ok()) {
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-105-      return tag.error();
+/home/user/sdk-alif/modules/lib/executorch/zephyr/samples/mv2-ethosu/src/main.cpp-106-    }
+
+5. Application custom kernel scratch requests
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-276-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-277-  const size_t stage_bytes =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-278-      static_cast<size_t>(time_steps) * batch_size *
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-279-      hidden * sizeof(float);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-280-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-281-  const size_t internal_bytes =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-282-      static_cast<size_t>(batch_size) * hidden * sizeof(float);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-283-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:284:  if (context->RequestScratchBufferInArena(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-285-          context, reverse_bytes, &op_data->reverse_input_buffer) !=
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-286-          kTfLiteOk ||
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:287:      context->RequestScratchBufferInArena(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-288-          context, stage_bytes, &op_data->stage_output_buffer) !=
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-289-          kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-290-    MicroPrintf("Heatstroke BiLSTM: scratch allocation failed");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-291-    return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-292-  }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-293-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-294-  // Match the four scratch buffers requested by TFLM's existing
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-295-  // unidirectional FP32 LSTM implementation.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-296-  for (int i = 0; i < 4; ++i) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:297:    if (context->RequestScratchBufferInArena(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-298-            context, internal_bytes,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-299-            &op_data->forward.buffer_indices[i]) != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-300-      MicroPrintf("Heatstroke BiLSTM: LSTM scratch allocation failed");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-301-      return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-302-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-303-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-304-    // Forward and backward passes execute sequentially, so they can
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-305-    // safely reuse the same four evaluator scratch buffers.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-306-    op_data->backward.buffer_indices[i] =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-307-        op_data->forward.buffer_indices[i];
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-308-  }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-309-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-310-  return kTfLiteOk;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-311-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-312-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-313-void PopulateDirectionContents(TfLiteContext* context,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-314-                               TfLiteNode* node,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-315-                               int input_weight_base,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-316-                               int recurrent_weight_base,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-317-                               int bias_base,
+
+6. Candidate model identity
+sha256sum: /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite: No such file or directory
+ls: cannot access '/home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite': No such file or directory
+
+7. Candidate model Ethos-U scratch tensor and operator references
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794211779.837387  135081 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794211779.837552  135081 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794211779.866643  135081 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794211780.646192  135081 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794211780.646482  135081 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+Traceback (most recent call last):
+  File "<stdin>", line 6, in <module>
+  File "/usr/lib/python3.12/pathlib.py", line 1019, in read_bytes
+    with self.open(mode='rb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1013, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite'
+
+============================================================
+AUDIT COMPLETE
+============================================================
