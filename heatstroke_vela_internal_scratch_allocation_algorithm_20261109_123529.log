@@ -1,0 +1,1557 @@
+===== VELA INTERNAL SCRATCH ALLOCATION ALGORITHM =====
+Mon Nov  9 12:35:29 PM HKT 2026
+Vela: 5.0.0
+
+===== 1. ALLOCATION-RELATED SOURCE FILES =====
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/greedy_allocation.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/hillclimb_allocation.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/TensorType.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/Tensor.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/TensorMap.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_allocator.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tosa/TosaTensor.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/rawdata_writer.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/live_range.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor_allocation.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py
+
+===== 2. ALL SCRATCH ALLOCATION REFERENCES =====
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py:53:    Scratch_fast = 4
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py:54:    Size = Scratch_fast + 1
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py:57:        return ("Unknown", "Permanent_NPU", "Permanent_CPU", "Scratch", "Scratch_fast", "Size")[self.value]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py:64:        return (MemType.Permanent_NPU, MemType.Permanent_CPU, MemType.Scratch, MemType.Scratch_fast)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py:114:    ScratchFast = 4
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py:121:        return ("Unknown", "Weights", "FeatureMap", "Scratch", "ScratchFast", "LUT", "FastStorageBias", "Size")[
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py:850:    def is_allocated_in_tensor_arena(self, scratch_tensor_mem_area: MemArea) -> bool:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py:851:        return (self.mem_area == scratch_tensor_mem_area) and (self.mem_type in (MemType.Scratch, MemType.Scratch_fast))
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:158:    def assign_buffers_to_tensors(self, tensors, scratch_tensor):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:159:        if scratch_tensor is not None:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:160:            scratch_tensor_mem_area = scratch_tensor.mem_area
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:162:            scratch_tensor_mem_area = None  # all tensors are initialised to MemArea.Unknown
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:168:            if tens.is_allocated_in_tensor_arena(scratch_tensor_mem_area) or tens.mem_type == MemType.Scratch_fast:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:405:        scratch_tensors = [tens for tens in all_tensors if tens.purpose is TensorPurpose.Scratch]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:407:        if len(scratch_tensors) == 0:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:408:            scratch_tensor = None
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:410:            assert len(scratch_tensors) == 1, "Multiple scratch tensors"
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:411:            scratch_tensor = scratch_tensors[0]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:414:        self.buffer_map = self.assign_buffers_to_tensors(all_tensors, scratch_tensor)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite_writer.py:507:                    if tens.mem_type in (MemType.Scratch, MemType.Scratch_fast):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:572:        memories_list = [(self.arch.fast_storage_mem_area, set((MemType.Scratch, MemType.Scratch_fast)))]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:693:        if weight_tensor and weight_tensor.mem_type not in (MemType.Scratch, MemType.Scratch_fast):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:891:        buffered_weight_tensor.mem_type = MemType.Scratch_fast
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1021:                    0 if ifm.mem_type not in (MemType.Scratch, MemType.Scratch_fast) else sched_op.ifm_size_in_bytes()
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1167:        memories_list = [(self.arch.fast_storage_mem_area, set((MemType.Scratch, MemType.Scratch_fast)))]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1247:                buffer_tens.mem_type = MemType.Scratch_fast
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1263:        fast_storage_type = MemType.Scratch_fast
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1285:        memories_list = [(fast_storage_mem_area, set((MemType.Scratch, MemType.Scratch_fast)))]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1450:    mem_type_set = set((MemType.Scratch, MemType.Scratch_fast))
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1481:        mem_alloc_scratch_fast = (arch.fast_storage_mem_area, set((MemType.Scratch_fast,)))
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1482:        mem_alloc_scratch = (arch.feature_map_storage_mem_area, set((MemType.Scratch,)))
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/scheduler.py:1487:        mem_alloc_scratch = (arch.feature_map_storage_mem_area, set((MemType.Scratch, MemType.Scratch_fast)))
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/compiler_driver.py:263:        scratch_tens.set_all_shapes([root_sg.memory_used_per_type.get(MemType.Scratch, 0)])
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/compiler_driver.py:265:        scratch_fast_tens.set_all_shapes([root_sg.memory_used_per_type.get(MemType.Scratch_fast, 0)])
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/high_level_command_to_npu_op.py:83:    ScratchFastTensor = 2  # base address for the Scratch_fast_tensor
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/high_level_command_to_npu_op.py:280:        MemType.Scratch: BasePointerIndex.ScratchTensor,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/high_level_command_to_npu_op.py:284:        base_ptr_idx_map[MemType.Scratch_fast] = BasePointerIndex.ScratchFastTensor
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/high_level_command_to_npu_op.py:286:        base_ptr_idx_map[MemType.Scratch_fast] = BasePointerIndex.ScratchTensor
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/vela.py:216:        if hasattr(sg, "scratch_tensor") and sg.scratch_tensor is not None:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/vela.py:217:            sg_tensors = sg.input_tensors + [sg.scratch_tensor] + sg.output_tensors
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:309:            TensorPurpose.Scratch: self.feature_map_storage_mem_area,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:310:            TensorPurpose.ScratchFast: self.fast_storage_mem_area,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:316:            TensorPurpose.FeatureMap: MemType.Scratch,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:317:            TensorPurpose.LUT: MemType.Scratch,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:318:            TensorPurpose.Scratch: MemType.Scratch,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:319:            TensorPurpose.ScratchFast: MemType.Scratch_fast,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:532:        if mem_type == MemType.Scratch_fast and self.is_spilling_enabled():
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:68:    scratch_size = sg.memory_used.get(scratch_area, 0)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:76:        sg.scratch_tensor = make_memory_tensor(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:77:            sg.name + "_scratch", scratch_area, MemType.Scratch, scratch_size, False, arch
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:79:        sg.scratch_tensor.purpose = TensorPurpose.Scratch
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:84:            sg.name + "_scratch_fast", scratch_fast_area, MemType.Scratch_fast, 0, False, arch
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:86:        sg.scratch_fast_tensor.purpose = TensorPurpose.ScratchFast
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:88:        sg.scratch_tensor = scratch_tens
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:89:        sg.scratch_tensor.shape[0] += scratch_size
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:105:        if ifm_tensor and ifm_tensor.mem_type not in (MemType.Scratch, MemType.Scratch_fast):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:107:        if ifm2_tensor and (ifm2_tensor.mem_type not in (MemType.Scratch, MemType.Scratch_fast)):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:118:    return sg.scratch_tensor, sg.scratch_fast_tensor, sg.flash_tensor
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:144:                        callee.scratch_tensor,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:151:                        if tens != callee.scratch_tensor and tens != callee.scratch_fast_tensor:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:158:                    if callee.scratch_tensor is not None:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:159:                        if callee.scratch_tensor.mem_area == MemArea.Sram:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/npu_serialisation.py:160:                            cps.sram_used += callee.scratch_tensor.storage_size()
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/rawdata_writer.py:92:            cmd_stream_tensor, weight_tensor, scratch_tensor, scratch_fast_tensor = custom_op.inputs[:4]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/rawdata_writer.py:94:            scratch_region = get_region(scratch_tensor.mem_type, arch)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/rawdata_writer.py:115:                scratch_shape=scratch_tensor.shape,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/rawdata_writer.py:117:                scratch_size=int(scratch_tensor.shape[0]),
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/rawdata_writer.py:149:        scratch_size=model.scratch.size,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor_allocation.py:174:        f"Allocation Peak Tensor Size:  {min_mem_usage_for_alloc:9d} ({min_mem_usage_for_alloc:#10x})"
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor_allocation.py:225:            mem_type = MemType.Scratch_fast if MemType.Scratch_fast in mem_type_set else list(mem_type_set)[0]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py:29:    if purpose in (TensorPurpose.FeatureMap, TensorPurpose.LUT, TensorPurpose.Scratch, TensorPurpose.ScratchFast):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py:57:        and purpose not in (TensorPurpose.Scratch, TensorPurpose.ScratchFast)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py:88:        scratch_tensor = None
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py:91:            scratch_tensor = op.inputs[2]  # should be existing scratch tensor
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py:92:            if scratch_tensor.name.endswith("_scratch"):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py:93:                scratch_tensor.purpose = TensorPurpose.Scratch
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py:98:                scratch_fast_tensor.purpose = TensorPurpose.ScratchFast
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py:100:        if scratch_tensor is None:
+
+===== 3. SCHEDULER FAST-STORAGE MEMORY CALCULATION =====
+--- scheduler.py lines 540,610 ---
+   540	                    op.requires_full_ofm = True
+   541	                if len(ps.primary_op.outputs) > 1 or len(ps.primary_op.outputs[0].consumer_list) > 1:
+   542	                    # Op has multiple outputs or consumers - requires full OFM
+   543	                    op.requires_full_ofm = True
+   544	
+   545	                # Check memory requirements if this Op requires any full FeatureMaps
+   546	                op_memory_req = 0
+   547	                if op.requires_full_ifm:
+   548	                    op_memory_req += op.ifm_size_in_bytes()
+   549	                if op.requires_full_ifm2:
+   550	                    op_memory_req += op.ifm2_size_in_bytes()
+   551	                if op.requires_full_ofm:
+   552	                    op_memory_req += op.ofm_size_in_bytes()
+   553	
+   554	                min_memory_req = max(op_memory_req, min_memory_req)
+   555	
+   556	        # Theoretical minimum required memory - used to guide the cascade building
+   557	        self.min_memory_req = min_memory_req
+   558	
+   559	    def create_initial_schedule(self) -> Schedule:
+   560	        """Creates an initial schedule with no cascading or buffering of any kind"""
+   561	        schedule = Schedule(self.sg, "MAX")
+   562	        verbose_progress = self.scheduler_options.verbose_progress
+   563	        for index, op in enumerate(self.sched_ops):
+   564	            progress_print(verbose_progress, "Processing SchedulerOp", index, self.sched_ops)
+   565	            cost = op.create_scheduler_info(self.nng, op.ofm.shape)
+   566	            cost.cycles = self.estimate_op_performance(op, cost.block_config, op.ofm.shape.depth)
+   567	            schedule.cost_map[op] = cost
+   568	
+   569	        return schedule
+   570	
+   571	    def update_op_memory_snapshot(self, schedule: Schedule):
+   572	        memories_list = [(self.arch.fast_storage_mem_area, set((MemType.Scratch, MemType.Scratch_fast)))]
+   573	        verbose_progress = self.scheduler_options.verbose_progress
+   574	        progress_print(verbose_progress, "")
+   575	        # Collect live ranges from tensors
+   576	        lr_graph = live_range.LiveRangeGraph()
+   577	        for mem_area, mem_type_set in memories_list:
+   578	            live_range.extract_live_ranges_from_schedule(self.sg, mem_area, mem_type_set, lr_graph, verbose_progress)
+   579	
+   580	        # Populate time-array with memory used by live ranges
+   581	        temporal_usage = lr_graph.get_temporal_memory_usage(self.arch.fast_storage_mem_area)
+   582	        schedule.memory_snapshot = temporal_usage
+   583	
+   584	        # Set the peak memory usage
+   585	        schedule.fast_storage_peak_usage = max(temporal_usage, default=0)
+   586	
+   587	    def estimate_op_performance(self, op: SchedulerOperation, block_config, ofm_depth):
+   588	        query = npu_performance.PerformanceQuery(op.op_type.npu_block_type)
+   589	        query.ifm_shape = op.ifm_read_shape
+   590	        query.ifm_memory_area = op.ifm.connection.parent_tens.mem_area
+   591	        query.ifm_bits = op.ifm.dtype.size_in_bits()
+   592	        query.ifm_format = op.ifm.format
+   593	        query.ifm2_shape = op.ifm2_read_shape
+   594	        query.ifm2_memory_area = op.ifm2 and op.ifm2.connection.parent_tens.mem_area
+   595	        query.ifm2_bits = op.ifm2 and op.ifm2.dtype.size_in_bits()
+   596	        query.ifm2_format = op.ifm2 and op.ifm2.format
+   597	        query.ofm_shape = op.ofm_write_shape.with_depth(ofm_depth)
+   598	        query.ofm_memory_area = op.ofm.connection.parent_tens.mem_area
+   599	        query.ofm_bits = op.ofm.dtype.size_in_bits()
+   600	        query.ofm_format = op.ofm.format
+   601	        if op.parent_op.bias:
+   602	            query.const_shape = Shape4D(1, 1, 1, op.ofm.shape.depth)
+   603	            query.const_memory_area = self.arch.fast_storage_mem_area
+   604	
+   605	        query.kernel = op.kernel
+   606	        query.config = block_config
+   607	
+   608	        return npu_performance.measure_cycle_cost(self.arch, op.op_type, op.activation and op.activation.op_type, query)
+   609	
+   610	    def estimate_element_access(self, op: SchedulerOperation, block_config, ofm_depth):
+--- scheduler.py lines 1135,1195 ---
+  1135	                del schedule.cascades[cascade_info.end]
+  1136	                # Update the sub-schedule Op and cascade costs to the full schedule
+  1137	                schedule.cost_map.update(opt_sub_schedule.cost_map)
+  1138	                schedule.cascades.update(opt_sub_schedule.cascades)
+  1139	
+  1140	        # Update memory snapshot
+  1141	        self.sg.schedule = schedule
+  1142	        self.update_op_memory_snapshot(schedule)
+  1143	        # Propose schedule buffering to the optimized schedule
+  1144	        optimized_sched = self.propose_schedule_buffering(schedule, self.sram_limit)
+  1145	        # Copy the cascade's metadata from the unbuffered schedule
+  1146	        optimized_sched.cascades = schedule.cascades
+  1147	        return optimized_sched
+  1148	
+  1149	    def optimize_weight_buffering_size(
+  1150	        self,
+  1151	        min_schedule: Schedule,
+  1152	    ):
+  1153	        verbose_progress = self.scheduler_options.verbose_progress
+  1154	        default_schedule = self.sg.schedule
+  1155	        npu_performance.calc_new_performance_for_network(self.nng, self.arch, None, False)
+  1156	        default_tot_cycles = self.nng.cycles[npu_performance.PassCycles.Total]
+  1157	        default_dram_cycles = self.nng.cycles[npu_performance.PassCycles.DramAccess]
+  1158	
+  1159	        # Restore mem/type for scratched_fms
+  1160	        for tens in self.scratched_fms:
+  1161	            tens.mem_area = self.scratched_fms[tens][0]
+  1162	            tens.mem_type = self.scratched_fms[tens][1]
+  1163	
+  1164	        self.update_op_memory_snapshot(self.sg.schedule)
+  1165	
+  1166	        # Collect live ranges from tensors
+  1167	        memories_list = [(self.arch.fast_storage_mem_area, set((MemType.Scratch, MemType.Scratch_fast)))]
+  1168	        lr_graph = live_range.LiveRangeGraph()
+  1169	        for mem_area, mem_type_set in memories_list:
+  1170	            live_range.extract_live_ranges_from_schedule(self.sg, mem_area, mem_type_set, lr_graph, verbose_progress)
+  1171	
+  1172	        # Find the relation between the sched_op and the buffering tensor
+  1173	        weight_ops = {}
+  1174	        for sched_op in self.sched_ops:
+  1175	            cost = self.sg.schedule.cost_map[sched_op]
+  1176	            for tens in cost.buffered_weight_tensors:
+  1177	                weight_ops[tens] = sched_op
+  1178	
+  1179	        # Filter out weight buffer live ranges
+  1180	        weight_lrs = []
+  1181	        for lr in lr_graph.lrs:
+  1182	            for tens in lr.tensors:
+  1183	                if weight_ops.get(tens):
+  1184	                    weight_lrs.append(lr)
+  1185	                    break
+  1186	
+  1187	        # See if any evicted fm overlaps with a weight buffering op.
+  1188	        # If this is the case add a size limitation to the buffering op
+  1189	        for lr in self.evicted_fms:
+  1190	            for weight_lr in weight_lrs:
+  1191	                if lr.overlaps_ranges(weight_lr):
+  1192	                    for tens in weight_lr.tensors:
+  1193	                        sched_op = weight_ops.get(tens)
+  1194	                        if sched_op:
+  1195	                            # Add size reduction to the op
+--- scheduler.py lines 1220,1305 ---
+  1220	            round((default_dram_cycles - new_dram_cycles) / default_dram_cycles, 2) if default_dram_cycles != 0 else 0
+  1221	        )
+  1222	
+  1223	        # Compare both total and dram improvement
+  1224	        if not (improvement_tot >= 0 and improvement_dram > 0):
+  1225	            # No improvement, restore the default schedule
+  1226	            for sched_op in self.sched_ops:
+  1227	                sched_op.evicted_fms_size = 0
+  1228	
+  1229	            for tens in self.scratched_fms:
+  1230	                tens.mem_area = self.scratched_fms[tens][0]
+  1231	                tens.mem_type = self.scratched_fms[tens][1]
+  1232	
+  1233	            self.sg.schedule = default_schedule
+  1234	            self.update_op_memory_snapshot(self.sg.schedule)
+  1235	            self.apply_schedule(self.sg.schedule)
+  1236	            self.use_fast_storage_for_feature_maps(self.sg.schedule, self.sram_limit)
+  1237	
+  1238	    def apply_schedule(self, sched: Schedule):
+  1239	        """Applies the given schedule as a final solution"""
+  1240	        for sched_op in self.sched_ops:
+  1241	            op_info = sched.cost_map[sched_op]
+  1242	            cascade_info = sched.cascades.get(op_info.cascade, None)
+  1243	            if cascade_info and sched_op in cascade_info.buffers:
+  1244	                buffer_tens = sched_op.ifm.connection.parent_tens
+  1245	                # Apply memory area and type
+  1246	                buffer_tens.mem_area = self.arch.fast_storage_mem_area
+  1247	                buffer_tens.mem_type = MemType.Scratch_fast
+  1248	                # Apply Rolling buffer
+  1249	                buffer_tens.set_format(TensorFormat.NHCWB16, self.arch)
+  1250	                buffer_tens.set_new_sub_purpose(TensorSubPurpose.RollingBufferY, cascade_info.buffers[sched_op].height)
+  1251	
+  1252	            sched_op.parent_ps.block_config = op_info.block_config.old_style_representation()
+  1253	
+  1254	            # Ensure that the src_tensor reference is set correctly
+  1255	            for tens in op_info.buffered_weight_tensors:
+  1256	                tens.src_tensor = op_info.npu_weights_tensor
+  1257	
+  1258	    def use_fast_storage_for_feature_maps(self, schedule, staging_limit):
+  1259	        """Finds the set of feature maps that fits within the staging limit which combined has the largest amount of
+  1260	        access cycles and moves those feature map into fast storage"""
+  1261	        max_mem_usage = []
+  1262	        base_mem_usage = []
+  1263	        fast_storage_type = MemType.Scratch_fast
+  1264	        fast_storage_mem_area = self.arch.fast_storage_mem_area
+  1265	        self.evicted_fms = []
+  1266	
+  1267	        # Force all OFMs to fast-storage
+  1268	        for sched_op in self.sched_ops:
+  1269	            cost = schedule.cost_map[sched_op]
+  1270	            if cost.cascade == 0 and sched_op.get_dependants():
+  1271	                ofm_tens = sched_op.ofm.connection.parent_tens
+  1272	                # Do not move subgraph outputs or Variable Tensor Writes
+  1273	                if (
+  1274	                    not any(cons is None for cons in ofm_tens.consumer_list)
+  1275	                    and sched_op.parent_op.memory_function is not Op.VariableTensorWrite
+  1276	                ):
+  1277	                    if ofm_tens not in self.scratched_fms:
+  1278	                        # Remember default mem area and mem type, only done once
+  1279	                        self.scratched_fms[ofm_tens] = (ofm_tens.mem_area, ofm_tens.mem_type)
+  1280	
+  1281	                    ofm_tens.mem_area = fast_storage_mem_area
+  1282	                    ofm_tens.mem_type = fast_storage_type
+  1283	
+  1284	        # Collect live ranges from tensors
+  1285	        memories_list = [(fast_storage_mem_area, set((MemType.Scratch, MemType.Scratch_fast)))]
+  1286	        lr_graph = live_range.LiveRangeGraph()
+  1287	        for mem_area, mem_type_set in memories_list:
+  1288	            live_range.extract_live_ranges_from_schedule(
+  1289	                self.sg,
+  1290	                mem_area,
+  1291	                mem_type_set,
+  1292	                lr_graph,
+  1293	            )
+  1294	
+  1295	        max_mem_usage = lr_graph.get_temporal_memory_usage(fast_storage_mem_area)
+  1296	
+  1297	        # If max_mem_usage does not exceed staging limit at any point all lrs fit and can stay in fast storage
+  1298	        if max(max_mem_usage) <= staging_limit:
+  1299	            return
+  1300	
+  1301	        # Build up the base memory usage by removing the mem_usage of the lrs we previously moved to fast-storage
+  1302	        base_mem_usage = np.array(max_mem_usage)
+  1303	        curr_lrs = []
+  1304	        for lr in lr_graph.lrs:
+  1305	            for tens in lr.tensors:
+
+===== 4. TENSOR ALLOCATION IMPLEMENTATION =====
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/greedy_allocation.py ---
+10-#
+11-# Unless required by applicable law or agreed to in writing, software
+12-# distributed under the License is distributed on an AS IS BASIS, WITHOUT
+13-# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14-# See the License for the specific language governing permissions and
+15-# limitations under the License.
+16-#
+17-# Description:
+18-# Allocate tensor addresses using a greedy algorithm.
+19-from . import numeric_util
+20-
+21-
+22:class GreedyAllocator:
+23-    def __init__(self, live_ranges):
+24-        self.live_ranges = live_ranges
+25-        self.memory_required = 0
+26-
+27-        self.current_allocs = []
+28-
+29:    def alloc(self, new_lr):
+30-        size = new_lr.size
+31-        current_top = 0
+32-        if self.current_allocs:
+33-            current_top = max(start_addr + lr.size for start_addr, lr in self.current_allocs)
+34-        best_offset = numeric_util.round_up(current_top, new_lr.get_alignment())
+35-        best_offset_fit = (1 << 64) - 1
+36-
+37-        aligned_size = numeric_util.round_up(size, new_lr.get_alignment())
+38-        current_offset = 0
+39-        for start_addr, lr in self.current_allocs:
+40-            aligned_current_offset = numeric_util.round_up(current_offset, new_lr.get_alignment())
+41-            if (
+42-                aligned_current_offset + aligned_size <= start_addr
+43-                and start_addr - aligned_current_offset < best_offset_fit
+44-            ):
+45-                best_offset = aligned_current_offset
+46-                best_offset_fit = start_addr - aligned_current_offset
+47-
+48-            current_offset = start_addr + lr.size
+49-
+50-        best_offset = new_lr.set_address(best_offset)
+51-        self.memory_required = max(self.memory_required, best_offset + aligned_size)
+52-        self.current_allocs.append((best_offset, new_lr))
+53-        self.current_allocs = list(sorted(self.current_allocs))
+54-
+55:    def dealloc(self, lr_to_dealloc):
+56-        self.current_allocs = [(start_addr, lr) for start_addr, lr in self.current_allocs if lr != lr_to_dealloc]
+57-
+58:    def allocate_live_ranges(self, alignment):
+59-        lrs = set()
+60-        for lr in self.live_ranges.lrs:
+61-            lrs.add((lr.start_time, -lr.end_time, lr))
+62-
+63-        lrs = sorted(lrs)
+64-
+65-        for curr_time, _, new_lr in lrs:
+66-            for _, lr in list(self.current_allocs):
+67-                if lr.end_time < curr_time:
+68-                    self.dealloc(lr)
+69-
+70-            self.alloc(new_lr)
+71-
+72-        return self.memory_required
+73-
+74-
+75:def allocate_live_ranges(live_ranges, alignment):
+76-    g = GreedyAllocator(live_ranges)
+77:    return g.allocate_live_ranges(alignment)
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor.py ---
+838-
+839-        # Handle wraparound for partial buffers. Make sure to do this after subtracting top box
+840-        coord = [_coord % _shape for _coord, _shape in zip(coord, storage_shape)]
+841-
+842-        augmented_coord = self.get_augmented_coord(coord)
+843-        assert augmented_coord is not None
+844-
+845-        address_offset += np.dot(augmented_coord, strides)
+846-
+847-        assert address_offset >= 0 and address_offset <= storage_size
+848-        return self.address + address_offset
+849-
+850:    def is_allocated_in_tensor_arena(self, scratch_tensor_mem_area: MemArea) -> bool:
+851-        return (self.mem_area == scratch_tensor_mem_area) and (self.mem_type in (MemType.Scratch, MemType.Scratch_fast))
+852-
+853-    def equivalent(self, tens: "Tensor") -> bool:
+854-        return self.equivalence_id == tens.equivalence_id
+855-
+856-    def set_all_shapes(self, shape: Shape):
+857-        self.shape = shape
+858-        self.storage_shape = shape
+859-        self.bandwidth_shape = shape
+860-
+861-    def get_full_shape(self) -> Shape:
+862-        d = len(self.shape)
+863-        if d in (1, 3):
+864-            return full_shape(4, self.shape, 1)
+865-        elif d == 2:
+866-            return [self.shape[0], 1, 1, self.shape[1]]
+867-        else:
+868-            return self.shape.copy()
+869-
+870-    def is_quantized(self) -> bool:
+871-        # a tensor is quantized if it has an integral type and it contains valid quantization params
+872-
+873-        if not isinstance(self.quantization, QuantizationParameters):
+874-            return False
+875-
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/hillclimb_allocation.py ---
+31-        # Start time (input to the allocator algorithm)
+32-        self.start_time = start_time
+33-        # End time, inclusive (input to the allocator algorithm)
+34-        self.end_time = end_time
+35-        # Size in bytes (input to the allocator algorithm)
+36-        self.size = size
+37-        # Allocated address (the main output from the allocator algorithm)
+38-        self.address: int = 0
+39-        # End address, exclusive
+40-        self.end_address: int = 0
+41-        # id of predecessor live range (predecessor's end address == this lr's address)
+42-        self.predecessor: int = 0
+43:        # Turn at which the live range was allocated
+44-        self.turn: int = 0
+45-        # Max value of size_at_time (only used in the heuristic allocation)
+46-        self.urgency = 0
+47-        self.neighbours: List["LiveRangeInfo"] = []
+48-        self.min_alignment = min_alignment
+49-
+50-    def overlaps(self, addr2: int, size2: int) -> int:
+51-        return self.address < addr2 + size2 and addr2 < self.end_address
+52-
+53-    def is_neighbour(self, lr: "LiveRangeInfo") -> bool:
+54-        return self.start_time <= lr.end_time and lr.start_time <= self.end_time
+55-
+56-    def __str__(self):
+57-        return "<LiveRangeInfo: id={}, start_time={}, end_time={}, size={}, address={}>".format(
+58-            self.id, self.start_time, self.end_time, self.size, self.address
+59-        )
+60-
+61-    def __lt__(self, other) -> bool:
+62-        if self.urgency != other.urgency:
+63-            return self.urgency > other.urgency
+64-        duration1 = self.end_time - self.start_time
+65-        duration2 = other.end_time - other.start_time
+66-        if duration1 != duration2:
+67-            return duration1 > duration2
+68-
+69-        if self.start_time != other.start_time:
+70-            return self.start_time < other.start_time
+71-
+72-        if self.size != other.size:
+73-            return self.size > other.size
+74-
+75-        return self.id < other.id
+76-
+77-
+78:class HillClimbAllocator:
+79-    """
+80-    Implements tensor allocator using a hill climb search.
+81-
+82-    The basic algorithm is:
+83-
+84-    Use a heuristic allocator to find an initial allocation
+85-    while allocation is not optimal and iterations < MAX_ITERATIONS:
+86-        find the "bottleneck": the live range with highest end address
+87-        find all live ranges that affected the allocation of the bottleneck
+88-        swap the order of any two affecting live ranges
+89:        reallocate tensors using the reordered live ranges
+90-        if the new allocation is better: keep it, else set allocation to previous allocation
+91-    """
+92-
+93-    # Maximum number of iterations of the algorithm (can be override from the command line)
+94-    MAX_ITERATIONS = 99999
+95-    NOT_ALLOCATED = -1
+96:    # Used for live ranges allocated at address 0
+97-    NO_PREDECESSOR = -1
+98-    # Special handling if best solution has not improved during this many iterations
+99-    MAX_ITERATIONS_STUCK = 50
+100-    # Minimum number of iterations since the last improvement (unless an optimal solution is found)
+101-    MIN_ITERATIONS_IMPROVE = 500
+102-
+103:    def __init__(self, live_ranges: List[LiveRange], max_iterations: int, memory_limit: int):
+104-        # Contains the live ranges
+105-        self.lrs: List[LiveRangeInfo] = [
+106-            LiveRangeInfo(id, lr.start_time, lr.end_time, lr.size, lr.get_alignment())
+107-            for id, lr in enumerate(live_ranges)
+108-        ]
+109-        self.lrs_at_time: List[List[LiveRangeInfo]] = []
+110-        # The available size (input to algorithm).
+111-        self.available_size: int = 0
+112-        # The algorithm stops once the target size has been achieved
+113-        self.target_size: int = 0
+114-        # The highest end address of the best found allocation
+115-        self.best_size: int = 1 << 63
+116-        # For each live range: max value of size_at_time (only used in the heuristic allocation)
+117-        self.lr_urgency = len(self.lrs) * [0]
+118-        nr_time_slots = 1 + max(lr.end_time for lr in self.lrs)
+119-        # Contains active live ranges at each timestamp
+120-        self.lrs_at_time = [[] for i in range(nr_time_slots)]
+121-        for lr in self.lrs:
+122-            for t in range(lr.start_time, lr.end_time + 1):
+123-                self.lrs_at_time[t].append(lr)
+124-        # At each timestamp: accumulated size of active live ranges
+125-        size_at_time = [sum(lr.size for lr in self.lrs_at_time[t]) for t in range(nr_time_slots)]
+126:        # The minimum possible size, assuming all live ranges can be perfectly allocated
+127-        self.min_required_size: int = max(size_at_time)
+128-        # Set the maximum number of iterations the search will iterate to find a solution
+129-        if max_iterations is None:
+130-            self.max_iterations = self.MAX_ITERATIONS
+131-        else:
+132-            self.max_iterations = max_iterations
+133-        # Defines a memory limit that the allocation must meet
+134-        self.memory_limit = memory_limit
+135-        if self.memory_limit < self.min_required_size:
+136-            print(
+137-                f"Warning: Memory limit = {self.memory_limit} is less than the minimum possible allocation size ="
+138-                f" {self.min_required_size}"
+139-            )
+140-        # Calculate all neighbours + the urgency of each live range
+141-        for lr in self.lrs:
+142-            lr.urgency = 0
+143-            lr.neighbours = []
+144-            neighbours = set()
+145-            for t in range(lr.start_time, lr.end_time + 1):
+146-                lr.urgency = max(size_at_time[t], lr.urgency)
+147-                for lr2 in self.lrs_at_time[t]:
+148-                    if lr2 not in neighbours and lr != lr2:
+149-                        neighbours.add(lr2)
+150-                        lr.neighbours.append(lr2)
+151-
+152:    def allocate_lr(self, lr: LiveRangeInfo):
+153-        """
+154-        Allocates the given live range at the smallest possible address
+155-        """
+156-        address = 0
+157-        predecessor = HillClimbAllocator.NO_PREDECESSOR
+158-        fits = False
+159-        while not fits:
+160-            fits = True
+161-            # Find neighbours that overlap with address
+162-            for lr2 in lr.neighbours:
+163-                if lr2.address == HillClimbAllocator.NOT_ALLOCATED or lr2.end_address <= address:
+164-                    continue
+165-                if lr2.overlaps(address, lr.size):
+166-                    # Overlap found increase address
+167-                    fits = False
+168-                    address = numeric_util.round_up(lr2.end_address, lr.min_alignment)
+169-                    predecessor = lr2.id
+170-        lr.address = address
+171-        lr.end_address = address + lr.size
+172-        lr.predecessor = predecessor
+173-
+174:    def allocate_indices(self, indices: List[int]):
+175-        """
+176-        Allocates the live ranges in the order indicated by the indices;
+177:        allocates each live range at the lowest possible address.
+178-        """
+179-        for lr in self.lrs:
+180-            lr.address = HillClimbAllocator.NOT_ALLOCATED
+181-        size = 0
+182-        for turn, index in enumerate(indices):
+183-            lr = self.lrs[index]
+184:            self.allocate_lr(lr)
+185-            lr.turn = turn
+186-            size = max(size, lr.end_address)
+187-            if size > self.best_size:
+188-                # This allocation is worse than the best known allocation;
+189-                # no need to continue
+190-                break
+191-        return size
+192-
+193-    def add_predecessor_turns(self, turn_set: Set[int], turn_list: List[int], lr: LiveRangeInfo):
+194-        """
+195-        Adds the given live range + predecessors to the turns vector.
+196-        Note: the turn_set is for quick detection of duplicates,
+197-        the turn_list is to get reproduceable results
+198-        """
+199-        if lr.turn not in turn_set:
+200-            turn_set.add(lr.turn)
+201-            turn_list.append(lr.turn)
+202-        id = lr.id
+203-        while self.lrs[id].predecessor != HillClimbAllocator.NO_PREDECESSOR:
+204-            id = self.lrs[id].predecessor
+205-            turn = self.lrs[id].turn
+206-            if turn not in turn_set:
+207-                turn_set.add(turn)
+208-                turn_list.append(turn)
+209-
+--
+221-         -------------------------------
+222-         | |
+223-         |A|                      ---
+224-         | |                      |C|
+225-         | |                      | |
+226-         ---------------------------------------
+227-
+228-        In the above example, the allocation order was [A, B, C, D] and D is the resulting bottle-neck.
+229-        The live ranges that affected the allocation of D are the direct neighbours of D (i.e. B and C),
+230-        and all direct and indirect predecessors of D and its neighbours
+231-        (i.e. A, which is the predecessor of B, and indirect predecessor of D).
+232-
+233:        By permuting the order in which the affecting live ranges are allocated, the bottleneck might
+234-        be lowered. In the above example, almost any permutation would lower the bottleneck.
+235-        """
+236-        # Find the bottleneck
+237-        max_lr = self.lrs[0]
+238-        for lr in self.lrs[1:]:
+239-            if lr.end_address > max_lr.end_address:
+240-                max_lr = lr
+241-
+242-        # Find all live ranges that affected the placement of the bottleneck live range.
+243-        # This consists of two types of live ranges:
+244-        # - direct neighbours of the bottleneck live range
+245-        # - direct and indirect predecessors of these neighbours + bottleneck
+246:        # The turns at which these live ranges were allocated are put in the turns set.
+247-        turn_set: Set[int] = set()
+248-        turn_list: List[int] = list()
+249-        self.add_predecessor_turns(turn_set, turn_list, max_lr)
+250-        for lr2 in max_lr.neighbours:
+251-            self.add_predecessor_turns(turn_set, turn_list, lr2)
+252-
+253-        # Non-direct neighbours that interfere with the allocation of the bottleneck are the
+254-        # immediate cause for gaps in the allocation, and are selected with higher probability.
+255-        non_nb_turn_list = []
+256-        for turn in turn_list:
+257-            lr = self.lrs[indices[turn]]
+258-            if not max_lr.is_neighbour(lr):
+259-                non_nb_turn_list.append(turn)
+260-        assert turn_list
+261-        # Pick from non-neighbour list with 30% probability
+262-        # (magic number based on tuning)
+263-        if random.randint(0, 100) < 30 and non_nb_turn_list:
+264-            # Pick a live range from the "non-neighbour list"
+265-            ix1 = non_nb_turn_list[random.randint(0, len(non_nb_turn_list) - 1)]
+266-        else:
+267-            # Pick any affecting live range.
+268-            ix1 = turn_list[random.randint(0, len(turn_list) - 1)]
+269-
+270-        ix2 = turn_list[random.randint(0, len(turn_list) - 2)]
+271-        if ix1 == ix2:
+--
+291-        """
+292-        Search for a solution, using the given indices as initial solution.
+293-        """
+294-        best_indices = indices[:]
+295-        last_improvement_iteration = 0
+296-        i = 0
+297-        while (self.best_size > self.memory_limit and i < self.max_iterations) or (
+298-            i - last_improvement_iteration < self.MIN_ITERATIONS_IMPROVE
+299-        ):
+300-            # Reorder the indices
+301-            self.attempt_bottleneck_fix(indices, i - last_improvement_iteration)
+302-            # Allocate the reordered indices and check if it gave an improvement
+303:            new_size = self.allocate_indices(indices)
+304-            if new_size <= self.best_size:
+305-                # The new allocation produced a new best result remember it
+306-                if new_size < self.best_size:
+307-                    last_improvement_iteration = i
+308-                self.best_size = new_size
+309-                best_indices = indices[:]
+310:                self.allocated_addresses = [lr.address for lr in self.lrs]
+311-                if self.best_size <= self.min_required_size:
+312-                    # Target reached; stop
+313-                    return
+314-            else:
+315-                # The new allocation produced worse result undo the change
+316-                indices = best_indices[:]
+317-            i += 1
+318-
+319:    def allocate(self) -> List[int]:
+320-        """
+321-        Runs the allocation algorithm. Finishes when an optimal solution has been
+322-        found or when maximum iterations have been run.
+323:        The allocated addresses are placed in the output vector, in the same
+324-        order as the input vector.
+325-
+326-        Implementation note: the algorithm produces reproduceable results by using
+327-        a well-defined random number generator with well-defined default seed,
+328-        and using a fixed number of iterations.
+329-        """
+330-        random.seed(1)
+331-        # Sort indices on priority. Note: self.lrs must be left unchanged
+332-        indices = [lr.id for lr in sorted(self.lrs)]
+333-        # Allocate the initial solution
+334:        self.best_size = self.allocate_indices(indices)
+335:        self.allocated_addresses = [lr.address for lr in self.lrs]
+336-        if self.best_size > self.min_required_size:
+337-            # Try to improve the heuristic allocation
+338-            self.search(indices)
+339-        # else the heuristic allocation returned an optimal solution; no search needed
+340:        return self.allocated_addresses
+341-
+342-
+343:def allocate_live_ranges(lrs: List[LiveRange], max_iterations: int, memory_limit: int) -> List[int]:
+344-    """
+345-    Allocates live ranges using a search based allocator.
+346:    Returns the list of allocated addresses (one for each live range)
+347-    """
+348-    if not lrs:
+349-        return []
+350-    allocator = HillClimbAllocator(lrs, max_iterations, memory_limit)
+351:    return allocator.allocate()
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/TensorType.py ---
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/Tensor.py ---
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/TensorMap.py ---
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_allocator.py ---
+45-        self.lut_start = 0
+46-
+47-
+48-class ArchitectureBlockConfig:
+49-    def __init__(self):
+50-        self.layout = SHRAMLayout()
+51-        self.ifm_block = Shape4D()
+52-        self.ofm_block = Shape4D()  # non-1D-optimised block
+53-        self.acc_type = SHRAMElements.Acc32
+54-        self.is_partkernel = False
+55-        self.bank_size = 0
+56-
+57:    def get_shram_memory_access_range(self):
+58-        # Returns the SHRAM memory access range used by this shared buffer,
+59-        # excluding access to LUT
+60-        return MemoryRangeSet(MemArea.Shram, 0, self.layout.lut_start * self.bank_size)
+61-
+62-    def old_style_representation(self):
+63-        return [self.ofm_block.height, self.ofm_block.width, self.ifm_block.depth, self.ofm_block.depth]
+64-
+65-    def __str__(self):
+66-        return str(self.old_style_representation())
+67-
+68-
+69-_AccumulatorBits = {SHRAMElements.Acc16: 16, SHRAMElements.Acc32: 32, SHRAMElements.Acc40: 40}
+70-
+71-
+72-class ElementwiseUsage(enum.IntEnum):
+73-    No = 0
+74-    Full = 1
+75-    Scalar = 2
+76-
+77-
+78-def _try_block_config(
+79-    shram: SHRAMConfig,
+80-    ew_usage: ElementwiseUsage,
+81-    ofm_block: Union[Shape4D, Block],
+82-    ifm_block: Union[Shape4D, Block],
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tosa/TosaTensor.py ---
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/live_range.py ---
+23-import numpy as np
+24-
+25-from .operation import Op
+26-from .tensor import MemArea
+27-from .tensor import MemType
+28-from .tensor import Tensor
+29-from .tensor import TensorPurpose
+30-from .utils import progress_print
+31-
+32-
+33-class LiveRange:
+34-    def __init__(self, tens, alignment):
+35:        self.tensors = []  # Tensors that are assigned to the same LiveRange will be allocated to the same address
+36-        self.start_time = 99999999999
+37-        self.end_time = -1
+38-        self.size = 0
+39-        self.name = ""
+40-        self.alignment = alignment
+41-        self.mem_area = tens.mem_area if tens else MemArea.Unknown
+42-
+43-        if tens:
+44-            self.add_tensor(tens)
+45-
+46-    def __str__(self):
+47-        return (
+48-            f"<live_range.LiveRange: {self.start_time}-{self.end_time}, "
+49-            f"size={self.size}, '{self.name}' #:{len(self.tensors)}>"
+50-        )
+51-
+52-    __repr__ = __str__
+53-
+54-    def add_tensor(self, tens):
+55-        if self.size == 0:
+56-            self.size = tens.storage_size()
+57-            self.name = tens.name  # LiveRange will be named after the first tensor added
+58-        else:
+59-            assert (
+60-                self.size >= tens.storage_size()
+--
+136-
+137-    def fuse_ranges(self, in_tens, out_tens):
+138-        live_range = self.get_or_create_range(in_tens)
+139-        assert out_tens not in self.ranges, out_tens
+140-        live_range.add_tensor(out_tens)
+141-        self.ranges[out_tens] = live_range
+142-        return live_range
+143-
+144-    def get_endtime(self):
+145-        # op_length is 1 so max end time for lr is current + 1
+146-        return self.current_time + 1
+147-
+148:    def get_temporal_memory_usage(self, target_mem_area):
+149-        # Type needs to represent the maximum possible address that Ethos-U supports because when scheduling we start
+150-        # with the maximum value and then choose schedules with a lower usage
+151-        usage = np.zeros(self.get_endtime() + 1, dtype=np.int64)
+152-        for lr in self.lrs:
+153-            if lr.mem_area == target_mem_area:
+154-                # End time is inclusive
+155-                assert lr.end_time <= self.get_endtime() + 1
+156-                usage[lr.start_time : lr.end_time + 1] += lr.size
+157-
+158-        return usage
+159-
+160-
+161-def tensor_should_be_ignored(tens, target_mem_area, target_mem_type_set):
+162-    if tens.purpose == TensorPurpose.Virtual:
+163-        return True
+164-    if target_mem_area is None or target_mem_type_set is None:
+165-        return False
+166-    if tens.mem_area != target_mem_area or tens.mem_type not in target_mem_type_set:
+167-        return True
+168-    return False
+169-
+170-
+171-def _get_ifm_to_fuse(sched_op, target_mem_area=None, target_mem_type_set=None):
+172-    ifm_tens = None
+173-    elem_op = sched_op.parent_op
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tensor_allocation.py ---
+17-# Description:
+18-# Wrapping function to do tensor address allocation. That is, assigning addresses to tensors based on what has been
+19-# worked out from the allowable overlaps that are calculated by the live range analysis.
+20-import math
+21-from typing import List
+22-
+23-import numpy as np
+24-
+25-from . import hillclimb_allocation
+26-from . import live_range
+27-from . import numeric_util
+28-from .errors import AllocationError
+29:from .greedy_allocation import allocate_live_ranges as greedy_allocate_live_ranges
+30-from .live_range import LiveRange
+31-from .live_range import LiveRangeGraph
+32-from .nn_graph import TensorAllocator
+33-from .tensor import MemArea
+34-from .tensor import MemType
+35-from .tensor import Tensor
+36-from .tensor import TensorPurpose
+37-
+38-
+39:def linear_allocate_live_ranges(live_ranges, alloc_granularity=Tensor.AllocationQuantum):
+40:    # Allocates using increasing addresses. Duplicate constant tensors will be allocated to the same address
+41-    total_sz = 0
+42:    allocated_tensors = []
+43-
+44-    # just assign increasing addresses, except for duplicates
+45-    for tens, lr in live_ranges.ranges.items():
+46:        if tens in allocated_tensors:
+47-            continue
+48-
+49-        address = total_sz
+50-        if tens.weight_compression_config is not None:
+51:            for allocated_tens in allocated_tensors:
+52:                if allocated_tens.weight_compression_config == tens.weight_compression_config:
+53:                    assert allocated_tens.scale_compression_config == tens.scale_compression_config
+54:                    address = allocated_tens.address
+55-                    break
+56-        if tens.purpose == TensorPurpose.LUT:
+57:            for allocated_tens in allocated_tensors:
+58:                if allocated_tens.equivalent(tens):
+59:                    address = allocated_tens.address
+60-                    break
+61-        lr.set_address(address)
+62:        allocated_tensors += lr.tensors
+63-        if address == total_sz:
+64-            total_sz += numeric_util.round_up(int(math.ceil(lr.size)), alloc_granularity)
+65-
+66-    verify_alignment(live_ranges, alloc_granularity)
+67-    return total_sz
+68-
+69-
+70:def hillclimb_allocate_live_ranges(
+71-    live_ranges: LiveRangeGraph, alloc_granularity: int, max_iterations: int, mem_limit: int
+72-) -> int:
+73-    # Allocates using the hill climb allocator
+74:    addresses = hillclimb_allocation.allocate_live_ranges(live_ranges.lrs, max_iterations, mem_limit)
+75:    # The result is a list containing the allocated addresses
+76-    total_sz = 0
+77-    for lr, address in zip(live_ranges.lrs, addresses):
+78-        total_sz = max(total_sz, address + lr.size)
+79-        lr.set_address(address)
+80-    verify_allocation(live_ranges, alloc_granularity)
+81-    return total_sz
+82-
+83-
+84-def verify_alignment(live_ranges: LiveRangeGraph, alignment: int):
+85-    for lr in live_ranges.lrs:
+86-        for tens in lr.tensors:
+87-            if not all(op and op.run_on_npu for op in tens.ops + tens.consumer_list):
+88-                # This is a CPU tensor, verify alignment
+89-                if tens.address % alignment != 0:
+90-                    raise AllocationError(f"Tensor '{tens.name}' not aligned to {alignment} bytes")
+91-
+92-
+93:def verify_allocation(live_ranges: LiveRangeGraph, alignment: int):
+94-    verify_alignment(live_ranges, alignment)
+95-    nr_time_slots = 1 + max(lr.end_time for lr in live_ranges.lrs)
+96-    # Contains active live ranges at each timestamp
+97-    lrs_at_time: List[List[LiveRange]] = [[] for i in range(nr_time_slots)]
+98-    for lr in live_ranges.lrs:
+99-        for t in range(lr.start_time, lr.end_time + 1):
+100-            lrs_at_time[t].append(lr)
+101-    for t in range(nr_time_slots):
+102-        lrs_new_items = [lr for lr in lrs_at_time[t] if t == 0 or lr not in lrs_at_time[t - 1]]
+103-        for m in lrs_new_items:
+104-            for n in lrs_at_time[t]:
+105-                overlap, tens_n, tens_m = n.overlaps_address(m)
+106-                if overlap and not (tens_n.equivalent(tens_m) and tens_n.address == tens_m.address):
+107-                    raise AllocationError(
+108-                        f"Overlapping buffers: {n.name}: {tens_n.address} -> {tens_n.address + n.size}"
+109-                        f" and {m.name}: {tens_m.address} -> {tens_m.address + m.size}"
+110-                    )
+111-
+112-
+113-def mark_sram_used_for_cascaded_passes(sg, lrs):
+114-    if len(sg.cascaded_passes) < 1:
+115-        return
+116-    end_pos = max(ps.time for ps in sg.cascaded_passes) + 2
+117-    mem_usage = np.zeros(end_pos, dtype=np.int64)
+118-
+119-    for tens, rng in lrs.ranges.items():
+120-        storage_size = tens.storage_size()
+121-        mem_usage[rng.start_time : rng.end_time] += storage_size
+122-
+123-    for cps in sg.cascaded_passes:
+124-        sram_used = max(mem_usage[cps.time], mem_usage[cps.time + 1])
+125-        cps.sram_used = sram_used
+126-        for ps in cps.passes:
+127-            ps.sram_used = sram_used
+128-
+129-
+130:def print_allocation(lrs, mem_area, mem_type_set, tensor_allocator, sg, actual_mem_usage_for_alloc):
+131-    print("\n" + "#" * 80)
+132-    sg_placement = (
+133-        sg.placement.name
+134-        if mem_type_set.intersection(
+135-            (
+136-                MemType.Permanent_NPU,
+137-                MemType.Permanent_CPU,
+138-            )
+139-        )
+140-        else "Cpu and Npu"
+141-    )
+142-    print(
+143-        f"Tensor Allocation for mem_area {mem_area.name}, of mem_type_set ("
+144-        f'{", ".join(f"{mem_type.name}" for mem_type in mem_type_set)}'
+145-        f"), using allocator {tensor_allocator}, in {sg_placement} subgraph:"
+146-    )
+147-
+148-    memory_hist = memory_usage_histogram(lrs.lrs)
+149-    min_mem_usage_for_alloc = max(memory_hist)
+150-    print(
+151-        f"{'Start Time':>10s} - {'End Time':>10s}: {'Start Addr':>10s} - {'End Addr':>10s}: {'Tensor Size':>11s}:"
+152-        f" {'Memory Usage':>12s}: {'Purpose':12s}: {'Format':18s}: Name"
+153-    )
+154-    for start_time, end_time, size, start_addr, end_addr, purpose, format, name in sorted(
+155-        (
+--
+175-        f" Bytes {min_mem_usage_for_alloc/1024.0:8.2f} KiB"
+176-    )
+177-    print(
+178-        f"Allocation Peak Memory Usage: {actual_mem_usage_for_alloc:9d} ({actual_mem_usage_for_alloc:#10x})"
+179-        f" Bytes {actual_mem_usage_for_alloc/1024.0:8.2f} KiB"
+180-    )
+181-    print(
+182-        f"Allocation Overhead:          {actual_mem_usage_for_alloc-min_mem_usage_for_alloc:9d}"
+183-        f" Bytes ({100*alloc_overhead_fraction:.2f} %)"
+184-    )
+185-
+186-
+187:def memory_usage_histogram(lrs: List[LiveRange]):
+188-    histogram = [0] * (1 + max(lr.end_time for lr in lrs))
+189-    for lr in lrs:
+190-        for t in range(lr.start_time, lr.end_time + 1):
+191-            histogram[t] += lr.size
+192-
+193-    return histogram
+194-
+195-
+196:def allocate(
+197-    sg,
+198-    arch,
+199-    mem_area,
+200-    mem_type_set,
+201-    tensor_allocator=TensorAllocator.Greedy,
+202-    lr_graph=None,
+203-    cpu_tensor_alignment=Tensor.AllocationQuantum,
+204-    hillclimb_max_iterations=None,
+205-    verbose_progress=False,
+206-):
+207-    # Allocates addresses to tensors, returns False if tensors could not be fit within max_size
+208-    lrs = live_range.extract_live_ranges_from_cascaded_passes(
+209-        sg,
+210-        mem_area,
+211-        mem_type_set,
+212-        lr_graph=lr_graph,
+213-        cpu_tensor_alignment=cpu_tensor_alignment,
+214-        verbose_progress=verbose_progress,
+215-    )
+216-    total_sz = 0
+217-    if lrs.ranges:
+218-        tens_alloc = tensor_allocator
+219-        if tens_alloc == TensorAllocator.Greedy:
+220:            total_sz = greedy_allocate_live_ranges(lrs, cpu_tensor_alignment)
+221-            verify_allocation(lrs, cpu_tensor_alignment)
+222-        elif tens_alloc == TensorAllocator.LinearAlloc:
+223:            total_sz = linear_allocate_live_ranges(lrs, cpu_tensor_alignment)
+224-        elif tens_alloc == TensorAllocator.HillClimb:
+225-            mem_type = MemType.Scratch_fast if MemType.Scratch_fast in mem_type_set else list(mem_type_set)[0]
+226-            mem_size = arch.mem_type_size(mem_type)
+227:            total_sz = hillclimb_allocate_live_ranges(lrs, cpu_tensor_alignment, hillclimb_max_iterations, mem_size)
+228-        else:
+229-            assert 0
+230-    return lrs, total_sz
+231-
+232-
+233:def allocate_tensors(
+234-    nng,
+235-    sg,
+236-    arch,
+237-    mem_area,
+238-    mem_type_set,
+239-    tensor_allocator=TensorAllocator.Greedy,
+240-    verbose_allocation=False,
+241-    verbose_progress=False,
+242-    lr_graph=None,
+243-    cpu_tensor_alignment=Tensor.AllocationQuantum,
+244-    hillclimb_max_iterations=None,
+245-    max_size=None,
+246-    dry_test=False,
+247-):
+248-    # Allocates addresses to tensors, returns False if tensors could not be fit within max_size
+249:    lrs, total_sz = allocate(
+250-        sg,
+251-        arch,
+252-        mem_area,
+253-        mem_type_set,
+254-        tensor_allocator=tensor_allocator,
+255-        lr_graph=lr_graph,
+256-        cpu_tensor_alignment=cpu_tensor_alignment,
+257-        hillclimb_max_iterations=hillclimb_max_iterations,
+258-        verbose_progress=verbose_progress,
+259-    )
+260-
+261-    if lrs.ranges:
+262-        alloc_ok = max_size is None or total_sz <= max_size
+263-        if dry_test or not alloc_ok:
+264-            # Dry test or allocation failed; undo allocation
+265-            for lr in lrs.ranges.values():
+266-                lr.set_address(None)
+267-            return alloc_ok
+268-
+269-        if sg.memory_used.get(mem_area, 0) == 0:
+270-            sg.memory_used[mem_area] = total_sz
+271-        else:
+272-            sg.memory_used[mem_area] += total_sz
+273-
+274-        # Keep track of how much should be used for scratch or permanent storage for NPU
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/mark_tensors.py ---
+
+===== 5. TFLITE SCRATCH TENSOR SERIALIZATION =====
+142-        return builder.EndVector()
+143-
+144-    def write_float_vector(self, v):
+145-        builder = self.builder
+146-        builder.StartVector(4, len(v), 4)
+147-        for e in v[::-1]:
+148-            builder.PrependFloat32(e)
+149-        return builder.EndVector()
+150-
+151-    def write_offset_vector(self, v):
+152-        builder = self.builder
+153-        builder.StartVector(4, len(v), 4)
+154-        for e in v[::-1]:
+155-            builder.PrependUOffsetTRelative(e)
+156-        return builder.EndVector()
+157-
+158:    def assign_buffers_to_tensors(self, tensors, scratch_tensor):
+159-        if scratch_tensor is not None:
+160-            scratch_tensor_mem_area = scratch_tensor.mem_area
+161-        else:
+162-            scratch_tensor_mem_area = None  # all tensors are initialised to MemArea.Unknown
+163-
+164-        buffer_map = {}
+165-
+166-        for tens in tensors:
+167-            # Set buffer ids depending on allocation
+168-            if tens.is_allocated_in_tensor_arena(scratch_tensor_mem_area) or tens.mem_type == MemType.Scratch_fast:
+169-                # Tensor allocated in the scratch areas, does not have any constant data and can
+170-                # therefore all point to the empty buffer (zero)
+171-                buffer_map[tens] = TFLiteSerialiser.BUF_IDX_ZERO
+172-            else:
+173-                buffer_map[tens] = self.buf_idx
+174-                self.buf_idx += 1
+175-
+176-        # Initialize/extend buffers_to_write to a length equal to number of buffers so
+177-        # they can be appended at the correct index during tensor serialization
+178-        self.buffers_to_write += [None] * (self.buf_idx)
+179-
+180-        return buffer_map
+181-
+182-    def serialise_operator_code(self, idx, op_type, custom_code, version):
+183-        builder = self.builder
+184-        custom_code_offset = None
+185-        if op_type == Op.Custom:
+186-            tf_code, opt_serializer, _ = builtin_operator_inv_map[op_type]
+187-            custom_code_offset = builder.CreateString(custom_code)
+188-        else:
+--
+236-
+237-            QuantizationParameters.QuantizationParametersStart(builder)
+238-            if min is not None:
+239-                QuantizationParameters.QuantizationParametersAddMin(builder, min)
+240-            if max is not None:
+241-                QuantizationParameters.QuantizationParametersAddMax(builder, max)
+242-            if scale is not None:
+243-                QuantizationParameters.QuantizationParametersAddScale(builder, scale)
+244-            if zero_point is not None:
+245-                QuantizationParameters.QuantizationParametersAddZeroPoint(builder, zero_point)
+246-            if quant.quant_dim is not None:
+247-                QuantizationParameters.QuantizationParametersAddQuantizedDimension(builder, quant.quant_dim)
+248-            qp = QuantizationParameters.QuantizationParametersEnd(builder)
+249-
+250-        return qp
+251-
+252:    def serialise_tensor(self, tens):
+253-        builder = self.builder
+254-        if shape_num_elements(tens.original_shape) != shape_num_elements(tens.shape):
+255-            # shapes have changed size, therefore assume that the latest (modified) shape is correct
+256-            tens_shape = tens.shape
+257-        else:
+258-            # shapes have not changed size, therefore the original shape is valid
+259-            tens_shape = tens.original_shape
+260-        values = tens.values
+261-
+262-        buf_id = self.buffer_map[tens]
+263-        # Sanity check that if buffer 0 is used there must not be any data
+264-        assert not (buf_id == TFLiteSerialiser.BUF_IDX_ZERO and values is not None)
+265-        self.buffers_to_write[buf_id] = None if values is None else values.flatten().view(np.uint8)
+266-
+267-        shape = self.write_int_vector(tens_shape)
+268-
+269-        name = builder.CreateString(tens.name)
+270-        quant = self.serialise_quantization_parameters(tens.quantization)
+271-
+272-        Tensor.TensorStart(builder)
+273-        Tensor.TensorAddShape(builder, shape)
+274-        Tensor.TensorAddType(builder, datatype_inv_map[tens.dtype])
+275-        # All tensors must have a valid backing buffer, even if it is empty.
+276-        # Empty buffers should be kept unique for TensorFlow Lite Micro
+277-        Tensor.TensorAddBuffer(builder, buf_id)
+278-        Tensor.TensorAddName(builder, name)
+279-        if quant is not None:
+280-            Tensor.TensorAddQuantization(builder, quant)
+281-        Tensor.TensorAddIsVariable(builder, tens.is_variable)
+282-
+--
+389-        # traversing the graph.
+390-        for tens in sg.virtual_outputs:
+391-            tens.ops[0].outputs = []
+392-            if tens in sg.output_tensors:
+393-                sg.output_tensors.remove(tens)
+394-
+395-        # Add the tensors from all valid ops, as well as the tensors from placeholder ops
+396-        # This allows us to serialise tensors which arent attached to any specific ops,
+397-        # e.g. due to an empty graph containing no ops
+398-        for op in all_ops + placeholder_ops:
+399-            for tens in op.inputs + op.outputs + op.intermediates:
+400-                if tens is not None:
+401-                    tensor_set.add(tens)
+402-
+403-        all_tensors = [tens for nm, idx, tens in sorted((tens.name, idx, tens) for idx, tens in enumerate(tensor_set))]
+404-
+405:        scratch_tensors = [tens for tens in all_tensors if tens.purpose is TensorPurpose.Scratch]
+406-
+407-        if len(scratch_tensors) == 0:
+408-            scratch_tensor = None
+409-        else:
+410-            assert len(scratch_tensors) == 1, "Multiple scratch tensors"
+411-            scratch_tensor = scratch_tensors[0]
+412-
+413-        self.tensor_map_sg = {tens: idx for idx, tens in enumerate(all_tensors)}
+414-        self.buffer_map = self.assign_buffers_to_tensors(all_tensors, scratch_tensor)
+415-        self.tensor_map_all.append(self.tensor_map_sg)
+416-
+417-        tensors_offset = self.write_offset_vector([self.serialise_tensor(tens) for tens in all_tensors])
+418-
+419-        # Make sure the input_tensors haven't been modified
+420-        assert all(inp in sg.original_inputs for inp in sg.input_tensors)
+421-        inputs = [self.tensor_map_sg[tens] for tens in sg.original_inputs if tens in self.tensor_map_sg]
+422-
+423-        inputs_offset = self.write_int_vector(inputs)
+424-        outputs_offset = self.write_int_vector(
+425-            [self.tensor_map_sg[tens] for tens in sg.output_tensors if tens in self.tensor_map_sg]
+426-        )
+427-
+428-        operators_offset = self.write_offset_vector([self.serialise_operator(op) for op in all_ops])
+429-
+430-        SubGraph.SubGraphStart(builder)
+431-        SubGraph.SubGraphAddTensors(builder, tensors_offset)
+432-        SubGraph.SubGraphAddInputs(builder, inputs_offset)
+433-        SubGraph.SubGraphAddOutputs(builder, outputs_offset)
+434-
+435-        SubGraph.SubGraphAddOperators(builder, operators_offset)
+
+===== 6. VELA SRAM PEAK REPORT CALCULATION =====
+   550	    cycles_mapping = {
+   551	        "sram": PassCycles.SramAccess,
+   552	        "dram": PassCycles.DramAccess,
+   553	        "onchipflash": PassCycles.OnChipFlashAccess,
+   554	        "offchipflash": PassCycles.OffChipFlashAccess,
+   555	    }
+   556	
+   557	    # Map from Regor access_type to Vela TensorPurpose
+   558	    purpose_mapping = {
+   559	        "lut": TensorPurpose.LUT,
+   560	        "featuremap": TensorPurpose.FeatureMap,
+   561	        "scale": TensorPurpose.FSBias,
+   562	        "weights": TensorPurpose.Weights,
+   563	    }
+   564	
+   565	    cycles = [0] * PassCycles.Size
+   566	    bandwidths = [[[0] * BandwidthDirection.Size for i in range(TensorPurpose.Size)] for j in range(MemArea.Size)]
+   567	    memory_used = {i: 0 for i in range(MemArea.Size)}
+   568	
+   569	    mem_areas_present = set()
+   570	    for mem_name, memory in report.memories.items():
+   571	        mem_name_lower = str(mem_name).lower()
+   572	
+   573	        # skip shram/lutram in performance report
+   574	        if mem_name_lower in ["lutram", "shram"]:
+   575	            continue
+   576	
+   577	        cycles_idx = cycles_mapping[mem_name_lower]
+   578	        cycles[cycles_idx] += memory.totalAccessCycles
+   579	
+   580	        mem_area = memory_mapping.get(mem_name_lower, MemArea.Unknown)
+   581	        mem_areas_present.add(mem_area)
+   582	        memory_used[mem_area] = memory.peakUsage
+   583	
+   584	        for _, a in memory.accesses.items():
+   585	            purpose = purpose_mapping.get(str(a.accessType).lower(), TensorPurpose.Unknown)
+   586	
+   587	            bandwidths[mem_area][purpose][BandwidthDirection.Read] = a.bytesRead
+   588	            bandwidths[mem_area][purpose][BandwidthDirection.Write] = a.bytesWritten
+   589	
+   590	    read_only_area = arch.tensor_storage_mem_area[TensorPurpose.Weights]
+   591	    # Split read-only and staging/feature-map usage when const shares SRAM (OnChipFlash alias).
+   592	    if (
+   593	        report.readOnlyPeakUsage > 0
+   594	        and read_only_area == MemArea.OnChipFlash
+   595	        and MemArea.OnChipFlash not in mem_areas_present
+   596	    ):
+   597	        memory_used[read_only_area] = report.readOnlyPeakUsage
+   598	        memory_used[MemArea.Sram] = memory_used.get(MemArea.Sram, 0) - report.readOnlyPeakUsage
+   599	
+   600	    cycles[PassCycles.Npu] = report.npuCycles
+   601	    cycles[PassCycles.Total] = report.totalCycles
+   602	
+   603	    batch_size = 1
+   604	
+   605	    npu_operations = list()
+   606	    cpu_operations = list()
+   607	
+   608	    if opt_database:
+   609	        if show_cpu_operations:
+   610	            cpu_operations, npu_operations = regor_operations_from_database(opt_database)
+   611	
+   612	    if not len(cpu_operations) and not len(npu_operations):
+   613	        cpu_operations = ["N/A"] * report.cpuOps
+   614	        npu_operations = ["N/A"] * report.npuOps
+   615	
+
+===== 7. SYSTEM MEMORY AREA DEFINITIONS =====
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-133-; Memory Mode
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-134-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-135-; SRAM Only: the SRAM is used for all storage
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-136-[Memory_Mode.Sram_Only]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-137-const_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:138:arena_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:139:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-140-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-141-; Shared SRAM: the SRAM is shared between the Ethos-U and the Cortex-M software
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-142-; The non-SRAM memory is assumed to be read-only
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-143-[Memory_Mode.Shared_Sram]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-144-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:145:arena_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:146:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-147-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-148-; Dedicated SRAM: the SRAM (384KB) is only for use by the Ethos-U
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-149-; The non-SRAM memory is assumed to be read-writeable
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-150-[Memory_Mode.Dedicated_Sram]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-151-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:152:arena_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:153:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-154-arena_cache_size=393216
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-186-; -----------------------------------------------------------------------------
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-187-; Memory Mode
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-188-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-189-[Memory_Mode.Sram_Only]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-190-const_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:191:arena_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:192:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-193-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-194-; Shared SRAM: the SRAM is shared between the Ethos-U and the Cortex-M software
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-195-; The non-SRAM memory is assumed to be read-only
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-196-; This is appropriate for the SRAM_MRAM or DTCM_MRAM configs
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-197-[Memory_Mode.Shared_Sram]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-198-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:199:arena_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:200:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-201-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-202-; DTCM Cache
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-203-; This is appropriate for the DTCM_SRAM configs
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-204-[Memory_Mode.Dtcm_Cache]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-205-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:206:arena_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:207:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-208-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-209-[Memory_Mode.Dedicated_Sram]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-210-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:211:arena_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:212:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-213-; Arm tend to use 384K. We could use a lot more
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-214-;arena_cache_size=2048576
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-215-arena_cache_size=393216
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-216-
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-302-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-303-        self.tensor_storage_mem_area = {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-304-            # permanent mem_area
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-305-            TensorPurpose.Unknown: MemArea.Unknown,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-306-            TensorPurpose.Weights: self.permanent_storage_mem_area,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:307:            TensorPurpose.FeatureMap: self.feature_map_storage_mem_area,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-308-            TensorPurpose.LUT: self.permanent_storage_mem_area,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:309:            TensorPurpose.Scratch: self.feature_map_storage_mem_area,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:310:            TensorPurpose.ScratchFast: self.fast_storage_mem_area,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-311-        }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-312-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-313-        self.tensor_storage_mem_type = {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-314-            TensorPurpose.Unknown: MemType.Unknown,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-315-            TensorPurpose.Weights: MemType.Permanent_NPU,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-316-            TensorPurpose.FeatureMap: MemType.Scratch,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-317-            TensorPurpose.LUT: MemType.Scratch,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-318-            TensorPurpose.Scratch: MemType.Scratch,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-319-            TensorPurpose.ScratchFast: MemType.Scratch_fast,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-320-        }
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-522-    def is_spilling_enabled(self):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-523-        """
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-524-        Spilling is a feature that allows the Ethos-U to use a dedicated SRAM as a cache for various types of data
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-525-        """
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-526-        return (
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:527:            self._mem_port_mapping(self.cache_mem_area) == MemArea.Sram and self.cache_mem_area != self.arena_mem_area
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-528-        )
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-529-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-530-    def mem_type_size(self, mem_type: MemType) -> int:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-531-        """Returns size in bytes available for the given memory type. This is a hard limit."""
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-532-        if mem_type == MemType.Scratch_fast and self.is_spilling_enabled():
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-533-            # when accessing the scratch fast memory type with memory spilling enabled the arena_cache_size refers to
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-534-            # the cache memory area which is a hard limit
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-535-            return self.arena_cache_size
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-536-        else:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-537-            # for all other memory types and modes the hard limit is the maximum possible address offset
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-578-        self.memory_clock_scales = np.ones(MemArea.Size)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-579-        self.memory_ports_used = np.ones(MemArea.Size, int)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-580-        self.memory_burst_length = np.ones(MemArea.Size, int)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-581-        self.memory_latency = np.zeros((MemArea.Size, BandwidthDirection.Size), int)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-582-        self.const_mem_area = MemPort(1)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:583:        self.arena_mem_area = MemPort(1)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:584:        self.cache_mem_area = MemPort(1)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-585-        self.arena_cache_size = self.max_address_offset
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-586-        arena_cache_size_loc_text = "Default"
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-587-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-588-        # read configuration file(s)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-589-        if vela_config_files is None:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-590-            self.vela_config_files = [str(os.path.join(CONFIG_FILES_PATH, "Arm", "vela.ini"))]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-591-            print(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-592-                f"Warning: No configuration file specified. Using a default of {self.vela_config_files}."
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-593-                " Compilation may be invalid or non-optimal."
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-594-            )
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-667-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-668-        if self.vela_config is not None and self.vela_config.has_section(mem_mode_section):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-669-            self.const_mem_area = MemPort[
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-670-                self._read_config(mem_mode_section, "const_mem_area", self.const_mem_area.name)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-671-            ]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:672:            self.arena_mem_area = MemPort[
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:673:                self._read_config(mem_mode_section, "arena_mem_area", self.arena_mem_area.name)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-674-            ]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:675:            self.cache_mem_area = MemPort[
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:676:                self._read_config(mem_mode_section, "cache_mem_area", self.cache_mem_area.name)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-677-            ]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-678-            found = []
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-679-            self.arena_cache_size = int(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-680-                self._read_config(mem_mode_section, "arena_cache_size", self.arena_cache_size, found)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-681-            )
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-682-            if found[-1]:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-683-                arena_cache_size_loc_text = "Configuration file"
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-684-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-685-        else:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-686-            raise CliOptionError(
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-689-                f"Section {mem_mode_section} not found in Vela config file",
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-690-            )
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-691-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-692-        # override sram to onchipflash
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-693-        if self._mem_port_mapping(self.const_mem_area) == MemArea.Sram:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:694:            if self.const_mem_area == self.arena_mem_area == self.cache_mem_area:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-695-                print(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-696-                    "Info: Changing const_mem_area from Sram to OnChipFlash. This will use the same characteristics as"
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-697-                    " Sram."
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-698-                )
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-699-                if self.const_mem_area == MemPort.Axi0:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-700-                    self.const_mem_area = MemPort.Axi1
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-701-                    self.axi1_port = MemArea.OnChipFlash
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-702-                else:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-703-                    self.const_mem_area = MemPort.Axi0
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-704-                    self.axi0_port = MemArea.OnChipFlash
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-722-                "const_mem_area",
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-723-                self._mem_port_mapping(self.const_mem_area).name,
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-724-                "Dram or OnChipFlash or OffChipFlash",
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-725-            )
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-726-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:727:        if self._mem_port_mapping(self.arena_mem_area) not in (MemArea.Sram, MemArea.Dram):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:728:            raise ConfigOptionError("arena_mem_area", self._mem_port_mapping(self.arena_mem_area).name, "Sram or Dram")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-729-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:730:        if self._mem_port_mapping(self.cache_mem_area) != MemArea.Sram:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:731:            raise ConfigOptionError("cache_mem_area", self._mem_port_mapping(self.cache_mem_area).name, "Sram")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-732-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-733-        if self.arena_cache_size < 0:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-734-            raise ConfigOptionError("arena_cache_size", self.arena_cache_size, ">= 0")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-735-        if self.arena_cache_size > self.max_address_offset:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-736-            raise ConfigOptionError(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-737-                "arena_cache_size",
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-738-                f"{self.arena_cache_size}. Size is out of bounds, maximum is: {self.max_address_offset}",
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-739-            )
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-740-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-741-        # assign existing memory areas
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-742-        self.permanent_storage_mem_area = self._mem_port_mapping(self.const_mem_area)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:743:        self.feature_map_storage_mem_area = self._mem_port_mapping(self.arena_mem_area)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:744:        self.fast_storage_mem_area = self._mem_port_mapping(self.cache_mem_area)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-745-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-746-        # display the system configuration and memory mode
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-747-        if verbose_config:
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-748-            print("Configuration files:")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-749-            print(f"   original = {vela_config_files}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-750-            print(f"   used = {self.vela_config_files}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-751-            print(f"System Configuration ({self.system_config}):")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-752-            print(f"   core_clock = {self.core_clock}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-753-            print(f"   axi0_port = {self.axi0_port.name}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-754-            print(f"   axi1_port = {self.axi1_port.name}")
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-759-                print(f"   {mem.name}_read_latency = {self.memory_latency[mem][BandwidthDirection.Read]}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-760-                print(f"   {mem.name}_write_latency = {self.memory_latency[mem][BandwidthDirection.Write]}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-761-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-762-            print(f"Memory Mode ({self.memory_mode}):")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-763-            print(f"   const_mem_area = {self.const_mem_area.name}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:764:            print(f"   arena_mem_area = {self.arena_mem_area.name}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:765:            print(f"   cache_mem_area = {self.cache_mem_area.name}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-766-            print(f"   arena_cache_size = {self.arena_cache_size} from {arena_cache_size_loc_text}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-767-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-768-            print("Architecture Settings:")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-769-            print(f"   permanent_storage_mem_area = {self.permanent_storage_mem_area.name}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:770:            print(f"   feature_map_storage_mem_area = {self.feature_map_storage_mem_area.name}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py:771:            print(f"   fast_storage_mem_area = {self.fast_storage_mem_area.name}")
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-772-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-773-    def _read_config(self, section, key, current_value, found=None):
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-774-        """
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-775-        Reads a given key from a particular section in the Vela config file. If the section contains the 'inherit'
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-776-        option then we recurse into the section specified. If inherited sections result in multiple keys for a
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-777-        particular option then the key from the parent section is used, regardless of the parsing order. if specified
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-778-        found should be an empty list that this function will append a True or False to the end of the list indicating
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-779-        whether the key was found or not.
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-780-        """
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/architecture_features.py-781-        if not self.vela_config.has_section(section):
+
+===== 8. RAW OUTPUT REQUIREMENT =====
+usage: vela [-h] [--version] [--api-version] [--supported-ops-report]
+            [--list-config-files] [--list-configs LIST_CONFIGS]
+            [--output-dir OUTPUT_DIR] [--output-format {tflite,raw}]
+            [--enable-debug-db] [--config CONFIG] [--verbose-all]
+            [--verbose-config] [--verbose-graph] [--verbose-quantization]
+            [--verbose-packing] [--verbose-tensor-purpose]
+            [--verbose-tensor-format] [--verbose-schedule]
+            [--verbose-allocation] [--verbose-high-level-command-stream]
+            [--verbose-register-command-stream] [--verbose-operators]
+--
+            [--tensor-allocator {LinearAlloc,Greedy,HillClimb}]
+            [--show-subgraph-io-summary] [--max-block-dependency {0,1,2,3}]
+            [--optimise {Size,Performance}]
+            [--arena-cache-size ARENA_CACHE_SIZE]
+            [--cpu-tensor-alignment CPU_TENSOR_ALIGNMENT]
+            [--recursion-limit RECURSION_LIMIT]
+            [--hillclimb-max-iterations HILLCLIMB_MAX_ITERATIONS]
+            [--cop-format {COP1,COP2}] [--separate-io-regions]
+            [--debug-force-legacy-core] [--debug-force-regor]
+--
+                        config file
+  --output-dir OUTPUT_DIR
+                        Output directory to write files to (default: output)
+  --output-format {tflite,raw}
+                        Output format (default: tflite).
+  --enable-debug-db     Enables the calculation and writing of a network debug
+                        database to output directory
+  --config CONFIG       Vela configuration file(s) in Python ConfigParser .ini
+                        file format
+  --verbose-all         Enable all verbose options
+  --verbose-config      Enable system configuration and memory mode debug
+--
+                        Set the optimisation strategy. The Size strategy
+                        results in minimal SRAM usage (does not use arena-
+                        cache-size). The Performance strategy results in
+                        maximal performance (uses the arena-cache-size if
+                        specified) (default: Performance)
+  --arena-cache-size ARENA_CACHE_SIZE
+                        Set the size of the arena cache memory area, in bytes.
+                        If specified, this option overrides the memory mode
+                        attribute with the same name in a Vela configuration
+                        file
+  --cpu-tensor-alignment CPU_TENSOR_ALIGNMENT
+
+===== END =====
