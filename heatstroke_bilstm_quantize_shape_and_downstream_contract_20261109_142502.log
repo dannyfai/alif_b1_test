@@ -1,0 +1,625 @@
+===== BILSTM QUANTIZE SHAPE AND DOWNSTREAM CONTRACT =====
+Mon Nov  9 02:25:02 PM HKT 2026
+8d4b0a724119dcb7783c46a6e5feb1b57b02d1b8839bdc6574ad6205a1770eac  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+db0cdb5443b63adb22e6253da1c5e11fba36cc142dce57e2e609a225ed949290  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+===== 1. CUSTOM BILSTM PREPARE OUTPUT VALIDATION =====
+   150	  op_data->cell_gate_nonlinear_type = activation;
+   151	  op_data->cell_state_info = CreateLstmCellStateInfoFloat(cell_clip);
+   152	
+   153	  op_data->forget_gate_parameters = CreateGateParamsFloat();
+   154	  op_data->input_gate_parameters = CreateGateParamsFloat();
+   155	  op_data->cell_gate_parameters = CreateGateParamsFloat();
+   156	  op_data->output_gate_parameters = CreateGateParamsFloat();
+   157	
+   158	  op_data->inter_gate_parameters.forget_cell_mul_params =
+   159	      CreateInterGateMulParamsFloat();
+   160	  op_data->inter_gate_parameters.input_mul_params =
+   161	      CreateInterGateMulParamsFloat();
+   162	  op_data->inter_gate_parameters.output_mul_params =
+   163	      CreateInterGateMulParamsFloat();
+   164	}
+   165	
+   166	void* HeatstrokeBidirectionalLstmInit(TfLiteContext* context,
+   167	                                      const char* buffer,
+   168	                                      size_t length) {
+   169	  (void)buffer;
+   170	  (void)length;
+   171	
+   172	  auto* data = static_cast<HeatstrokeBidirectionalLstmOpData*>(
+   173	      context->AllocatePersistentBuffer(
+   174	          context, sizeof(HeatstrokeBidirectionalLstmOpData)));
+   175	
+   176	  if (data != nullptr) {
+   177	    std::memset(data, 0, sizeof(*data));
+   178	  }
+   179	  return data;
+   180	}
+   181	
+   182	TfLiteStatus HeatstrokeBidirectionalLstmPrepare(TfLiteContext* context,
+   183	                                                TfLiteNode* node) {
+   184	  if (node == nullptr || node->builtin_data == nullptr ||
+   185	      node->inputs == nullptr || node->outputs == nullptr ||
+   186	      node->inputs->size != 29 || node->outputs->size != 1 ||
+   187	      node->user_data == nullptr) {
+   188	    MicroPrintf("Heatstroke BiLSTM: invalid node configuration");
+   189	    return kTfLiteError;
+   190	  }
+   191	
+   192	  auto* op_data =
+   193	      static_cast<HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+   194	
+   195	  const auto* params =
+   196	      static_cast<const TfLiteBidirectionalSequenceLSTMParams*>(
+   197	          node->builtin_data);
+   198	
+   199	  if (!params->time_major || !params->merge_outputs ||
+   200	      params->activation != kTfLiteActTanh) {
+   201	    MicroPrintf("Heatstroke BiLSTM: unsupported LSTM options");
+   202	    return kTfLiteError;
+   203	  }
+   204	
+   205	  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+   206	  TfLiteEvalTensor* output =
+   207	      context->GetEvalTensor(context, node->outputs->data[0]);
+   208	
+   209	  if (!IsFloatTensorType(input) || !IsFloatTensorType(output) ||
+   210	      input->dims == nullptr || output->dims == nullptr ||
+   211	      input->dims->size != 3 || output->dims->size != 3) {
+   212	    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+   213	    return kTfLiteError;
+   214	  }
+   215	
+   216	  const int time_steps = input->dims->data[0];
+   217	  const int batch_size = input->dims->data[1];
+   218	  const int input_dimension = input->dims->data[2];
+   219	
+   220	  // The supplied heat-stress model uses time-major, single-batch sequences.
+   221	  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+   222	    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+   223	    return kTfLiteError;
+   224	  }
+   225	
+   226	  int forward_hidden = 0;
+   227	  int backward_hidden = 0;
+   228	
+   229	  if (!ValidateDirection(context, node, 1, 5, 9, 25, 26, input_dimension, batch_size, &forward_hidden) ||
+   230	      !ValidateDirection(context, node, 13, 17, 21, 27, 28, input_dimension, batch_size, &backward_hidden) ||
+   231	      forward_hidden != backward_hidden) {
+   232	    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+   233	    return kTfLiteError;
+   234	  }
+   235	
+   236	  const int hidden = forward_hidden;
+   237	
+   238	  if (output->dims->data[0] != time_steps ||
+   239	      output->dims->data[1] != batch_size ||
+   240	      output->dims->data[2] != 2 * hidden) {
+   241	    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+   242	    return kTfLiteError;
+   243	  }
+   244	
+   245	  // The directional evaluator must see [time_steps, batch_size, hidden],
+   246	  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+   247	  const size_t staged_dims_bytes =
+   248	      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+   249	  op_data->staged_output_dims =
+   250	      static_cast<TfLiteIntArray*>(
+   251	          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+   252	
+   253	  if (op_data->staged_output_dims == nullptr) {
+   254	    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+   255	    return kTfLiteError;
+   256	  }
+   257	
+   258	  op_data->staged_output_dims->size = 3;
+   259	  op_data->staged_output_dims->data[0] = time_steps;
+   260	  op_data->staged_output_dims->data[1] = batch_size;
+   261	  op_data->staged_output_dims->data[2] = hidden;
+   262	
+   263	  // Compact 29-slot model: no separate auxiliary input slots exist.
+   264	
+   265	  InitializeFloatLstmParameters(
+   266	      &op_data->forward, true, batch_size, time_steps,
+   267	      input_dimension, hidden, params->activation, params->cell_clip);
+   268	
+   269	  InitializeFloatLstmParameters(
+   270	      &op_data->backward, true, batch_size, time_steps,
+   271	      input_dimension, hidden, params->activation, params->cell_clip);
+   272	
+   273	  const size_t reverse_bytes =
+   274	      static_cast<size_t>(time_steps) * batch_size *
+   275	      input_dimension * sizeof(float);
+   276	
+   277	  const size_t stage_bytes =
+   278	      static_cast<size_t>(time_steps) * batch_size *
+   279	      hidden * sizeof(float);
+   280	
+
+===== 2. CUSTOM BILSTM EVAL OUTPUT WRITES =====
+   350	  contents->output_tensor = staged_output;
+   351	}
+   352	
+   353	TfLiteStatus HeatstrokeBidirectionalLstmEval(TfLiteContext* context,
+   354	                                             TfLiteNode* node) {
+   355	  if (node == nullptr || node->user_data == nullptr) {
+   356	    return kTfLiteError;
+   357	  }
+   358	
+   359	  const auto* op_data =
+   360	      static_cast<const HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+   361	
+   362	  const TfLiteEvalTensor* input =
+   363	      GetInputEvalTensor(context, node, 0);
+   364	
+   365	  TfLiteEvalTensor* output =
+   366	      context->GetEvalTensor(context, node->outputs->data[0]);
+   367	
+   368	  if (!IsFloatTensor(input) || !IsFloatTensor(output)) {
+   369	    return kTfLiteError;
+   370	  }
+   371	
+   372	  const int time_steps = op_data->forward.size_info.time_steps;
+   373	  const int input_dimension = op_data->forward.size_info.input_dimension;
+   374	  const int hidden = op_data->forward.size_info.state_dimension;
+   375	
+   376	  auto* reversed_input = static_cast<float*>(
+   377	      context->GetScratchBuffer(
+   378	          context, op_data->reverse_input_buffer));
+   379	
+   380	  auto* staged_output = static_cast<float*>(
+   381	      context->GetScratchBuffer(
+   382	          context, op_data->stage_output_buffer));
+   383	
+   384	  if (reversed_input == nullptr || staged_output == nullptr) {
+   385	    MicroPrintf("Heatstroke BiLSTM: scratch buffer unavailable");
+   386	    return kTfLiteError;
+   387	  }
+   388	
+   389	  const float* input_data = input->data.f;
+   390	  float* output_data = output->data.f;
+   391	
+   392	  // Reverse the time dimension for the backward direction.
+   393	  for (int t = 0; t < time_steps; ++t) {
+   394	    std::memcpy(
+   395	        reversed_input + t * input_dimension,
+   396	        input_data + (time_steps - 1 - t) * input_dimension,
+   397	        input_dimension * sizeof(float));
+   398	  }
+   399	
+   400	  TfLiteEvalTensor reversed_input_tensor = *input;
+   401	  reversed_input_tensor.data.f = reversed_input;
+   402	
+   403	  TfLiteEvalTensor staged_output_tensor = *output;
+   404	  staged_output_tensor.data.f = staged_output;
+   405	  staged_output_tensor.dims = op_data->staged_output_dims;
+   406	
+   407	  LSTMKernelContents forward_contents{};
+   408	  PopulateDirectionContents(context, node, 1, 5, 9, 25, 26, input, &staged_output_tensor, &forward_contents);
+   409	
+   410	  LSTMBuffers<float> buffers =
+   411	      CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+   412	
+   413	  TfLiteStatus forward_status =
+   414	      EvalLstm<float, float, float, float>(
+   415	          op_data->forward, forward_contents, buffers);
+   416	  if (forward_status != kTfLiteOk) {
+   417	    return forward_status;
+   418	  }
+   419	
+   420	  // Copy forward outputs into the first half of the merged output.
+   421	  for (int t = 0; t < time_steps; ++t) {
+   422	    std::memcpy(
+   423	        output_data + t * (2 * hidden),
+   424	        staged_output + t * hidden,
+   425	        hidden * sizeof(float));
+   426	  }
+   427	
+   428	  LSTMKernelContents backward_contents{};
+   429	  PopulateDirectionContents(context, node, 13, 17, 21, 27, 28, &reversed_input_tensor, &staged_output_tensor, &backward_contents);
+   430	
+   431	  TfLiteStatus backward_status =
+   432	      EvalLstm<float, float, float, float>(
+   433	          op_data->backward, backward_contents, buffers);
+   434	  if (backward_status != kTfLiteOk) {
+   435	    return backward_status;
+   436	  }
+   437	
+   438	  // Restore backward outputs to original time order and copy them
+   439	  // into the second half of the merged output.
+   440	  for (int t = 0; t < time_steps; ++t) {
+   441	    std::memcpy(
+   442	        output_data + t * (2 * hidden) + hidden,
+   443	        staged_output + (time_steps - 1 - t) * hidden,
+   444	        hidden * sizeof(float));
+   445	  }
+   446	
+   447	  return kTfLiteOk;
+   448	}
+   449	
+   450	}  // namespace
+   451	
+   452	TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstm() {
+   453	  return micro::RegisterOp(
+   454	      HeatstrokeBidirectionalLstmInit,
+   455	      HeatstrokeBidirectionalLstmPrepare,
+
+===== 3. TFLM QUANTIZE KERNEL SOURCE FILES =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_common.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize_common.cc
+
+===== 4. QUANTIZE PREPARE AND EVAL IMPLEMENTATION =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-324-  micro_context->DeallocateTempTfLiteTensor(input);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-325-  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-326-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-327-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-328-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-329-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-330-TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-331-#if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-332-  return EvalXtensa(context, node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-333-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-334-  return EvalQuantizeReference(context, node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-335-#endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-336-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-337-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-338-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-339-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc:340:TFLMRegistration Register_QUANTIZE() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-341-  return tflite::micro::RegisterOp(Init, Prepare, Eval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-342-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-343-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc-344-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-66-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-67-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-68-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-69-TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-70-#if defined(CEVA_BX1) || defined(CEVA_SP500)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-71-  return EvalCEVA(context, node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-72-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-73-  return EvalQuantizeReference(context, node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-74-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-75-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-76-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-77-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-78-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-79-// This Op (QUANTIZE) quantizes the input and produces quantized output.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-80-// AffineQuantize takes scale and zero point and quantizes the float value to
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-81-// quantized output, in int8_t or uint8_t format.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc:82:TFLMRegistration Register_QUANTIZE() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-83-  return tflite::micro::RegisterOp(Init, PrepareQuantizeReference, Eval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-84-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-85-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc-86-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-21-#include "tensorflow/lite/kernels/kernel_util.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-22-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-23-#include "tensorflow/lite/micro/micro_utils.h"
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-24-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-25-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-26-namespace {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-27-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-28-void* InitQuantizeReference(TfLiteContext* context, const char* buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-29-                            size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-30-  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-31-  return context->AllocatePersistentBuffer(context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-32-                                           sizeof(OpDataQuantizeReference));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-33-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-34-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-35-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-36-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc:37:TFLMRegistration Register_QUANTIZE() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-38-  return tflite::micro::RegisterOp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-39-      InitQuantizeReference, PrepareQuantizeReference, EvalQuantizeReference);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-40-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-41-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc-42-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-21-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-22-namespace tflite {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-23-namespace testing {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-24-namespace {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-25-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-26-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-27-void ValidateQuantizeGoldens(TfLiteTensor* tensors, int tensors_size,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-28-                             const float* golden, T* golden_quantized,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-29-                             float scale, int zero_point, int output_len,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-30-                             T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-31-  int inputs_array_data[] = {1, 0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-32-  TfLiteIntArray* inputs_array = IntArrayFromInts(inputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-33-  int outputs_array_data[] = {1, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-34-  TfLiteIntArray* outputs_array = IntArrayFromInts(outputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-35-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-36-  // Version 1 of quantize supports int8_t and uint8_t quantization.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc:37:  const TFLMRegistration registration = Register_QUANTIZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-38-  micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-39-                             outputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-40-                             /*builtin_data=*/nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-41-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-42-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-43-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-44-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-45-  // Use reference quantization from test utils to compare against op output.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-46-  Quantize(golden, golden_quantized, output_len, scale, zero_point);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-47-  for (int i = 0; i < output_len; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-48-    TF_LITE_MICRO_EXPECT_EQ(golden_quantized[i], output_data[i]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-49-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-50-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-51-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-52-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-53-void TestQuantizeFloat(int* input_dims_data, const float* input_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-54-                       int* output_dims_data, const float* golden,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-55-                       T* golden_quantized, const float scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-56-                       const int zero_point, T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-57-  TfLiteIntArray* input_dims = IntArrayFromInts(input_dims_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-58-  TfLiteIntArray* output_dims = IntArrayFromInts(output_dims_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-59-  const int output_dims_count = ElementCount(*output_dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-60-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-61-  TfLiteTensor output_tensor =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-62-      CreateQuantizedTensor(output_data, output_dims, scale, zero_point);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-63-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-64-  TfLiteAffineQuantization quant;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-65-  float scales[] = {1, scale};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-66-  int zero_points[] = {1, zero_point};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-67-  quant.scale = FloatArrayFromFloats(scales);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-68-  quant.zero_point = IntArrayFromInts(zero_points);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc-69-  output_tensor.quantization = {kTfLiteAffineQuantization, &quant};
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-85-TFLMRegistration Register_LOGICAL_AND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-86-TFLMRegistration Register_LOGICAL_NOT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-87-TFLMRegistration Register_LOGICAL_OR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-88-TFLMRegistration Register_LOGISTIC();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-89-TFLMRegistration Register_MAX_POOL_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-90-TFLMRegistration Register_MAXIMUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-91-TFLMRegistration Register_MEAN();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-92-TFLMRegistration Register_MINIMUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-93-TFLMRegistration Register_MIRROR_PAD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-94-TFLMRegistration Register_MUL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-95-TFLMRegistration Register_NEG();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-96-TFLMRegistration Register_NOT_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-97-TFLMRegistration Register_PACK();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-98-TFLMRegistration Register_PAD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-99-TFLMRegistration Register_PADV2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-100-TFLMRegistration Register_PRELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:101:TFLMRegistration Register_QUANTIZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-102-TFLMRegistration Register_READ_VARIABLE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-103-TFLMRegistration Register_REDUCE_MAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-104-TFLMRegistration Register_RELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-105-TFLMRegistration Register_RELU6();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-106-TFLMRegistration Register_RESHAPE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-107-TFLMRegistration Register_RESIZE_BILINEAR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-108-TFLMRegistration Register_RESIZE_NEAREST_NEIGHBOR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-109-TFLMRegistration Register_ROUND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-110-TFLMRegistration Register_RSQRT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-111-TFLMRegistration Register_SELECT_V2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-112-TFLMRegistration Register_SHAPE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-113-TFLMRegistration Register_SIN();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-114-TFLMRegistration Register_SLICE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-115-TFLMRegistration Register_SOFTMAX();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-116-TFLMRegistration Register_SPACE_TO_BATCH_ND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-117-TFLMRegistration Register_SPACE_TO_DEPTH();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-118-TFLMRegistration Register_SPLIT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-119-TFLMRegistration Register_SPLIT_V();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-120-TFLMRegistration Register_SQRT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-121-TFLMRegistration Register_SQUARE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-122-TFLMRegistration Register_SQUARED_DIFFERENCE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-123-TFLMRegistration Register_SQUEEZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-124-TFLMRegistration Register_STRIDED_SLICE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-125-TFLMRegistration Register_SUB();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-126-TFLMRegistration Register_SUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-127-TFLMRegistration Register_SVDF();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-128-TFLMRegistration Register_TANH();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-129-TFLMRegistration Register_TRANSPOSE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-130-TFLMRegistration Register_TRANSPOSE_CONV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-131-// TODO(b/230666079): resolve conflict with xtensa implementation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-132-TFLMRegistration Register_UNIDIRECTIONAL_SEQUENCE_LSTM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-133-TFLMRegistration Register_UNPACK();
+
+===== 5. UPSTREAM AND DEPLOYED GRAPH SHAPE CONTRACTS =====
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794205502.865578  129528 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794205502.865842  129528 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794205502.901839  129528 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794205503.738416  129528 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794205503.738725  129528 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+
+==============================================================================================================
+MODEL: /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+OPERATORS: 575 TENSORS: 915
+
+BILSTM OPERATOR 284, inputs=48
+LSTM OUTPUT: tensor=744, name='val_253_reshaped', type=FLOAT32, shape=[900, 1, 256], signature=[], buffer=0, variable=False
+DIRECT CONSUMERS: [(285, 0, 'RESHAPE', [744], [430])]
+
+  CONSUMER OP 285: RESHAPE, input_position=0
+    INPUT[0]: tensor=744, name='val_253_reshaped', type=FLOAT32, shape=[900, 1, 256], signature=[], buffer=0, variable=False
+    OUTPUT[0]: tensor=430, name='val_253', type=FLOAT32, shape=[900, 1, 2, 128], signature=[], buffer=0, variable=False
+    DOWNSTREAM CONSUMERS: [(286, 0, 'QUANTIZE', [430], [431])]
+
+==============================================================================================================
+MODEL: /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+OPERATORS: 306 TENSORS: 525
+
+BILSTM OPERATOR 170, inputs=29
+LSTM OUTPUT: tensor=305, name='val_253_reshaped', type=FLOAT32, shape=[900, 1, 256], signature=[], buffer=0, variable=False
+DIRECT CONSUMERS: [(171, 0, 'RESHAPE', [305, 306], [307])]
+
+  CONSUMER OP 171: RESHAPE, input_position=0
+    INPUT[0]: tensor=305, name='val_253_reshaped', type=FLOAT32, shape=[900, 1, 256], signature=[], buffer=0, variable=False
+    INPUT[1]: tensor=306, name='new_shape', type=INT32, shape=[4], signature=[], buffer=107, variable=False
+    OUTPUT[0]: tensor=307, name='val_253', type=FLOAT32, shape=[900, 1, 2, 128], signature=[], buffer=0, variable=False
+    DOWNSTREAM CONSUMERS: [(172, 0, 'QUANTIZE', [307], [308])]
+    RESHAPE SHAPE INPUT: tensor=306, name='new_shape', type=INT32, shape=[4], signature=[], buffer=107, variable=False
+    SHAPE CONSTANT BYTES: 84030000010000000200000080000000
+
+GRAPH_CONTRACT_AUDIT_COMPLETE
+
+===== 6. CUSTOM KERNEL RANK AND SHAPE ASSUMPTIONS =====
+15-namespace {
+16-
+17-struct HeatstrokeBidirectionalLstmOpData {
+18-  OpDataLSTM forward;
+19-  OpDataLSTM backward;
+20:  TfLiteIntArray* staged_output_dims;
+21-  int reverse_input_buffer;
+22-  int stage_output_buffer;
+23-};
+24-
+25-TfLiteEvalTensor* GetInputEvalTensor(TfLiteContext* context,
+26-                                     TfLiteNode* node,
+27-                                     int input_position) {
+28-  if (input_position < 0 || input_position >= node->inputs->size) {
+--
+41-  if (tensor == nullptr || tensor->dims == nullptr) {
+42-    return 0;
+43-  }
+44-
+45-  size_t count = 1;
+46:  for (int i = 0; i < tensor->dims->size; ++i) {
+47:    if (tensor->dims->data[i] < 0) {
+48-      return 0;
+49-    }
+50:    count *= static_cast<size_t>(tensor->dims->data[i]);
+51-  }
+52-  return count;
+53-}
+54-
+55-bool IsFloatTensorType(const TfLiteEvalTensor* tensor) {
+56-  return tensor != nullptr && tensor->type == kTfLiteFloat32;
+57-}
+58-
+--
+60-  return IsFloatTensorType(tensor) && tensor->data.f != nullptr;
+61-}
+62-
+63-bool IsMatrix(const TfLiteEvalTensor* tensor, int rows, int columns) {
+64-  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+65:         tensor->dims->size == 2 &&
+66:         tensor->dims->data[0] == rows &&
+67:         tensor->dims->data[1] == columns;
+68-}
+69-
+70-bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+71-  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+72:         tensor->dims->size == 1 &&
+73:         tensor->dims->data[0] == length;
+74-}
+75-
+76-bool ValidateDirection(TfLiteContext* context,
+77-                       TfLiteNode* node,
+78-                       int input_weight_base,
+79-                       int recurrent_weight_base,
+80-                       int bias_base,
+81-                       int hidden_state_position,
+--
+85-                       int* hidden_dimension) {
+86-  TfLiteEvalTensor* first_weight =
+87-      GetInputEvalTensor(context, node, input_weight_base);
+88-
+89-  if (first_weight == nullptr || first_weight->dims == nullptr ||
+90:      first_weight->dims->size != 2) {
+91-    return false;
+92-  }
+93-
+94:  const int hidden = first_weight->dims->data[0];
+95-
+96:  if (hidden <= 0 || first_weight->dims->data[1] != input_dimension) {
+97-    return false;
+98-  }
+99-
+100-  for (int gate = 0; gate < 4; ++gate) {
+101-    TfLiteEvalTensor* input_weight =
+102-        GetInputEvalTensor(context, node, input_weight_base + gate);
+103-
+104-    TfLiteEvalTensor* recurrent_weight =
+--
+205-  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+206-  TfLiteEvalTensor* output =
+207-      context->GetEvalTensor(context, node->outputs->data[0]);
+208-
+209-  if (!IsFloatTensorType(input) || !IsFloatTensorType(output) ||
+210:      input->dims == nullptr || output->dims == nullptr ||
+211:      input->dims->size != 3 || output->dims->size != 3) {
+212:    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+213-    return kTfLiteError;
+214-  }
+215-
+216:  const int time_steps = input->dims->data[0];
+217:  const int batch_size = input->dims->data[1];
+218:  const int input_dimension = input->dims->data[2];
+219-
+220-  // The supplied heat-stress model uses time-major, single-batch sequences.
+221-  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+222-    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+223-    return kTfLiteError;
+224-  }
+225-
+226-  int forward_hidden = 0;
+--
+233-    return kTfLiteError;
+234-  }
+235-
+236-  const int hidden = forward_hidden;
+237-
+238:  if (output->dims->data[0] != time_steps ||
+239:      output->dims->data[1] != batch_size ||
+240:      output->dims->data[2] != 2 * hidden) {
+241-    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+242-    return kTfLiteError;
+243-  }
+244-
+245-  // The directional evaluator must see [time_steps, batch_size, hidden],
+246-  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+247-  const size_t staged_dims_bytes =
+248-      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+249:  op_data->staged_output_dims =
+250-      static_cast<TfLiteIntArray*>(
+251-          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+252-
+253:  if (op_data->staged_output_dims == nullptr) {
+254-    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+255-    return kTfLiteError;
+256-  }
+257-
+258:  op_data->staged_output_dims->size = 3;
+259:  op_data->staged_output_dims->data[0] = time_steps;
+260:  op_data->staged_output_dims->data[1] = batch_size;
+261:  op_data->staged_output_dims->data[2] = hidden;
+262-
+263-  // Compact 29-slot model: no separate auxiliary input slots exist.
+264-
+265-  InitializeFloatLstmParameters(
+266-      &op_data->forward, true, batch_size, time_steps,
+267-      input_dimension, hidden, params->activation, params->cell_clip);
+268-
+269-  InitializeFloatLstmParameters(
+--
+400-  TfLiteEvalTensor reversed_input_tensor = *input;
+401-  reversed_input_tensor.data.f = reversed_input;
+402-
+403-  TfLiteEvalTensor staged_output_tensor = *output;
+404-  staged_output_tensor.data.f = staged_output;
+405:  staged_output_tensor.dims = op_data->staged_output_dims;
+406-
+407-  LSTMKernelContents forward_contents{};
+408-  PopulateDirectionContents(context, node, 1, 5, 9, 25, 26, input, &staged_output_tensor, &forward_contents);
+409-
+410-  LSTMBuffers<float> buffers =
+411-      CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+412-
+413-  TfLiteStatus forward_status =
+
+===== END =====
