@@ -1,0 +1,808 @@
+===== VELA SCRATCH AND SCRATCH_FAST MAPPING =====
+Mon Nov  9 12:28:49 PM HKT 2026
+b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+===== 1. VELA MEMORY-AREA MAPPING =====
+   290	            self.max_outstanding_dma = 1
+   291	            axi_port_address_width = 32
+   292	            axi_port_bytes_per_cycle = np.full(MemArea.Size, 8.0)
+   293	        else:
+   294	            assert False, f"Unsupported accelerator_config = {self.accelerator_config}"
+   295	
+   296	        self.max_address_offset = 1 << axi_port_address_width
+   297	
+   298	        self._get_vela_config(vela_config_files, verbose_config, arena_cache_size)
+   299	
+   300	        self.memory_bandwidths_per_cycle = axi_port_bytes_per_cycle * self.memory_ports_used * self.memory_clock_scales
+   301	        self.memory_bandwidths_per_second = self.memory_bandwidths_per_cycle * self.core_clock
+   302	
+   303	        self.tensor_storage_mem_area = {
+   304	            # permanent mem_area
+   305	            TensorPurpose.Unknown: MemArea.Unknown,
+   306	            TensorPurpose.Weights: self.permanent_storage_mem_area,
+   307	            TensorPurpose.FeatureMap: self.feature_map_storage_mem_area,
+   308	            TensorPurpose.LUT: self.permanent_storage_mem_area,
+   309	            TensorPurpose.Scratch: self.feature_map_storage_mem_area,
+   310	            TensorPurpose.ScratchFast: self.fast_storage_mem_area,
+   311	        }
+   312	
+   313	        self.tensor_storage_mem_type = {
+   314	            TensorPurpose.Unknown: MemType.Unknown,
+   315	            TensorPurpose.Weights: MemType.Permanent_NPU,
+   316	            TensorPurpose.FeatureMap: MemType.Scratch,
+   317	            TensorPurpose.LUT: MemType.Scratch,
+   318	            TensorPurpose.Scratch: MemType.Scratch,
+   319	            TensorPurpose.ScratchFast: MemType.Scratch_fast,
+   320	        }
+   321	
+   322	        if self.is_ethos_u85_system:
+   323	            self.num_macs_per_cycle = int(accelerator_config.split("-")[-1])
+   324	            self.ncores = 1
+   325	            return
+   715	        # check configuration
+   716	        if self._mem_port_mapping(self.const_mem_area) not in (
+   717	            MemArea.Dram,
+   718	            MemArea.OnChipFlash,
+   719	            MemArea.OffChipFlash,
+   720	        ):
+   721	            raise ConfigOptionError(
+   722	                "const_mem_area",
+   723	                self._mem_port_mapping(self.const_mem_area).name,
+   724	                "Dram or OnChipFlash or OffChipFlash",
+   725	            )
+   726	
+   727	        if self._mem_port_mapping(self.arena_mem_area) not in (MemArea.Sram, MemArea.Dram):
+   728	            raise ConfigOptionError("arena_mem_area", self._mem_port_mapping(self.arena_mem_area).name, "Sram or Dram")
+   729	
+   730	        if self._mem_port_mapping(self.cache_mem_area) != MemArea.Sram:
+   731	            raise ConfigOptionError("cache_mem_area", self._mem_port_mapping(self.cache_mem_area).name, "Sram")
+   732	
+   733	        if self.arena_cache_size < 0:
+   734	            raise ConfigOptionError("arena_cache_size", self.arena_cache_size, ">= 0")
+   735	        if self.arena_cache_size > self.max_address_offset:
+   736	            raise ConfigOptionError(
+   737	                "arena_cache_size",
+   738	                f"{self.arena_cache_size}. Size is out of bounds, maximum is: {self.max_address_offset}",
+   739	            )
+   740	
+   741	        # assign existing memory areas
+   742	        self.permanent_storage_mem_area = self._mem_port_mapping(self.const_mem_area)
+   743	        self.feature_map_storage_mem_area = self._mem_port_mapping(self.arena_mem_area)
+   744	        self.fast_storage_mem_area = self._mem_port_mapping(self.cache_mem_area)
+   745	
+   746	        # display the system configuration and memory mode
+   747	        if verbose_config:
+   748	            print("Configuration files:")
+   749	            print(f"   original = {vela_config_files}")
+   750	            print(f"   used = {self.vela_config_files}")
+   751	            print(f"System Configuration ({self.system_config}):")
+   752	            print(f"   core_clock = {self.core_clock}")
+   753	            print(f"   axi0_port = {self.axi0_port.name}")
+   754	            print(f"   axi1_port = {self.axi1_port.name}")
+   755	            for mem in (MemArea.Sram, MemArea.Dram, MemArea.OnChipFlash, MemArea.OffChipFlash):
+   756	                print(f"   {mem.name}_clock_scales = {self.memory_clock_scales[mem]}")
+   757	                print(f"   {mem.name}_ports_used = {self.memory_ports_used[mem]}")
+   758	                print(f"   {mem.name}_burst_length = {self.memory_burst_length[mem]}")
+   759	                print(f"   {mem.name}_read_latency = {self.memory_latency[mem][BandwidthDirection.Read]}")
+   760	                print(f"   {mem.name}_write_latency = {self.memory_latency[mem][BandwidthDirection.Write]}")
+   761	
+   762	            print(f"Memory Mode ({self.memory_mode}):")
+   763	            print(f"   const_mem_area = {self.const_mem_area.name}")
+   764	            print(f"   arena_mem_area = {self.arena_mem_area.name}")
+   765	            print(f"   cache_mem_area = {self.cache_mem_area.name}")
+   766	            print(f"   arena_cache_size = {self.arena_cache_size} from {arena_cache_size_loc_text}")
+   767	
+   768	            print("Architecture Settings:")
+   769	            print(f"   permanent_storage_mem_area = {self.permanent_storage_mem_area.name}")
+   770	            print(f"   feature_map_storage_mem_area = {self.feature_map_storage_mem_area.name}")
+   771	            print(f"   fast_storage_mem_area = {self.fast_storage_mem_area.name}")
+   772	
+   773	    def _read_config(self, section, key, current_value, found=None):
+   774	        """
+   775	        Reads a given key from a particular section in the Vela config file. If the section contains the 'inherit'
+   776	        option then we recurse into the section specified. If inherited sections result in multiple keys for a
+   777	        particular option then the key from the parent section is used, regardless of the parsing order. if specified
+   778	        found should be an empty list that this function will append a True or False to the end of the list indicating
+   779	        whether the key was found or not.
+   780	        """
+
+===== 2. VELA SCRATCH TENSOR SERIALIZATION =====
+    45	    start_addr = src_tensor.address
+    46	    end_addr = src_tensor.address + src_tensor.storage_size()
+    47	    memory_tensor.values[start_addr:end_addr] = src_tensor.buffer.copy()
+    48	
+    49	
+    50	def copy_ifm_values_to_memory_tensor(memory_tensor, src_tensor):
+    51	    start_addr = src_tensor.address
+    52	    values = src_tensor.values.flatten()
+    53	    if src_tensor.dtype.size_in_bytes() > 1:
+    54	        values = np.frombuffer(values.tobytes(), dtype=np.uint8)
+    55	    end_addr = start_addr + values.size
+    56	    memory_tensor.values[start_addr:end_addr] = values
+    57	
+    58	
+    59	def serialise_npu_subgraph_into_tensors(sg, arch, scratch_tens, scratch_fast_tens, flash_tens):
+    60	    if sg.placement != PassPlacement.Npu:
+    61	        return scratch_tens, scratch_fast_tens, flash_tens
+    62	
+    63	    flash_area = arch.permanent_storage_mem_area
+    64	    scratch_area = arch.feature_map_storage_mem_area
+    65	    scratch_fast_area = arch.fast_storage_mem_area
+    66	
+    67	    flash_size = sg.memory_used.get(flash_area, 0)
+    68	    scratch_size = sg.memory_used.get(scratch_area, 0)
+    69	
+    70	    payload_bytes = driver_actions.create_driver_payload(sg.register_command_stream, arch)
+    71	
+    72	    command_stream_size_bytes = len(payload_bytes)
+    73	
+    74	    if flash_tens == scratch_tens is None:
+    75	        # First Npu subgraph, create scratch and flash tensors
+    76	        sg.scratch_tensor = make_memory_tensor(
+    77	            sg.name + "_scratch", scratch_area, MemType.Scratch, scratch_size, False, arch
+    78	        )
+    79	        sg.scratch_tensor.purpose = TensorPurpose.Scratch
+    80	        sg.flash_tensor = make_memory_tensor(
+    81	            sg.name + "_flash", flash_area, MemType.Permanent_CPU, flash_size, True, arch
+    82	        )
+    83	        sg.scratch_fast_tensor = make_memory_tensor(
+    84	            sg.name + "_scratch_fast", scratch_fast_area, MemType.Scratch_fast, 0, False, arch
+    85	        )
+    86	        sg.scratch_fast_tensor.purpose = TensorPurpose.ScratchFast
+    87	    else:
+    88	        sg.scratch_tensor = scratch_tens
+    89	        sg.scratch_tensor.shape[0] += scratch_size
+    90	        sg.flash_tensor = flash_tens
+    91	        sg.flash_tensor.shape[0] += flash_size
+    92	
+    93	        sg.scratch_fast_tensor = scratch_fast_tens
+    94	        sg.scratch_fast_tensor.shape[0] = 0
+    95	
+    96	    for sched_op in sg.sched_ops:
+    97	        ifm_tensor, ifm2_tensor, _, _, _ = sched_op.parent_op.get_ifm_ifm2_weights_biases_ofm()
+    98	
+    99	        op_info = sg.schedule.cost_map[sched_op]
+   100	        if op_info.npu_weights_tensor:
+   101	            copy_compressed_values_to_memory_tensor(sg.flash_tensor, op_info.npu_weights_tensor)
+   102	        if op_info.npu_scales_tensor:
+   103	            copy_compressed_values_to_memory_tensor(sg.flash_tensor, op_info.npu_scales_tensor)
+   104	
+   105	        if ifm_tensor and ifm_tensor.mem_type not in (MemType.Scratch, MemType.Scratch_fast):
+   106	            copy_ifm_values_to_memory_tensor(sg.flash_tensor, ifm_tensor)
+   107	        if ifm2_tensor and (ifm2_tensor.mem_type not in (MemType.Scratch, MemType.Scratch_fast)):
+   108	            copy_ifm_values_to_memory_tensor(sg.flash_tensor, ifm2_tensor)
+   109	
+   110	        if sched_op.parent_op.activation_lut:
+   111	            copy_ifm_values_to_memory_tensor(sg.flash_tensor, sched_op.parent_ps.lut_tensor)
+   112	
+   113	    sg.command_stream_tensor = make_memory_tensor(
+   114	        sg.name + "_command_stream", flash_area, MemType.Permanent_CPU, command_stream_size_bytes, True, arch
+   115	    )
+   116	    sg.command_stream_tensor.values = np.frombuffer(payload_bytes, dtype=np.uint8)
+   117	
+   118	    return sg.scratch_tensor, sg.scratch_fast_tensor, sg.flash_tensor
+   119	
+   120	
+   121	def add_const_tens_to_startup_cascaded_pass(startup_cps, tens):
+   122	    op = Operation(Op.Const, tens.name + "_const")
+   123	    op.set_output_tensor(tens)
+   124	    startup_cps.passes[0].ops.insert(0, op)
+   125	    startup_cps.passes[0].outputs.insert(0, tens)
+   130	    if sg.placement != PassPlacement.Cpu:
+   131	        return
+   132	
+   133	    startup_cps = sg.cascaded_passes[0]
+   134	
+   135	    for idx, cps in enumerate(sg.cascaded_passes):
+   136	        for ps in cps.passes:
+   137	            for op in ps.ops:
+   138	                if op.type == Op.CustomNpuOp:
+   139	                    callee = op.attrs["subgraph"]
+   140	
+   141	                    sz = 0
+   142	                    for tens in [
+   143	                        callee.scratch_fast_tensor,
+   144	                        callee.scratch_tensor,
+   145	                        callee.flash_tensor,
+   146	                        callee.command_stream_tensor,
+   147	                    ]:
+   148	                        op.inputs.insert(0, tens)
+   149	                        ps.inputs.insert(0, tens)
+   150	                        cps.inputs.insert(0, tens)
+   151	                        if tens != callee.scratch_tensor and tens != callee.scratch_fast_tensor:
+   152	                            add_const_tens_to_startup_cascaded_pass(startup_cps, tens)
+   153	                        sz += tens.storage_size()
+   154	
+   155	                    for prev_cps in sg.cascaded_passes[: idx + 1]:
+   156	                        prev_cps.sram_used += sz
+   157	
+   158	                    if callee.scratch_tensor is not None:
+   159	                        if callee.scratch_tensor.mem_area == MemArea.Sram:
+   160	                            cps.sram_used += callee.scratch_tensor.storage_size()
+   161	
+   162	                    if callee.scratch_fast_tensor is not None:
+   163	                        if callee.scratch_fast_tensor.mem_area == MemArea.Sram:
+   164	                            cps.sram_used += callee.scratch_fast_tensor.storage_size()
+
+===== 3. VELA COMPILER SCRATCH SIZE ASSIGNMENT =====
+   190	        start = time.time()
+   191	
+   192	    progress_print(verbose_progress, "Scheduling passes")
+   193	    # Run the scheduler
+   194	    scheduler.schedule_passes(nng, arch, options, scheduler_options)
+   195	    _check_schedule(nng, arch, scheduler_options)
+   196	
+   197	    if options.timing:
+   198	        stop = time.time()
+   199	        print("Scheduling took %f s" % (stop - start))
+   200	        start = time.time()
+   201	
+   202	    # LiveRanges for constant tensors for all Npu subgraphs
+   203	    permanent_storage = arch.permanent_storage_mem_area
+   204	    lr_graph_flash = live_range.LiveRangeGraph()
+   205	
+   206	    # Placeholders for scratch and flash tensors that are common for all Npu subgraphs
+   207	    scratch_tens = None
+   208	    scratch_fast_tens = None
+   209	    flash_tens = None
+   210	
+   211	    # Create list of NPU subgraphs with same order as the list of all subgraphs
+   212	    npu_subgraphs = [sg for sg in nng.subgraphs if sg.placement == PassPlacement.Npu]
+   213	
+   214	    progress_print(verbose_progress, "Calculating live ranges for constant NPU tensors")
+   215	    # Calculate live ranges for all constant Npu tensors, in permanent storage
+   216	    for sg in npu_subgraphs:
+   217	        lr_graph_flash = live_range.create_linear_live_range_graph(
+   218	            sg,
+   219	            permanent_storage,
+   220	            MemType.Permanent_NPU,
+   221	            lr_graph=lr_graph_flash,
+   222	        )
+   223	
+   224	    if npu_subgraphs:
+   225	        progress_print(verbose_progress, "Allocating NPU constant tensors to the first NPU subgraph")
+   226	        # Allocate all Npu constant tensors to the first Npu subgraph since it is
+   227	        # processed first during serialization into tensors
+   228	        first_npu_sg = npu_subgraphs[0]
+   229	        tensor_allocation.allocate_tensors(
+   230	            nng,
+   231	            first_npu_sg,
+   232	            arch,
+   233	            permanent_storage,
+   234	            set((MemType.Permanent_NPU,)),
+   235	            tensor_allocator=TensorAllocator.LinearAlloc,
+   236	            verbose_allocation=options.verbose_allocation,
+   237	            lr_graph=lr_graph_flash,
+   238	        )
+   239	
+   240	    root_sg = nng.get_root_subgraph()
+   241	
+   242	    progress_print(verbose_progress, "Generating command stream")
+   243	    # Generate command streams and serialise Npu-ops into tensors
+   244	    for sg in npu_subgraphs:
+   245	        high_level_command_stream_generator.generate_high_level_command_stream_for_schedule(
+   246	            nng, sg, arch, options.verbose_high_level_command_stream
+   247	        )
+   248	        lut.optimize_high_level_cmd_stream(sg, arch)
+   249	        high_level_command_to_npu_op.generate_register_command_stream_for_sg(
+   250	            nng, sg, arch, options.verbose_register_command_stream
+   251	        )
+   252	        scratch_tens, scratch_fast_tens, flash_tens = npu_serialisation.serialise_npu_subgraph_into_tensors(
+   253	            sg, arch, scratch_tens, scratch_fast_tens, flash_tens
+   254	        )
+   255	
+   256	    # Create list of CPU subgraphs with same order as the list of all subgraphs
+   257	    cpu_subgraphs = [sg for sg in nng.subgraphs if sg.placement == PassPlacement.Cpu]
+   258	    for sg in cpu_subgraphs:
+   259	        npu_serialisation.rewrite_npu_call_ops(sg, arch)
+   260	
+   261	    # Set Scratch and Fast_scratch Tensor size
+   262	    if scratch_tens is not None:
+   263	        scratch_tens.set_all_shapes([root_sg.memory_used_per_type.get(MemType.Scratch, 0)])
+   264	    if scratch_fast_tens is not None:
+   265	        scratch_fast_tens.set_all_shapes([root_sg.memory_used_per_type.get(MemType.Scratch_fast, 0)])
+   266	
+   267	    progress_print(verbose_progress, "Allocating CPU constant tensors")
+   268	    # Allocate all Cpu constant tensors, this is done last because the Npu-ops
+   269	    # have to be serialized into flash and scratch tensors first
+   270	    tensor_allocation.allocate_tensors(
+   271	        nng,
+   272	        root_sg,
+   273	        arch,
+   274	        permanent_storage,
+   275	        set((MemType.Permanent_CPU,)),
+   276	        tensor_allocator=TensorAllocator.LinearAlloc,
+   277	        verbose_allocation=options.verbose_allocation,
+   278	        cpu_tensor_alignment=options.cpu_tensor_alignment,
+   279	    )
+   280	    progress_print(verbose_progress, "Calculating new performance for the network")
+
+===== 4. VELA ETHOS-U OPERATOR INPUT ORDER =====
+    82	            ifm_shapes = []
+    83	            ifm_elem_sizes = []
+    84	            ifm_regions = []
+    85	            ifm_offsets = []
+    86	            ifm_quantization = []
+    87	            ofm_shapes = []
+    88	            ofm_elem_sizes = []
+    89	            ofm_regions = []
+    90	            ofm_offsets = []
+    91	            ofm_quantization = []
+    92	            cmd_stream_tensor, weight_tensor, scratch_tensor, scratch_fast_tensor = custom_op.inputs[:4]
+    93	            weight_region = get_region(weight_tensor.mem_type, arch)
+    94	            scratch_region = get_region(scratch_tensor.mem_type, arch)
+    95	            scratch_fast_region = get_region(scratch_fast_tensor.mem_type, arch)
+    96	            for ifm in custom_op.inputs[4:]:
+    97	                ifm_shapes.append(ifm.get_full_shape())
+    98	                ifm_regions.append(get_region(ifm.mem_type, arch))
+    99	                ifm_offsets.append(ifm.address)
+   100	                ifm_elem_sizes.append(ifm.element_size())
+   101	                ifm_quantization.append(_quantization_entry_from_tensor(ifm))
+   102	            for ofm in custom_op.outputs:
+   103	                ofm_shapes.append(ofm.get_full_shape())
+   104	                ofm_regions.append(get_region(ofm.mem_type, arch))
+   105	                ofm_offsets.append(ofm.address)
+   106	                ofm_elem_sizes.append(ofm.element_size())
+   107	                ofm_quantization.append(_quantization_entry_from_tensor(ofm))
+   108	
+   109	            filename_sg = f"{filename}_vela_sg{sg_idx}.npz"
+   110	            np.savez(
+   111	                filename_sg,
+   112	                cmd_data=cmd_stream_tensor.values,
+   113	                weight_data=weight_tensor.values,
+   114	                weight_region=weight_region,
+   115	                scratch_shape=scratch_tensor.shape,
+   116	                scratch_region=scratch_region,
+   117	                scratch_size=int(scratch_tensor.shape[0]),
+   118	                scratch_fast_shape=scratch_fast_tensor.shape,
+   119	                scratch_fast_region=scratch_fast_region,
+   120	                scratch_fast_size=int(scratch_fast_tensor.shape[0]),
+   121	                input_shape=ifm_shapes,
+   122	                input_elem_size=ifm_elem_sizes,
+   123	                input_region=ifm_regions,
+   124	                input_offset=ifm_offsets,
+   125	                output_shape=ofm_shapes,
+   126	                output_elem_size=ofm_elem_sizes,
+   127	                output_region=ofm_regions,
+   128	                output_offset=ofm_offsets,
+   129	                input_quantization=ifm_quantization,
+   130	                output_quantization=ofm_quantization,
+
+===== 5. SELECTED SYSTEM MEMORY CONFIGURATION =====
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-134-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-135-; SRAM Only: the SRAM is used for all storage
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-136-[Memory_Mode.Sram_Only]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-137-const_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:138:arena_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:139:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-140-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-141-; Shared SRAM: the SRAM is shared between the Ethos-U and the Cortex-M software
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-142-; The non-SRAM memory is assumed to be read-only
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-143-[Memory_Mode.Shared_Sram]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-144-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:145:arena_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:146:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-147-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-148-; Dedicated SRAM: the SRAM (384KB) is only for use by the Ethos-U
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-149-; The non-SRAM memory is assumed to be read-writeable
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-150-[Memory_Mode.Dedicated_Sram]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-151-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:152:arena_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini:153:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/default_vela.ini-154-arena_cache_size=393216
+--
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-187-; Memory Mode
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-188-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-189-[Memory_Mode.Sram_Only]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-190-const_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:191:arena_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:192:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-193-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-194-; Shared SRAM: the SRAM is shared between the Ethos-U and the Cortex-M software
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-195-; The non-SRAM memory is assumed to be read-only
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-196-; This is appropriate for the SRAM_MRAM or DTCM_MRAM configs
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-197-[Memory_Mode.Shared_Sram]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-198-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:199:arena_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:200:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-201-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-202-; DTCM Cache
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-203-; This is appropriate for the DTCM_SRAM configs
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-204-[Memory_Mode.Dtcm_Cache]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-205-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:206:arena_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:207:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-208-
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-209-[Memory_Mode.Dedicated_Sram]
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-210-const_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:211:arena_mem_area=Axi1
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini:212:cache_mem_area=Axi0
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-213-; Arm tend to use 384K. We could use a lot more
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-214-;arena_cache_size=2048576
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-215-arena_cache_size=393216
+/home/user/sdk-alif/modules/alif-mlek/scripts/vela/ensemble_vela.ini-216-
+
+===== 6. FLATBUFFER SCRATCH INPUT MAPPING =====
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794198529.332683  126395 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794198529.332861  126395 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794198529.361773  126395 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794198530.124865  126395 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794198530.125097  126395 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+Subgraphs: 1
+Subgraph 0 operators: 306
+
+ETHOS-U OPERATOR 82: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 87: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 93: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 98: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 104: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 107: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 109: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 111: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 113: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 115: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 117: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 119: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 121: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 126: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 128: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 130: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 132: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 134: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 136: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 138: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 140: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 142: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 144: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 146: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 148: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 150: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 156: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 158: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 160: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 162: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 164: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 166: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 168: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 173: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 185: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 197: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 209: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 221: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 233: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 245: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 247: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 259: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 264: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 276: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 288: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 292: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR 304: 'ethos-u'
+  input[2] SCRATCH: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+  input[3] SCRATCH_FAST: {'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+ETHOS-U OPERATOR COUNT: 47
+
+===== UNIQUE SCRATCH TENSORS =====
+Tensor indices: [134]
+Distinct sizes: [1857120]
+{'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+===== UNIQUE SCRATCH_FAST TENSORS =====
+Tensor indices: [134]
+Distinct sizes: [1857120]
+{'index': 134, 'name': 'scratch', 'type': 'UINT8', 'shape': [1857120], 'bytes': 1857120, 'buffer': 0}
+
+===== OFFLINE MEMORY ALLOCATION METADATA =====
+Metadata[0]: name='OfflineMemoryAllocation', buffer=187
+Raw metadata bytes: 2112
+Integer count: 528
+Header [version, subgraph, tensor_count]: (0, 1, 525)
+Declared tensor count: 525
+Offset count after header: 525
+First 160 allocation offsets:
+  tensor 0: offset=24784
+  tensor 1: offset=3072
+  tensor 2: offset=-1
+  tensor 3: offset=-1
+  tensor 4: offset=-1
+  tensor 5: offset=-1
+  tensor 6: offset=46384
+  tensor 7: offset=13888
+  tensor 8: offset=-1
+  tensor 9: offset=8480
+  tensor 10: offset=46384
+  tensor 11: offset=19328
+  tensor 12: offset=-1
+  tensor 13: offset=13920
+  tensor 14: offset=19376
+  tensor 15: offset=46384
+  tensor 16: offset=67984
+  tensor 17: offset=46384
+  tensor 18: offset=-1
+  tensor 19: offset=19328
+  tensor 20: offset=-1
+  tensor 21: offset=13888
+  tensor 22: offset=46384
+  tensor 23: offset=67984
+  tensor 24: offset=-1
+  tensor 25: offset=19328
+  tensor 26: offset=67984
+  tensor 27: offset=-1
+  tensor 28: offset=46384
+  tensor 29: offset=67984
+  tensor 30: offset=259792
+  tensor 31: offset=24784
+  tensor 32: offset=-1
+  tensor 33: offset=19328
+  tensor 34: offset=-1
+  tensor 35: offset=24832
+  tensor 36: offset=-1
+  tensor 37: offset=24784
+  tensor 38: offset=-1
+  tensor 39: offset=111232
+  tensor 40: offset=-1
+  tensor 41: offset=265200
+  tensor 42: offset=24832
+  tensor 43: offset=68032
+  tensor 44: offset=111232
+  tensor 45: offset=154432
+  tensor 46: offset=35632
+  tensor 47: offset=46432
+  tensor 48: offset=35632
+  tensor 49: offset=157040
+  tensor 50: offset=-1
+  tensor 51: offset=24832
+  tensor 52: offset=265200
+  tensor 53: offset=70640
+  tensor 54: offset=-1
+  tensor 55: offset=157040
+  tensor 56: offset=265200
+  tensor 57: offset=157040
+  tensor 58: offset=265200
+  tensor 59: offset=24784
+  tensor 60: offset=265200
+  tensor 61: offset=157040
+  tensor 62: offset=308400
+  tensor 63: offset=35584
+  tensor 64: offset=46384
+  tensor 65: offset=35584
+  tensor 66: offset=157040
+  tensor 67: offset=24784
+  tensor 68: offset=351600
+  tensor 69: offset=265200
+  tensor 70: offset=157040
+  tensor 71: offset=351600
+  tensor 72: offset=27440
+  tensor 73: offset=-1
+  tensor 74: offset=-1
+  tensor 75: offset=229056
+  tensor 76: offset=214656
+  tensor 77: offset=185840
+  tensor 78: offset=171440
+  tensor 79: offset=157040
+  tensor 80: offset=351600
+  tensor 81: offset=-1
+  tensor 82: offset=200256
+  tensor 83: offset=113840
+  tensor 84: offset=70640
+  tensor 85: offset=-1
+  tensor 86: offset=113840
+  tensor 87: offset=-1
+  tensor 88: offset=70640
+  tensor 89: offset=113840
+  tensor 90: offset=70640
+  tensor 91: offset=243456
+  tensor 92: offset=-1
+  tensor 93: offset=229056
+  tensor 94: offset=-1
+  tensor 95: offset=214656
+  tensor 96: offset=-1
+  tensor 97: offset=185856
+  tensor 98: offset=-1
+  tensor 99: offset=171456
+  tensor 100: offset=-1
+  tensor 101: offset=157056
+  tensor 102: offset=-1
+  tensor 103: offset=-1
+  tensor 104: offset=128240
+  tensor 105: offset=113840
+  tensor 106: offset=99440
+  tensor 107: offset=85040
+  tensor 108: offset=70640
+  tensor 109: offset=351600
+  tensor 110: offset=-1
+  tensor 111: offset=142656
+  tensor 112: offset=-1
+  tensor 113: offset=128256
+  tensor 114: offset=-1
+  tensor 115: offset=113856
+  tensor 116: offset=-1
+  tensor 117: offset=99456
+  tensor 118: offset=-1
+  tensor 119: offset=85056
+  tensor 120: offset=-1
+  tensor 121: offset=70656
+  tensor 122: offset=-1
+  tensor 123: offset=13888
+  tensor 124: offset=-1
+  tensor 125: offset=70640
+  tensor 126: offset=-1
+  tensor 127: offset=22032
+  tensor 128: offset=248992
+  tensor 129: offset=19328
+  tensor 130: offset=248864
+  tensor 131: offset=13888
+  tensor 132: offset=-1
+  tensor 133: offset=-1
+  tensor 134: offset=0
+  tensor 135: offset=248864
+  tensor 136: offset=277664
+  tensor 137: offset=364064
+  tensor 138: offset=364192
+  tensor 139: offset=248864
+  tensor 140: offset=392864
+  tensor 141: offset=-1
+  tensor 142: offset=364192
+  tensor 143: offset=364064
+  tensor 144: offset=364192
+  tensor 145: offset=364064
+  tensor 146: offset=364192
+  tensor 147: offset=248864
+  tensor 148: offset=-1
+  tensor 149: offset=248864
+  tensor 150: offset=364064
+  tensor 151: offset=709664
+  tensor 152: offset=710176
+  tensor 153: offset=248864
+  tensor 154: offset=824864
+  tensor 155: offset=-1
+  tensor 156: offset=710176
+  tensor 157: offset=709664
+  tensor 158: offset=710176
+  tensor 159: offset=709664
+
+===== MAPPING COMPLETE =====
+
+===== END =====
