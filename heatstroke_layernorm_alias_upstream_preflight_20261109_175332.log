@@ -1,0 +1,402 @@
+============================================================
+LAYERNORM IN-PLACE ALIAS UPSTREAM PREFLIGHT
+============================================================
+
+1. Complete SUB implementation and broadcast helpers
+     1	/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	#ifndef TENSORFLOW_LITE_KERNELS_INTERNAL_REFERENCE_SUB_H_
+    16	#define TENSORFLOW_LITE_KERNELS_INTERNAL_REFERENCE_SUB_H_
+    17	
+    18	#include <stdint.h>
+    19	
+    20	#include <algorithm>
+    21	#include <cstddef>
+    22	#include <limits>
+    23	
+    24	#include "ruy/profiler/instrumentation.h"  // from @ruy
+    25	#include "tensorflow/lite/kernels/internal/common.h"
+    26	#include "tensorflow/lite/kernels/internal/compatibility.h"
+    27	#include "tensorflow/lite/kernels/internal/types.h"
+    28	
+    29	namespace tflite {
+    30	
+    31	namespace reference_ops {
+    32	
+    33	template <class T>
+    34	struct SubImpl {
+    35	  template <class F>
+    36	  static void BroadcastInput1(const ArithmeticParams& params,
+    37	                              const T* input1_data, const T* input2_data,
+    38	                              T* output_data, size_t size, F binary_func) {
+    39	    for (size_t c = 0; c < size; ++c) {
+    40	      output_data[c] = binary_func(input1_data[0], input2_data[c], params);
+    41	    }
+    42	  }
+    43	
+    44	  template <class F>
+    45	  static void BroadcastInput2(const ArithmeticParams& params,
+    46	                              const T* input1_data, const T* input2_data,
+    47	                              T* output_data, size_t size, F binary_func) {
+    48	    for (size_t c = 0; c < size; ++c) {
+    49	      output_data[c] = binary_func(input1_data[c], input2_data[0], params);
+    50	    }
+    51	  }
+    52	
+    53	  template <class F>
+    54	  static void ElementWise(const ArithmeticParams& params, const T* input1_data,
+    55	                          const T* input2_data, T* output_data, size_t size,
+    56	                          F binary_func) {
+    57	    for (size_t c = 0; c < size; ++c) {
+    58	      output_data[c] = binary_func(input1_data[c], input2_data[c], params);
+    59	    }
+    60	  }
+    61	};
+    62	
+    63	template <>
+    64	struct SubImpl<int32_t> {
+    65	  template <class F>
+    66	  static void BroadcastInput1(const ArithmeticParams& params,
+    67	                              const int32_t* input1_data,
+    68	                              const int32_t* input2_data, int32_t* output_data,
+    69	                              size_t size, F binary_func) {
+    70	    size_t c = 0;
+    71	    int32_t activation_min, activation_max;
+    72	    GetActivationParams(params, &activation_min, &activation_max);
+    73	#ifdef USE_NEON
+    74	    const int32x4_t vmax = vdupq_n_s32(activation_max);
+    75	    const int32x4_t vmin = vdupq_n_s32(activation_min);
+    76	    const int32x4_t va = vdupq_n_s32(input1_data[0]);
+    77	    for (; c + 4 <= size; c += 4) {
+    78	      const int32x4_t vb = vld1q_s32(&input2_data[c]);
+    79	      int32x4_t vres = vsubq_s32(va, vb);
+    80	      vres = vmaxq_s32(vmin, vres);
+    81	      vres = vminq_s32(vmax, vres);
+    82	      vst1q_s32(&output_data[c], vres);
+    83	    }
+    84	#endif
+    85	    for (; c < size; ++c) {
+    86	      output_data[c] = binary_func(input1_data[0], input2_data[c], params);
+    87	    }
+    88	  }
+    89	
+    90	  template <class F>
+    91	  static void BroadcastInput2(const ArithmeticParams& params,
+    92	                              const int32_t* input1_data,
+    93	                              const int32_t* input2_data, int32_t* output_data,
+    94	                              size_t size, F binary_func) {
+    95	    size_t c = 0;
+    96	    int32_t activation_min, activation_max;
+    97	    GetActivationParams(params, &activation_min, &activation_max);
+    98	#ifdef USE_NEON
+    99	    const int32x4_t vmax = vdupq_n_s32(activation_max);
+   100	    const int32x4_t vmin = vdupq_n_s32(activation_min);
+   101	    const int32x4_t vb = vdupq_n_s32(input2_data[0]);
+   102	    for (; c + 4 <= size; c += 4) {
+   103	      const int32x4_t va = vld1q_s32(&input1_data[c]);
+   104	      int32x4_t vres = vsubq_s32(va, vb);
+   105	      vres = vmaxq_s32(vmin, vres);
+   106	      vres = vminq_s32(vmax, vres);
+   107	      vst1q_s32(&output_data[c], vres);
+   108	    }
+   109	#endif
+   110	    for (; c < size; ++c) {
+   111	      output_data[c] = binary_func(input1_data[c], input2_data[0], params);
+   112	    }
+   113	  }
+   114	
+   115	  template <class F>
+   116	  static void ElementWise(const ArithmeticParams& params,
+   117	                          const int32_t* input1_data,
+   118	                          const int32_t* input2_data, int32_t* output_data,
+   119	                          size_t size, F binary_func) {
+   120	    size_t c = 0;
+   121	    int32_t activation_min, activation_max;
+   122	    GetActivationParams(params, &activation_min, &activation_max);
+   123	#ifdef USE_NEON
+   124	    int32x4_t vmax = vdupq_n_s32(activation_max);
+   125	    int32x4_t vmin = vdupq_n_s32(activation_min);
+   126	    for (; c + 4 <= size; c += 4) {
+   127	      const int32x4_t va = vld1q_s32(&input1_data[c]);
+   128	      const int32x4_t vb = vld1q_s32(&input2_data[c]);
+   129	      int32x4_t vres = vsubq_s32(va, vb);
+   130	      vres = vmaxq_s32(vmin, vres);
+   131	      vres = vminq_s32(vmax, vres);
+   132	      vst1q_s32(&output_data[c], vres);
+   133	    }
+   134	#endif
+   135	    for (; c < size; ++c) {
+   136	      output_data[c] = binary_func(input1_data[c], input2_data[c], params);
+   137	    }
+   138	  }
+   139	};
+   140	
+   141	template <typename T, typename F>
+   142	inline void BroadcastSubRecursiveDimensions(
+   143	    int dimension, const ArithmeticParams& params, const T* input1_data,
+   144	    const T* input2_data, T* output_data, size_t* input1_offset_p,
+   145	    size_t* input2_offset_p, size_t* output_offset,
+
+2. Complete DIV broadcast implementation
+   180	// TODO(jiawen): We can implement BroadcastDiv on buffers of arbitrary
+   181	// dimensionality if the runtime code does a single loop over one dimension
+   182	// that handles broadcasting as the base case. The code generator would then
+   183	// generate max(D1, D2) nested for loops.
+   184	template <typename T, int N = 5>
+   185	void BroadcastDivSlow(const ArithmeticParams& params,
+   186	                      const RuntimeShape& unextended_input1_shape,
+   187	                      const T* input1_data,
+   188	                      const RuntimeShape& unextended_input2_shape,
+   189	                      const T* input2_data,
+   190	                      const RuntimeShape& unextended_output_shape,
+   191	                      T* output_data) {
+   192	  T output_activation_min;
+   193	  T output_activation_max;
+   194	  GetActivationParams(params, &output_activation_min, &output_activation_max);
+   195	
+   196	  TFLITE_DCHECK_LE(unextended_input1_shape.DimensionsCount(), N);
+   197	  TFLITE_DCHECK_LE(unextended_input2_shape.DimensionsCount(), N);
+   198	  TFLITE_DCHECK_LE(unextended_output_shape.DimensionsCount(), N);
+   199	
+   200	  NdArrayDesc<N> desc1;
+   201	  NdArrayDesc<N> desc2;
+   202	  NdArrayDesc<N> output_desc;
+   203	  NdArrayDescsForElementwiseBroadcast(unextended_input1_shape,
+   204	                                      unextended_input2_shape, &desc1, &desc2);
+   205	  CopyDimsToDesc(RuntimeShape::ExtendedShape(N, unextended_output_shape),
+   206	                 &output_desc);
+   207	
+   208	  // In Tensorflow, the dimensions are canonically named (batch_number, row,
+   209	  // col, channel), with extents (batches, height, width, depth), with the
+   210	  // trailing dimension changing most rapidly (channels has the smallest
+   211	  // stride, typically 1 element).
+   212	  //
+   213	  // In generated C code, we store arrays with the dimensions reversed. The
+   214	  // first dimension has smallest stride.
+   215	
+   216	  auto div_func = [&](int indexes[N]) {
+   217	    output_data[SubscriptToIndex(output_desc, indexes)] =
+   218	        ActivationFunctionWithMinMax(
+   219	            input1_data[SubscriptToIndex(desc1, indexes)] /
+   220	                input2_data[SubscriptToIndex(desc2, indexes)],
+   221	            output_activation_min, output_activation_max);
+   222	  };
+   223	  NDOpsHelper<N>(output_desc, div_func);
+   224	}
+   225	
+   226	template <typename T>
+   227	inline void Div(const ArithmeticParams& params,
+   228	                const RuntimeShape& input1_shape, const T* input1_data,
+   229	                const RuntimeShape& input2_shape, const T* input2_data,
+   230	                const RuntimeShape& output_shape, T* output_data) {
+   231	  T output_activation_min;
+   232	  T output_activation_max;
+   233	  GetActivationParams(params, &output_activation_min, &output_activation_max);
+   234	
+   235	  const int flat_size =
+   236	      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+   237	  for (int i = 0; i < flat_size; ++i) {
+   238	    output_data[i] = ActivationFunctionWithMinMax(
+   239	        input1_data[i] / input2_data[i], output_activation_min,
+   240	        output_activation_max);
+   241	  }
+   242	}
+   243	
+   244	}  // namespace reference_ops
+   245	}  // namespace tflite
+
+3. NDOpsHelper implementation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1196-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1197-template <int N, int DIM, typename Calc>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1198-typename std::enable_if<DIM == N - 1, void>::type NDOpsHelperImpl(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1199-    const NdArrayDesc<N>& output, const Calc& calc, int indexes[N]) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1200-  for (indexes[DIM] = 0; indexes[DIM] < output.extents[DIM]; ++indexes[DIM]) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1201-    calc(indexes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1202-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1203-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1204-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1205-// Execute the calc function in the innermost iteration based on the shape of
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1206-// the output. The calc function should take a single argument of type int[N].
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1207-template <int N, typename Calc>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h:1208:inline void NDOpsHelper(const NdArrayDesc<N>& output, const Calc& calc) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1209-  int indexes[N] = {0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1210-  NDOpsHelperImpl<N, 0, Calc>(output, calc, indexes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1211-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1212-// Copied from gemmlowp::RoundDown when we dropped direct dependency on
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1213-// gemmlowp.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1214-//
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1215-// Returns the runtime argument rounded down to the nearest multiple of
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1216-// the fixed Modulus.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1217-template <unsigned Modulus, typename Integer>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1218-Integer RoundDown(Integer i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1219-  return i - (i % Modulus);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1220-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1221-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1222-// Copied from gemmlowp::RoundUp when we dropped direct dependency on
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1223-// gemmlowp.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1224-//
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1225-// Returns the runtime argument rounded up to the nearest multiple of
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1226-// the fixed Modulus.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1227-template <unsigned Modulus, typename Integer>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1228-Integer RoundUp(Integer i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1229-  return RoundDown<Modulus>(i + Modulus - 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1230-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1231-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1232-// Copied from gemmlowp::CeilQuotient when we dropped direct dependency on
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1233-// gemmlowp.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1234-//
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1235-// Returns the quotient a / b rounded up ('ceil') to the nearest integer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1236-template <typename Integer>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1237-Integer CeilQuotient(Integer a, Integer b) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1238-  return (a + b - 1) / b;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1239-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1240-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1241-// This function is a copy of gemmlowp::HowManyThreads, copied when we dropped
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1242-// the direct dependency of internal/optimized/ on gemmlowp.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1243-//
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1244-// It computes a reasonable number of threads to use for a GEMM of shape
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1245-// (rows, cols, depth).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1246-//
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1247-// TODO(b/131910176): get rid of this function by switching each call site
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1248-// to its own more sensible logic for its own workload.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1249-template <int KernelRows>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1250-inline int LegacyHowManyThreads(int max_num_threads, int rows, int cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1251-                                int depth) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1252-  // Early-exit in the default case where multi-threading is disabled.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1253-  if (max_num_threads == 1) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1254-    return 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1255-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1256-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1257-  // Ensure that each thread has KernelRows rows to process, if at all possible.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1258-  int thread_count = std::min(max_num_threads, rows / KernelRows);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1259-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1260-  // Limit the number of threads according to the overall size of the problem.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1261-  if (thread_count > 1) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1262-    // Empirically determined value.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h-1263-    static constexpr std::uint64_t min_cubic_size_per_thread = 64 * 1024;
+
+4. Upstream pre-Vela candidate identity
+-rw-rw-r-- 1 user user 12M Nov  9 15:59 /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp.tflite
+275f6468499bdf146d6f1889d01d866a80277416e6f686e5be9f1fa07184408f  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp.tflite
+
+5. Locate LayerNorm SUB and DIV by tensor names
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794218013.178730  141920 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794218013.178903  141920 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794218013.208136  141920 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794218014.035720  141920 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794218014.036007  141920 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+
+TENSOR 398 'conv1d_3_DequantizeLinear_Output_2': shape=[1, 900, 128], type=0, producer=[243], consumers=[248]
+
+TENSOR 400 'node_layer_norm_1_mean_DequantizeLinear_Output': shape=[1, 1, 128], type=0, producer=[247], consumers=[248]
+
+TENSOR 401 'node_layer_norm_1_centered': shape=[1, 900, 128], type=0, producer=[248], consumers=[249, 257]
+
+TENSOR 407 'node_layer_norm_1_std': shape=[1, 1, 128], type=0, producer=[256], consumers=[257]
+
+TENSOR 408 'node_layer_norm_1_normalized': shape=[1, 900, 128], type=0, producer=[257], consumers=[258]
+
+OPERATOR_COUNT 574
+OP 0: QUANTIZE, inputs=[3], outputs=[154]
+OP 3: QUANTIZE, inputs=[5], outputs=[157]
+OP 4: QUANTIZE, inputs=[4], outputs=[158]
+OP 5: QUANTIZE, inputs=[2], outputs=[159]
+OP 10: QUANTIZE, inputs=[168], outputs=[169]
+OP 25: QUANTIZE, inputs=[180], outputs=[184]
+OP 38: QUANTIZE, inputs=[183], outputs=[627]
+OP 49: SUB, inputs=[201, 28], outputs=[207]
+OP 50: DIV, inputs=[202, 43], outputs=[208]
+OP 53: QUANTIZE, inputs=[204], outputs=[211]
+OP 58: DIV, inputs=[212, 43], outputs=[216]
+OP 65: DIV, inputs=[206, 205], outputs=[220]
+OP 82: SUB, inputs=[214, 233], outputs=[242]
+OP 91: SUB, inputs=[221, 249], outputs=[256]
+OP 100: SUB, inputs=[256, 242], outputs=[270]
+OP 107: QUANTIZE, inputs=[263], outputs=[277]
+OP 124: QUANTIZE, inputs=[291], outputs=[292]
+OP 160: SUB, inputs=[319, 333], outputs=[334]
+OP 173: QUANTIZE, inputs=[334], outputs=[347]
+OP 176: QUANTIZE, inputs=[341], outputs=[653]
+OP 177: QUANTIZE, inputs=[342], outputs=[654]
+OP 178: QUANTIZE, inputs=[343], outputs=[655]
+OP 179: QUANTIZE, inputs=[344], outputs=[656]
+OP 180: QUANTIZE, inputs=[345], outputs=[657]
+OP 181: QUANTIZE, inputs=[346], outputs=[658]
+OP 186: SUB, inputs=[349, 350], outputs=[352]
+OP 190: DIV, inputs=[354, 285], outputs=[356]
+OP 191: QUANTIZE, inputs=[356], outputs=[357]
+OP 194: DIV, inputs=[334, 358], outputs=[360]
+OP 195: QUANTIZE, inputs=[360], outputs=[361]
+OP 217: QUANTIZE, inputs=[381], outputs=[667]
+OP 218: QUANTIZE, inputs=[380], outputs=[668]
+OP 219: QUANTIZE, inputs=[379], outputs=[669]
+OP 220: QUANTIZE, inputs=[378], outputs=[670]
+OP 221: QUANTIZE, inputs=[377], outputs=[671]
+OP 222: QUANTIZE, inputs=[376], outputs=[672]
+OP 226: QUANTIZE, inputs=[383], outputs=[674]
+OP 243: DEQUANTIZE, inputs=[397], outputs=[398]
+OP 247: DEQUANTIZE, inputs=[399], outputs=[400]
+OP 248: SUB, inputs=[398, 400], outputs=[401]
+OP 249: QUANTIZE, inputs=[401], outputs=[402]
+OP 256: SQRT, inputs=[406], outputs=[407]
+OP 257: DIV, inputs=[401, 407], outputs=[408]
+OP 258: QUANTIZE, inputs=[408], outputs=[409]
+OP 275: QUANTIZE, inputs=[423], outputs=[703]
+OP 280: QUANTIZE, inputs=[197], outputs=[706]
+OP 285: QUANTIZE, inputs=[744], outputs=[431]
+OP 311: SUB, inputs=[450, 759], outputs=[753]
+OP 320: SUB, inputs=[451, 769], outputs=[763]
+OP 329: SUB, inputs=[452, 779], outputs=[773]
+OP 338: SUB, inputs=[453, 789], outputs=[783]
+OP 347: SUB, inputs=[454, 799], outputs=[793]
+OP 356: SUB, inputs=[455, 809], outputs=[803]
+OP 364: QUANTIZE, inputs=[456], outputs=[462]
+OP 365: QUANTIZE, inputs=[457], outputs=[463]
+OP 366: QUANTIZE, inputs=[458], outputs=[464]
+OP 367: QUANTIZE, inputs=[459], outputs=[465]
+OP 368: QUANTIZE, inputs=[460], outputs=[466]
+OP 369: QUANTIZE, inputs=[461], outputs=[467]
+OP 448: QUANTIZE, inputs=[540], outputs=[817]
+OP 449: QUANTIZE, inputs=[541], outputs=[818]
+OP 450: QUANTIZE, inputs=[542], outputs=[819]
+OP 451: QUANTIZE, inputs=[543], outputs=[820]
+OP 452: QUANTIZE, inputs=[544], outputs=[821]
+OP 453: QUANTIZE, inputs=[545], outputs=[822]
+OP 455: QUANTIZE, inputs=[546], outputs=[823]
+OP 471: QUANTIZE, inputs=[554], outputs=[556]
+OP 479: SUB, inputs=[561, 879], outputs=[873]
+OP 487: QUANTIZE, inputs=[563], outputs=[564]
+OP 492: SUB, inputs=[567, 889], outputs=[883]
+OP 502: QUANTIZE, inputs=[568], outputs=[571]
+OP 520: QUANTIZE, inputs=[157], outputs=[893]
+OP 525: SUB, inputs=[589, 902], outputs=[896]
+OP 533: QUANTIZE, inputs=[590], outputs=[591]
+OP 547: QUANTIZE, inputs=[603], outputs=[604]
+OP 548: QUANTIZE, inputs=[604], outputs=[904]
+OP 553: SUB, inputs=[607, 913], outputs=[907]
+OP 561: QUANTIZE, inputs=[608], outputs=[609]
+
+REQUIRED_TENSORS_FOUND 5 / 5
+MISSING_TENSORS []
+
+6. Current experimental Vela candidate identity
+72bf7dba9d0234458108fc413915cdb161050edccf4327dd6cf34597e1cb556a  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+
+============================================================
+PREFLIGHT COMPLETE - NO FILES MODIFIED
+============================================================
