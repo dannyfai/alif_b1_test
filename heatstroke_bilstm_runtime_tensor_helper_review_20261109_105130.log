@@ -1,0 +1,308 @@
+===== BILSTM RUNTIME TENSOR HELPER REVIEW =====
+Mon Nov  9 10:51:30 AM HKT 2026
+
+===== SOURCE HASH AND TIMESTAMP =====
+74766006eb81b7f12eb2b0d914a174713e129ef15775110feb942d146322724c  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+  File: /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+  Size: 15279     	Blocks: 32         IO Block: 4096   regular file
+Device: 259,5	Inode: 5246351     Links: 1
+Access: (0664/-rw-rw-r--)  Uid: ( 1000/    user)   Gid: ( 1000/    user)
+Access: 2026-11-08 15:05:39.101236779 +0800
+Modify: 2026-11-07 21:23:51.814903379 +0800
+Change: 2026-11-07 21:23:51.814903379 +0800
+ Birth: 2026-11-05 17:49:45.609214863 +0800
+
+===== SOURCE LINES 1-145 =====
+     1	#include "heatstroke_bidirectional_lstm.h"
+     2	
+     3	#include <cstddef>
+     4	#include <cstdint>
+     5	#include <cstring>
+     6	
+     7	#include "tensorflow/lite/c/builtin_op_data.h"
+     8	#include "tensorflow/lite/c/common.h"
+     9	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    10	#include "tensorflow/lite/micro/kernels/lstm_eval.h"
+    11	#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+    12	#include "tensorflow/lite/micro/micro_log.h"
+    13	
+    14	namespace tflite {
+    15	namespace {
+    16	
+    17	struct HeatstrokeBidirectionalLstmOpData {
+    18	  OpDataLSTM forward;
+    19	  OpDataLSTM backward;
+    20	  TfLiteIntArray* staged_output_dims;
+    21	  int reverse_input_buffer;
+    22	  int stage_output_buffer;
+    23	};
+    24	
+    25	TfLiteEvalTensor* GetInputEvalTensor(TfLiteContext* context,
+    26	                                     TfLiteNode* node,
+    27	                                     int input_position) {
+    28	  if (input_position < 0 || input_position >= node->inputs->size) {
+    29	    return nullptr;
+    30	  }
+    31	
+    32	  const int tensor_index = node->inputs->data[input_position];
+    33	  if (tensor_index < 0) {
+    34	    return nullptr;
+    35	  }
+    36	
+    37	  return context->GetEvalTensor(context, tensor_index);
+    38	}
+    39	
+    40	size_t TensorElementCount(const TfLiteEvalTensor* tensor) {
+    41	  if (tensor == nullptr || tensor->dims == nullptr) {
+    42	    return 0;
+    43	  }
+    44	
+    45	  size_t count = 1;
+    46	  for (int i = 0; i < tensor->dims->size; ++i) {
+    47	    if (tensor->dims->data[i] < 0) {
+    48	      return 0;
+    49	    }
+    50	    count *= static_cast<size_t>(tensor->dims->data[i]);
+    51	  }
+    52	  return count;
+    53	}
+    54	
+    55	bool IsFloatTensor(const TfLiteEvalTensor* tensor) {
+    56	  return tensor != nullptr && tensor->type == kTfLiteFloat32 &&
+    57	         tensor->data.f != nullptr;
+    58	}
+    59	
+    60	bool IsMatrix(const TfLiteEvalTensor* tensor, int rows, int columns) {
+    61	  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+    62	         tensor->dims->size == 2 &&
+    63	         tensor->dims->data[0] == rows &&
+    64	         tensor->dims->data[1] == columns;
+    65	}
+    66	
+    67	bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+    68	  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+    69	         tensor->dims->size == 1 &&
+    70	         tensor->dims->data[0] == length;
+    71	}
+    72	
+    73	bool ValidateDirection(TfLiteContext* context,
+    74	                       TfLiteNode* node,
+    75	                       int input_weight_base,
+    76	                       int recurrent_weight_base,
+    77	                       int bias_base,
+    78	                       int hidden_state_position,
+    79	                       int cell_state_position,
+    80	                       int input_dimension,
+    81	                       int batch_size,
+    82	                       int* hidden_dimension) {
+    83	  TfLiteEvalTensor* first_weight =
+    84	      GetInputEvalTensor(context, node, input_weight_base);
+    85	
+    86	  if (first_weight == nullptr || first_weight->dims == nullptr ||
+    87	      first_weight->dims->size != 2) {
+    88	    return false;
+    89	  }
+    90	
+    91	  const int hidden = first_weight->dims->data[0];
+    92	
+    93	  if (hidden <= 0 || first_weight->dims->data[1] != input_dimension) {
+    94	    return false;
+    95	  }
+    96	
+    97	  for (int gate = 0; gate < 4; ++gate) {
+    98	    TfLiteEvalTensor* input_weight =
+    99	        GetInputEvalTensor(context, node, input_weight_base + gate);
+   100	
+   101	    TfLiteEvalTensor* recurrent_weight =
+   102	        GetInputEvalTensor(context, node, recurrent_weight_base + gate);
+   103	
+   104	    TfLiteEvalTensor* bias =
+   105	        GetInputEvalTensor(context, node, bias_base + gate);
+   106	
+   107	    if (!IsMatrix(input_weight, hidden, input_dimension) ||
+   108	        !IsMatrix(recurrent_weight, hidden, hidden) ||
+   109	        !IsVector(bias, hidden)) {
+   110	      return false;
+   111	    }
+   112	  }
+   113	
+   114	  TfLiteEvalTensor* hidden_state =
+   115	      GetInputEvalTensor(context, node, hidden_state_position);
+   116	
+   117	  TfLiteEvalTensor* cell_state =
+   118	      GetInputEvalTensor(context, node, cell_state_position);
+   119	
+   120	  if (!IsFloatTensor(hidden_state) || !IsFloatTensor(cell_state) ||
+   121	      TensorElementCount(hidden_state) !=
+   122	          static_cast<size_t>(batch_size * hidden) ||
+   123	      TensorElementCount(cell_state) !=
+   124	          static_cast<size_t>(batch_size * hidden)) {
+   125	    return false;
+   126	  }
+   127	
+   128	  *hidden_dimension = hidden;
+   129	  return true;
+   130	}
+   131	
+   132	void InitializeFloatLstmParameters(
+   133	    OpDataLSTM* op_data,
+   134	    bool time_major,
+   135	    int batch_size,
+   136	    int time_steps,
+   137	    int input_dimension,
+   138	    int hidden_dimension,
+   139	    TfLiteFusedActivation activation,
+   140	    float cell_clip) {
+   141	  op_data->size_info.time_major = time_major;
+   142	  op_data->size_info.batch_size = batch_size;
+   143	  op_data->size_info.time_steps = time_steps;
+   144	  op_data->size_info.input_dimension = input_dimension;
+   145	  op_data->size_info.state_dimension = hidden_dimension;
+
+===== SOURCE LINES 175-215 =====
+   175	  }
+   176	  return data;
+   177	}
+   178	
+   179	TfLiteStatus HeatstrokeBidirectionalLstmPrepare(TfLiteContext* context,
+   180	                                                TfLiteNode* node) {
+   181	  if (node == nullptr || node->builtin_data == nullptr ||
+   182	      node->inputs == nullptr || node->outputs == nullptr ||
+   183	      node->inputs->size != 29 || node->outputs->size != 1 ||
+   184	      node->user_data == nullptr) {
+   185	    MicroPrintf("Heatstroke BiLSTM: invalid node configuration");
+   186	    return kTfLiteError;
+   187	  }
+   188	
+   189	  auto* op_data =
+   190	      static_cast<HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+   191	
+   192	  const auto* params =
+   193	      static_cast<const TfLiteBidirectionalSequenceLSTMParams*>(
+   194	          node->builtin_data);
+   195	
+   196	  if (!params->time_major || !params->merge_outputs ||
+   197	      params->activation != kTfLiteActTanh) {
+   198	    MicroPrintf("Heatstroke BiLSTM: unsupported LSTM options");
+   199	    return kTfLiteError;
+   200	  }
+   201	
+   202	  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+   203	  TfLiteEvalTensor* output =
+   204	      context->GetEvalTensor(context, node->outputs->data[0]);
+   205	
+   206	  if (!IsFloatTensor(input) || !IsFloatTensor(output) ||
+   207	      input->dims == nullptr || output->dims == nullptr ||
+   208	      input->dims->size != 3 || output->dims->size != 3) {
+   209	    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+   210	    return kTfLiteError;
+   211	  }
+   212	
+   213	  const int time_steps = input->dims->data[0];
+   214	  const int batch_size = input->dims->data[1];
+   215	  const int input_dimension = input->dims->data[2];
+
+===== ALL APPLICATION IsFloatTensor DEFINITIONS =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-50-    count *= static_cast<size_t>(tensor->dims->data[i]);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-51-  }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-52-  return count;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-53-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-54-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:55:bool IsFloatTensor(const TfLiteEvalTensor* tensor) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-56-  return tensor != nullptr && tensor->type == kTfLiteFloat32 &&
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-57-         tensor->data.f != nullptr;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-58-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-59-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-60-bool IsMatrix(const TfLiteEvalTensor* tensor, int rows, int columns) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:61:  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-62-         tensor->dims->size == 2 &&
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-63-         tensor->dims->data[0] == rows &&
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-64-         tensor->dims->data[1] == columns;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-65-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-66-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-67-bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:68:  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-69-         tensor->dims->size == 1 &&
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-70-         tensor->dims->data[0] == length;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-71-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-72-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-73-bool ValidateDirection(TfLiteContext* context,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-74-                       TfLiteNode* node,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-75-                       int input_weight_base,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-76-                       int recurrent_weight_base,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-77-                       int bias_base,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-78-                       int hidden_state_position,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-79-                       int cell_state_position,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-80-                       int input_dimension,
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-115-      GetInputEvalTensor(context, node, hidden_state_position);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-116-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-117-  TfLiteEvalTensor* cell_state =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-118-      GetInputEvalTensor(context, node, cell_state_position);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-119-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:120:  if (!IsFloatTensor(hidden_state) || !IsFloatTensor(cell_state) ||
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-121-      TensorElementCount(hidden_state) !=
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-122-          static_cast<size_t>(batch_size * hidden) ||
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-123-      TensorElementCount(cell_state) !=
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-124-          static_cast<size_t>(batch_size * hidden)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-125-    return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-126-  }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-127-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-128-  *hidden_dimension = hidden;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-129-  return true;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-130-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-131-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-132-void InitializeFloatLstmParameters(
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-201-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-202-  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-203-  TfLiteEvalTensor* output =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-204-      context->GetEvalTensor(context, node->outputs->data[0]);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-205-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:206:  if (!IsFloatTensor(input) || !IsFloatTensor(output) ||
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-207-      input->dims == nullptr || output->dims == nullptr ||
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-208-      input->dims->size != 3 || output->dims->size != 3) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-209-    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-210-    return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-211-  }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-212-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-213-  const int time_steps = input->dims->data[0];
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-214-  const int batch_size = input->dims->data[1];
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-215-  const int input_dimension = input->dims->data[2];
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-216-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-217-  // The supplied heat-stress model uses time-major, single-batch sequences.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-218-  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-360-      GetInputEvalTensor(context, node, 0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-361-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-362-  TfLiteEvalTensor* output =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-363-      context->GetEvalTensor(context, node->outputs->data[0]);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-364-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:365:  if (!IsFloatTensor(input) || !IsFloatTensor(output)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-366-    return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-367-  }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-368-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-369-  const int time_steps = op_data->forward.size_info.time_steps;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-370-  const int input_dimension = op_data->forward.size_info.input_dimension;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-371-  const int hidden = op_data->forward.size_info.state_dimension;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-372-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-373-  auto* reversed_input = static_cast<float*>(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-374-      context->GetScratchBuffer(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-375-          context, op_data->reverse_input_buffer));
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-376-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-377-  auto* staged_output = static_cast<float*>(
+
+===== TFLM EVAL TENSOR DEFINITIONS =====
+
+===== COMPILED OBJECT =====
+3a5b0bbc5082275dc34dda70642dde3f0f2d6485e135224e0a68d1424ef96c38  /home/user/sdk-alif/build/CMakeFiles/app.dir/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc.obj
+  File: /home/user/sdk-alif/build/CMakeFiles/app.dir/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc.obj
+  Size: 97300     	Blocks: 192        IO Block: 4096   regular file
+Device: 259,5	Inode: 2405194     Links: 1
+Access: (0664/-rw-rw-r--)  Uid: ( 1000/    user)   Gid: ( 1000/    user)
+Access: 2026-11-08 22:19:49.964326092 +0800
+Modify: 2026-11-08 22:19:26.657859144 +0800
+Change: 2026-11-08 22:19:26.657859144 +0800
+ Birth: 2026-11-08 22:19:26.607860320 +0800
+
+===== END =====
