@@ -1,0 +1,280 @@
+============================================================
+MLEK MODEL LIFECYCLE AND INVOKE AUDIT
+============================================================
+
+1. PolyUModel1 implementation
+18-#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+19-#include "tensorflow/lite/kernels/kernel_util.h"
+20-#include "tensorflow/lite/micro/micro_utils.h"
+21-
+22-#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+23-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+24-#include "tensorflow/lite/micro/micro_log.h"
+25-
+26-#include "mlek/log/log_macros.h"
+27-#include "heatstroke_bidirectional_lstm.h"
+28-
+29-const tflite::MicroOpResolver&
+30:arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+31-{
+32-    return this->m_opResolver;
+33-}
+34-
+35-namespace
+36-{
+37-
+38-/*
+39- * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+40- * required by this implementation. Validate its options type and leave
+41- * builtin_data null.
+42- */
+43-TfLiteStatus ParseHeatstrokeSign(
+44-    const tflite::Operator* op,
+45-    tflite::ErrorReporter*,
+46-    tflite::BuiltinDataAllocator*,
+47-    void** builtin_data)
+48-{
+49-    if (builtin_data != nullptr) {
+50-        *builtin_data = nullptr;
+51-    }
+52-
+53-    if (op == nullptr ||
+54-        op->builtin_options_type() !=
+55-            tflite::BuiltinOptions_SignOptions) {
+56-        return kTfLiteError;
+57-    }
+58-
+59-    return kTfLiteOk;
+60-}
+61-
+62-/*
+63- * Application-local INT32 SIGN implementation.
+64- *
+65- * y = -1 when x < 0
+66- * y =  0 when x = 0
+67- * y =  1 when x > 0
+68- *
+69- * No temporary buffer or scratch allocation is required.
+70- */
+71-TfLiteStatus HeatstrokeSignEval(
+72-    TfLiteContext* context,
+73-    TfLiteNode* node)
+74-{
+75-    if (context == nullptr || node == nullptr) {
+76-        return kTfLiteError;
+77-    }
+78-
+79-    const TfLiteEvalTensor* input =
+80-        tflite::micro::GetEvalInput(context, node, 0);
+81-
+82-    TfLiteEvalTensor* output =
+83-        tflite::micro::GetEvalOutput(context, node, 0);
+84-
+85-    if (input == nullptr || output == nullptr) {
+86-        return kTfLiteError;
+87-    }
+88-
+89-    if (input->type != kTfLiteInt32 ||
+90-        output->type != kTfLiteInt32) {
+91-        MicroPrintf(
+92-            "Heatstroke SIGN requires INT32 input/output. "
+93-            "Input=%d Output=%d",
+94-            input->type,
+95-            output->type);
+96-        return kTfLiteError;
+97-    }
+98-
+99-    const auto input_shape =
+100-        tflite::micro::GetTensorShape(input);
+101-
+102-    const auto output_shape =
+103-        tflite::micro::GetTensorShape(output);
+104-
+105-    const int input_count = input_shape.FlatSize();
+--
+576-    tflite::ErrorReporter* error_reporter,
+577-    tflite::BuiltinDataAllocator* allocator,
+578-    void** builtin_data)
+579-{
+580-    return tflite::ParseOpData(
+581-        op,
+582-        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+583-        error_reporter,
+584-        allocator,
+585-        builtin_data);
+586-}
+587-
+588:bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+589-{
+590-#define HS_ADD_REQUIRED(method)                                      \
+591-    do {                                                              \
+592-        const TfLiteStatus status = this->m_opResolver.method();      \
+593-        if (status != kTfLiteOk) {                                    \
+594-            printf_err(                                               \
+595-                "Failed to register heat-stress operator: %s\n",     \
+596-                #method);                                             \
+597-            return false;                                             \
+598-        }                                                             \
+599-    } while (0)
+600-
+601-    /*
+602-     * 28 stock ordinary built-in operators; GATHER is registered separately below.
+603-     * These CPU registrations must remain available with Ethos-U enabled.
+604-     */
+605-    HS_ADD_REQUIRED(AddAdd);
+606-    HS_ADD_REQUIRED(AddBroadcastArgs);
+607-    HS_ADD_REQUIRED(AddBroadcastTo);
+608-    HS_ADD_REQUIRED(AddCast);
+609-    HS_ADD_REQUIRED(AddConcatenation);
+610-    HS_ADD_REQUIRED(AddCumSum);
+611-    HS_ADD_REQUIRED(AddDequantize);
+612-    HS_ADD_REQUIRED(AddDiv);
+613-    HS_ADD_REQUIRED(AddEqual);
+614-    HS_ADD_REQUIRED(AddFloorMod);
+615-    /*
+616-     * Application-local GATHER replacement supporting INT32 and INT64
+617-     * indices. It reuses the existing output tensor and allocates no
+618-     * index-conversion or scratch buffer.
+619-     */
+620-    {
+621-        const TFLMRegistration registration =
+622-            tflite::RegisterHeatstrokeGatherKernel();
+623-
+624-        if (this->m_opResolver.AddBuiltin(
+625-                tflite::BuiltinOperator_GATHER,
+626-                registration,
+627-                tflite::ParseGather) != kTfLiteOk) {
+628-            printf_err(
+629-                "Failed to register heat-stress INT64 GATHER.\n");
+630-            return false;
+631-        }
+632-    }
+633-    HS_ADD_REQUIRED(AddGreater);
+634-    HS_ADD_REQUIRED(AddLogicalAnd);
+635-    HS_ADD_REQUIRED(AddLogicalNot);
+636-    HS_ADD_REQUIRED(AddMaximum);
+637-    HS_ADD_REQUIRED(AddMean);
+638-    HS_ADD_REQUIRED(AddMul);
+639-    HS_ADD_REQUIRED(AddNeg);
+640-    HS_ADD_REQUIRED(AddQuantize);
+641-    HS_ADD_REQUIRED(AddReshape);
+642-    HS_ADD_REQUIRED(AddRsqrt);
+643-    HS_ADD_REQUIRED(AddSelectV2);
+644-    HS_ADD_REQUIRED(AddSoftmax);
+645-    HS_ADD_REQUIRED(AddSplitV);
+646-    HS_ADD_REQUIRED(AddSqrt);
+647-    HS_ADD_REQUIRED(AddSquare);
+648-    HS_ADD_REQUIRED(AddSub);
+649-    HS_ADD_REQUIRED(AddSum);
+650-    HS_ADD_REQUIRED(AddTopKV2);
+651-
+652-#undef HS_ADD_REQUIRED
+653-
+654-    /*
+655-     * Custom SIGN registration under the built-in SIGN opcode.
+656-     */
+657-    {
+658-        const TFLMRegistration registration =
+659-            RegisterHeatstrokeSignKernel();
+660-
+661-        if (this->m_opResolver.AddBuiltin(
+662-                tflite::BuiltinOperator_SIGN,
+663-                registration,
+
+2. PolyUModel1 declaration
+     1	#ifndef POLYU_MODEL1_HPP
+     2	#define POLYU_MODEL1_HPP
+     3	
+     4	#include "mlek/fwk/tflm/TflmModel.hpp"
+     5	
+     6	namespace arm::app::asr {
+     7	extern const int g_FrameLength;
+     8	extern const int g_FrameStride;
+     9	extern const float g_ScoreThreshold;
+    10	extern const int g_ctxLen;
+    11	} // namespace arm::app::asr
+    12	
+    13	namespace arm::app::fwk::tflm {
+    14	
+    15	class PolyUModel1 : public TflmModel {
+    16	
+    17	public:
+    18	    /* Indices for the expected model - based on input and output tensor shapes */
+    19	    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    20	    static constexpr uint32_t ms_inputColsIdx  = 2;
+    21	    static constexpr uint32_t ms_outputRowsIdx = 2;
+    22	    static constexpr uint32_t ms_outputColsIdx = 3;
+    23	
+    24	    /* Model specific constants. */
+    25	    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    26	    static constexpr uint32_t ms_numMfccFeatures = 13;
+    27	
+    28	protected:
+    29	    /** @brief   Gets the reference to op resolver interface class. */
+    30	    const tflite::MicroOpResolver& GetOpResolver() override;
+    31	
+    32	    /** @brief   Adds operations to the op resolver instance. */
+    33	    bool EnlistOperations() override;
+    34	
+    35	private:
+    36	    /* Maximum number of individual operations that can be enlisted. */
+    37	    static constexpr int ms_maxOpCnt = 32;
+    38	
+    39	    /* A mutable op resolver instance. */
+    40	    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+    41	};
+    42	
+    43	} /* namespace arm::app::fwk::tflm */
+    44	
+    45	#endif /* POLYU_MODEL1_HPP */
+
+3. Locate MLEK TFLM framework implementation
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TensorFlowLiteMicro.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TensorFlowLiteMicro.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp
+
+4. TFLM lifecycle calls in MLEK
+
+5. Tensor interface implementation and data binding
+
+6. Active model wrapper and kernel registrations
+667-        }
+668-    }
+669-
+670-    /*
+671-     * Custom compact bidirectional LSTM registration.
+672-     */
+673-    {
+674-        const TFLMRegistration registration =
+675:            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+676-
+677-        if (this->m_opResolver.AddBuiltin(
+678-                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+679-                registration,
+680-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+681-            printf_err(
+682-                "Failed to register heat-stress bidirectional LSTM.\n");
+683-            return false;
+684-        }
+685-    }
+686-
+687-    /*
+688-     * Ethos-U registration.
+689-     *
+690-     * AddEthosU() in this SDK can report success even when the hardware
+691-     * registration is null. Therefore, explicitly verify FindOp().
+692-     */
+693-    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+694-        printf_err("Failed to add Ethos-U to the resolver.\n");
+695-        return false;
+696-    }
+697-
+698-    const char* ethos_name = tflite::GetString_ETHOSU();
+699-
+
+7. Model identity in current CMake cache
+POLYU_MODEL_PATH:FILEPATH=/home/user/sdk-alif/beeinventor/test_heatstroke/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
