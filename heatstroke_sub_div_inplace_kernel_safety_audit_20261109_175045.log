@@ -1,0 +1,1407 @@
+============================================================
+SUB AND DIV IN-PLACE KERNEL SAFETY AUDIT
+============================================================
+
+1. Exact candidate identity
+72bf7dba9d0234458108fc413915cdb161050edccf4327dd6cf34597e1cb556a  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+
+2. SUB broadcast reference implementation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-127-      const int32x4_t va = vld1q_s32(&input1_data[c]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-128-      const int32x4_t vb = vld1q_s32(&input2_data[c]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-129-      int32x4_t vres = vsubq_s32(va, vb);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-130-      vres = vmaxq_s32(vmin, vres);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-131-      vres = vminq_s32(vmax, vres);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-132-      vst1q_s32(&output_data[c], vres);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-133-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-134-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-135-    for (; c < size; ++c) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-136-      output_data[c] = binary_func(input1_data[c], input2_data[c], params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-137-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-138-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-139-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-140-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-141-template <typename T, typename F>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:142:inline void BroadcastSubRecursiveDimensions(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-143-    int dimension, const ArithmeticParams& params, const T* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-144-    const T* input2_data, T* output_data, size_t* input1_offset_p,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-145-    size_t* input2_offset_p, size_t* output_offset,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-146-    size_t* compressed_input1_stride, size_t* compressed_input2_stride,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-147-    size_t* compressed_output_shape, F binary_func) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-148-  if (dimension > 0) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-149-    for (size_t c = 0; c < compressed_output_shape[dimension]; ++c) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-150-      size_t input1_offset_c = *input1_offset_p;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-151-      size_t input2_offset_c = *input2_offset_p;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:152:      BroadcastSubRecursiveDimensions(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-153-          dimension - 1, params, input1_data, input2_data, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-154-          &input1_offset_c, &input2_offset_c, output_offset,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-155-          compressed_input1_stride, compressed_input2_stride,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-156-          compressed_output_shape, binary_func);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-157-      *input1_offset_p += compressed_input1_stride[dimension];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-158-      *input2_offset_p += compressed_input2_stride[dimension];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-159-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-160-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-161-    TFLITE_DCHECK(dimension == 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-162-    bool input1_is_broadcast = compressed_input1_stride[dimension] == 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-163-    bool input2_is_broadcast = compressed_input2_stride[dimension] == 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-164-    TFLITE_DCHECK(!(input1_is_broadcast && input2_is_broadcast));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-165-    const T* input1_data_ptr = input1_data + *input1_offset_p;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-166-    const T* input2_data_ptr = input2_data + *input2_offset_p;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-167-    T* output_data_ptr = output_data + *output_offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-168-    if (input1_is_broadcast) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-169-      // input1 is broadcast.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-170-      SubImpl<T>::BroadcastInput1(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-171-          params, input1_data_ptr, input2_data_ptr, output_data_ptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-172-          compressed_output_shape[dimension], binary_func);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-173-      *input2_offset_p += compressed_output_shape[dimension];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-174-    } else if (input2_is_broadcast) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-175-      // input2 is broadcast.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-176-      SubImpl<T>::BroadcastInput2(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-177-          params, input1_data_ptr, input2_data_ptr, output_data_ptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-178-          compressed_output_shape[dimension], binary_func);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-179-      *input1_offset_p += compressed_output_shape[dimension];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-180-    } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-181-      // Add element-wise.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-182-      SubImpl<T>::ElementWise(params, input1_data_ptr, input2_data_ptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-183-                              output_data_ptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-184-                              compressed_output_shape[dimension], binary_func);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-185-      *input1_offset_p += compressed_output_shape[dimension];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-186-      *input2_offset_p += compressed_output_shape[dimension];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-187-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-188-    *output_offset += compressed_output_shape[dimension];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-189-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-190-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-191-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-192-// TODO: b/296510380 - we may be able to factor out this to common.h for all
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-193-// binary arithmetic ops (add, sub, mul).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-194-template <typename T, typename F>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:195:inline void BroadcastSubCommon(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-196-                               const RuntimeShape& input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-197-                               const T* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-198-                               const RuntimeShape& input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-199-                               const T* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-200-                               const RuntimeShape& output_shape, T* output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-201-                               F binary_func) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-202-  constexpr int kMaxBroadcastDim = 6;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-203-  TFLITE_DCHECK_LE(input1_shape.DimensionsCount(), kMaxBroadcastDim);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-204-  TFLITE_DCHECK_LE(input2_shape.DimensionsCount(), kMaxBroadcastDim);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-205-  TFLITE_DCHECK_LE(output_shape.DimensionsCount(), kMaxBroadcastDim);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-206-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-207-  // In Tensorflow, the dimensions are canonically named (batch_number, row,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-208-  // col, channel), with extents (batches, height, width, depth), with the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-209-  // trailing dimension changing most rapidly (channels has the smallest stride,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-210-  // typically 1 element).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-211-  //
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-212-  // In generated C code, we store arrays with the dimensions reversed. The
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-213-  // first dimension has smallest stride.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-214-  //
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-215-  // We name our variables by their Tensorflow convention, but generate C code
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-216-  // nesting loops such that the innermost loop has the smallest stride for the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-217-  // best cache behavior.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-218-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-219-  // In Tensorflow, the dimensions are canonically named (batch_number, row,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-220-  // col, channel), with extents (batches, height, width, depth), with the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-221-  // trailing dimension changing most rapidly (channels has the smallest stride,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-222-  // typically 1 element).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-223-  //
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-224-  // In generated C code, we store arrays with the dimensions reversed. The
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-225-  // first dimension has smallest stride.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-226-  //
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-227-  // We name our variables by their Tensorflow convention, but generate C code
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-228-  // nesting loops such that the innermost loop has the smallest stride for the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-229-  // best cache behavior.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-230-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-231-  size_t compressed_input1_stride[kMaxBroadcastDim];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-232-  size_t compressed_input2_stride[kMaxBroadcastDim];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-233-  size_t compressed_output_shape[kMaxBroadcastDim];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-234-  bool broadcastable_shape = ReduceDimensionsForBroadcast<kMaxBroadcastDim>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-235-      input1_shape, input2_shape, compressed_input1_stride,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-236-      compressed_input2_stride, compressed_output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-237-  // Skip broadcasting for degenerate shapes.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-238-  if (!broadcastable_shape) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-239-    return;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-240-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-241-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-242-  size_t input1_offset = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-243-  size_t input2_offset = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-244-  size_t output_offset = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:245:  BroadcastSubRecursiveDimensions(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-246-      kMaxBroadcastDim - 1, params, input1_data, input2_data, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-247-      &input1_offset, &input2_offset, &output_offset, compressed_input1_stride,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-248-      compressed_input2_stride, compressed_output_shape, binary_func);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-249-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-250-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:251:// TODO(b/151345304): We can implement BroadcastSub on buffers of arbitrary
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-252-// dimensionality if the runtime code does a single loop over one dimension
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-253-// that handles broadcasting as the base case. The code generator would then
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-254-// generate max(D1, D2) nested for loops.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-255-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:256:void BroadcastSubSlow(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-257-                      const RuntimeShape& input1_shape, const T* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-258-                      const RuntimeShape& input2_shape, const T* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-259-                      const RuntimeShape& output_shape, T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:260:  ruy::profiler::ScopeLabel label("BroadcastSubSlow/T");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:261:  BroadcastSubCommon<T>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-262-      params, input1_shape, input1_data, input2_shape, input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-263-      output_shape, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-264-      [](T input1_val, T input2_val, const ArithmeticParams& params) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-265-        T activation_min, activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-266-        GetActivationParams(params, &activation_min, &activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-267-        return ActivationFunctionWithMinMax(input1_val - input2_val,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-268-                                            activation_min, activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-269-      });
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-270-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-271-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:272:inline void BroadcastSub16POTSlow(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-273-                                  const RuntimeShape& input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-274-                                  const int16_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-275-                                  const RuntimeShape& input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-276-                                  const int16_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-277-                                  const RuntimeShape& output_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-278-                                  int16_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:279:  ruy::profiler::ScopeLabel label("BroadcastSub16POTSlow/int16_t");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:280:  BroadcastSubCommon<int16_t>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-281-      params, input1_shape, input1_data, input2_shape, input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-282-      output_shape, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-283-      [](int16_t input1_val, int16_t input2_val,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-284-         const ArithmeticParams& params) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-285-        const int32_t scaled_input1_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-286-            gemmlowp::RoundingDivideByPOT(input1_val, -params.input1_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-287-        const int32_t scaled_input2_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-288-            gemmlowp::RoundingDivideByPOT(input2_val, -params.input2_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-289-        const int32_t raw_output = scaled_input1_val - scaled_input2_val;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-290-        const int32_t clamped_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-291-            std::min(params.quantized_activation_max,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-292-                     std::max(params.quantized_activation_min, raw_output));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-293-        return static_cast<int16_t>(clamped_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-294-      });
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-295-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-296-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-297-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-298-void BroadcastQuantSubSlow(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-299-                           const RuntimeShape& input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-300-                           const T* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-301-                           const RuntimeShape& input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-302-                           const T* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-303-                           const RuntimeShape& output_shape, T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-304-  ruy::profiler::ScopeLabel label("BroadcastQuantSubSlow/T");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:305:  BroadcastSubCommon<T>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-306-      params, input1_shape, input1_data, input2_shape, input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-307-      output_shape, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-308-      [](T input1_val, T input2_val, const ArithmeticParams& params) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-309-        const int32_t shifted_input1_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-310-            (params.input1_offset + input1_val) * (1 << params.left_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-311-        const int32_t shifted_input2_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-312-            (params.input2_offset + input2_val) * (1 << params.left_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-313-        const int32_t scaled_input1_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-314-            MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-315-                shifted_input1_val, params.input1_multiplier,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-316-                params.input1_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-317-        const int32_t scaled_input2_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-318-            MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-319-                shifted_input2_val, params.input2_multiplier,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-320-                params.input2_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-321-        const int32_t raw_sub = scaled_input1_val - scaled_input2_val;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-322-        const int32_t raw_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-323-            MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-324-                raw_sub, params.output_multiplier, params.output_shift) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-325-            params.output_offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-326-        const int32_t clamped_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-327-            std::min(params.quantized_activation_max,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-328-                     std::max(params.quantized_activation_min, raw_output));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-329-        return static_cast<T>(clamped_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-330-      });
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-331-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-332-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-333-// Element-wise add that can often be used for inner loop of broadcast add as
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-334-// well as the non-broadcast add.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-335-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-336-inline void SubElementwise(int size, const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-337-                           const T* input1_data, const T* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-338-                           T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-339-  for (int i = 0; i < size; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-340-    const int32_t input1_val = params.input1_offset + input1_data[i];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-341-    const int32_t input2_val = params.input2_offset + input2_data[i];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-342-    const int32_t shifted_input1_val = input1_val * (1 << params.left_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-343-    const int32_t shifted_input2_val = input2_val * (1 << params.left_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-344-    const int32_t scaled_input1_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-345-        MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-346-            shifted_input1_val, params.input1_multiplier, params.input1_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-347-    const int32_t scaled_input2_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-348-        MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-349-            shifted_input2_val, params.input2_multiplier, params.input2_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-350-    const int32_t raw_sub = scaled_input1_val - scaled_input2_val;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-351-    const int32_t raw_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-352-        MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-353-            raw_sub, params.output_multiplier, params.output_shift) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-354-        params.output_offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-355-    const int32_t clamped_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-356-        std::min(params.quantized_activation_max,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-357-                 std::max(params.quantized_activation_min, raw_output));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-358-    output_data[i] = static_cast<T>(clamped_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-359-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-360-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-361-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-362-inline void Sub(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-363-                const RuntimeShape& input1_shape, const uint8_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-364-                const RuntimeShape& input2_shape, const uint8_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-365-                const RuntimeShape& output_shape, uint8_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-366-  TFLITE_DCHECK_LE(params.quantized_activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-367-                   params.quantized_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-368-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-369-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-370-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-371-  TFLITE_DCHECK_GT(params.input1_offset, -256);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-372-  TFLITE_DCHECK_GT(params.input2_offset, -256);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-373-  TFLITE_DCHECK_LT(params.input1_offset, 256);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-374-  TFLITE_DCHECK_LT(params.input2_offset, 256);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-375-  SubElementwise(flat_size, params, input1_data, input2_data, output_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-376-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-377-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-378-inline void Sub(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-379-                const RuntimeShape& input1_shape, const int8_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-380-                const RuntimeShape& input2_shape, const int8_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-381-                const RuntimeShape& output_shape, int8_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-382-  TFLITE_DCHECK_LE(params.quantized_activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-383-                   params.quantized_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-384-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-385-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-386-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-387-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-388-  TFLITE_DCHECK_GE(params.input1_offset, -128);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-389-  TFLITE_DCHECK_GE(params.input2_offset, -128);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-390-  // offset = -quantization_params.zero_point in PrepareGeneralSubOp().
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-402-                   params.quantized_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-403-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-404-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-405-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-406-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-407-  TFLITE_DCHECK_EQ(params.input1_offset, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-408-  TFLITE_DCHECK_EQ(params.input2_offset, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-409-  SubElementwise(flat_size, params, input1_data, input2_data, output_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-410-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-411-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-412-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-413-void Sub(const ArithmeticParams& params, const RuntimeShape& input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-414-         const T* input1_data, const RuntimeShape& input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-415-         const T* input2_data, const RuntimeShape& output_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-416-         T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:417:  BroadcastSubCommon<T>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-418-      params, input1_shape, input1_data, input2_shape, input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-419-      output_shape, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-420-      [](T input1_val, T input2_val, const ArithmeticParams& params) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-421-        return input1_val - input2_val;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-422-      });
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-423-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-424-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-425-inline void SetActivationMinMax(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-426-                                int32_t* activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-427-                                int32_t* activation_max) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-428-  *activation_min = params.quantized_activation_min;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-429-  *activation_max = params.quantized_activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-430-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-431-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-432-inline void SetActivationMinMax(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-433-                                float* activation_min, float* activation_max) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-434-  *activation_min = params.float_activation_min;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-435-  *activation_max = params.float_activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-436-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-437-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-438-inline void SetActivationMinMax(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-439-                                int64_t* activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-440-                                int64_t* activation_max) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-441-  *activation_min = params.int64_activation_min;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-442-  *activation_max = params.int64_activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-443-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-444-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-445-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-446-inline void SubWithActivation(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-447-    const ArithmeticParams& params, const RuntimeShape& input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-448-    const T* input1_data, const RuntimeShape& input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-449-    const T* input2_data, const RuntimeShape& output_shape, T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-450-  ruy::profiler::ScopeLabel label("SubWithActivation");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-451-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-452-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-453-  T activation_min, activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-454-  SetActivationMinMax(params, &activation_min, &activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-455-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-456-  for (int i = 0; i < flat_size; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-457-    output_data[i] = ActivationFunctionWithMinMax(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-458-        input1_data[i] - input2_data[i], activation_min, activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-459-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-460-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-461-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-462-}  // namespace reference_ops
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-463-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-464-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-465-#endif  // TENSORFLOW_LITE_KERNELS_INTERNAL_REFERENCE_SUB_H_
+
+3. SUB elementwise implementation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-324-                raw_sub, params.output_multiplier, params.output_shift) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-325-            params.output_offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-326-        const int32_t clamped_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-327-            std::min(params.quantized_activation_max,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-328-                     std::max(params.quantized_activation_min, raw_output));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-329-        return static_cast<T>(clamped_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-330-      });
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-331-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-332-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-333-// Element-wise add that can often be used for inner loop of broadcast add as
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-334-// well as the non-broadcast add.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-335-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:336:inline void SubElementwise(int size, const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-337-                           const T* input1_data, const T* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-338-                           T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-339-  for (int i = 0; i < size; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-340-    const int32_t input1_val = params.input1_offset + input1_data[i];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-341-    const int32_t input2_val = params.input2_offset + input2_data[i];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-342-    const int32_t shifted_input1_val = input1_val * (1 << params.left_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-343-    const int32_t shifted_input2_val = input2_val * (1 << params.left_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-344-    const int32_t scaled_input1_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-345-        MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-346-            shifted_input1_val, params.input1_multiplier, params.input1_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-347-    const int32_t scaled_input2_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-348-        MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-349-            shifted_input2_val, params.input2_multiplier, params.input2_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-350-    const int32_t raw_sub = scaled_input1_val - scaled_input2_val;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-351-    const int32_t raw_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-352-        MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-353-            raw_sub, params.output_multiplier, params.output_shift) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-354-        params.output_offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-355-    const int32_t clamped_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-356-        std::min(params.quantized_activation_max,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-357-                 std::max(params.quantized_activation_min, raw_output));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-358-    output_data[i] = static_cast<T>(clamped_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-359-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-360-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-361-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-362-inline void Sub(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-363-                const RuntimeShape& input1_shape, const uint8_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-364-                const RuntimeShape& input2_shape, const uint8_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-365-                const RuntimeShape& output_shape, uint8_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-366-  TFLITE_DCHECK_LE(params.quantized_activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-367-                   params.quantized_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-368-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-369-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-370-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-371-  TFLITE_DCHECK_GT(params.input1_offset, -256);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-372-  TFLITE_DCHECK_GT(params.input2_offset, -256);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-373-  TFLITE_DCHECK_LT(params.input1_offset, 256);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-374-  TFLITE_DCHECK_LT(params.input2_offset, 256);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:375:  SubElementwise(flat_size, params, input1_data, input2_data, output_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-376-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-377-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-378-inline void Sub(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-379-                const RuntimeShape& input1_shape, const int8_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-380-                const RuntimeShape& input2_shape, const int8_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-381-                const RuntimeShape& output_shape, int8_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-382-  TFLITE_DCHECK_LE(params.quantized_activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-383-                   params.quantized_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-384-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-385-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-386-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-387-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-388-  TFLITE_DCHECK_GE(params.input1_offset, -128);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-389-  TFLITE_DCHECK_GE(params.input2_offset, -128);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-390-  // offset = -quantization_params.zero_point in PrepareGeneralSubOp().
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-391-  // So it's maximum can be 128 not 127.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-392-  TFLITE_DCHECK_LE(params.input1_offset, 128);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-393-  TFLITE_DCHECK_LE(params.input2_offset, 128);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:394:  SubElementwise(flat_size, params, input1_data, input2_data, output_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-395-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-396-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-397-inline void Sub(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-398-                const RuntimeShape& input1_shape, const int16_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-399-                const RuntimeShape& input2_shape, const int16_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-400-                const RuntimeShape& output_shape, int16_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-401-  TFLITE_DCHECK_LE(params.quantized_activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-402-                   params.quantized_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-403-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-404-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-405-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-406-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-407-  TFLITE_DCHECK_EQ(params.input1_offset, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-408-  TFLITE_DCHECK_EQ(params.input2_offset, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:409:  SubElementwise(flat_size, params, input1_data, input2_data, output_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-410-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-411-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-412-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-413-void Sub(const ArithmeticParams& params, const RuntimeShape& input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-414-         const T* input1_data, const RuntimeShape& input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-415-         const T* input2_data, const RuntimeShape& output_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-416-         T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-417-  BroadcastSubCommon<T>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-418-      params, input1_shape, input1_data, input2_shape, input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-419-      output_shape, output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-420-      [](T input1_val, T input2_val, const ArithmeticParams& params) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-421-        return input1_val - input2_val;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-422-      });
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-423-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-424-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-425-inline void SetActivationMinMax(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-426-                                int32_t* activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-427-                                int32_t* activation_max) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-428-  *activation_min = params.quantized_activation_min;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-429-  *activation_max = params.quantized_activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-430-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-431-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-432-inline void SetActivationMinMax(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-433-                                float* activation_min, float* activation_max) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-434-  *activation_min = params.float_activation_min;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-435-  *activation_max = params.float_activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-436-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-437-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-438-inline void SetActivationMinMax(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-439-                                int64_t* activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-440-                                int64_t* activation_max) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-441-  *activation_min = params.int64_activation_min;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-442-  *activation_max = params.int64_activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-443-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-444-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-445-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:446:inline void SubWithActivation(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-447-    const ArithmeticParams& params, const RuntimeShape& input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-448-    const T* input1_data, const RuntimeShape& input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-449-    const T* input2_data, const RuntimeShape& output_shape, T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h:450:  ruy::profiler::ScopeLabel label("SubWithActivation");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-451-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-452-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-453-  T activation_min, activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-454-  SetActivationMinMax(params, &activation_min, &activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-455-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-456-  for (int i = 0; i < flat_size; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-457-    output_data[i] = ActivationFunctionWithMinMax(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-458-        input1_data[i] - input2_data[i], activation_min, activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-459-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-460-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-461-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-462-}  // namespace reference_ops
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-463-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-464-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/sub.h-465-#endif  // TENSORFLOW_LITE_KERNELS_INTERNAL_REFERENCE_SUB_H_
+
+4. TFLM SUB Eval and Prepare
+     1	/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	#include "tensorflow/lite/micro/kernels/sub.h"
+    17	
+    18	#include "tensorflow/lite/c/builtin_op_data.h"
+    19	#include "tensorflow/lite/c/common.h"
+    20	#include "tensorflow/lite/kernels/internal/common.h"
+    21	#include "tensorflow/lite/kernels/internal/quantization_util.h"
+    22	#include "tensorflow/lite/kernels/internal/reference/add.h"
+    23	#include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
+    24	#include "tensorflow/lite/kernels/internal/reference/sub.h"
+    25	#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+    26	#include "tensorflow/lite/kernels/internal/types.h"
+    27	#include "tensorflow/lite/kernels/kernel_util.h"
+    28	#include "tensorflow/lite/kernels/op_macros.h"
+    29	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    30	#include "tensorflow/lite/micro/micro_log.h"
+    31	
+    32	namespace tflite {
+    33	
+    34	void* SubInit(TfLiteContext* context, const char* buffer, size_t length) {
+    35	  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+    36	  return context->AllocatePersistentBuffer(context, sizeof(OpDataSub));
+    37	}
+    38	
+    39	void EvalSub(TfLiteContext* context, TfLiteNode* node, TfLiteSubParams* params,
+    40	             const OpDataSub* data, const TfLiteEvalTensor* input1,
+    41	             const TfLiteEvalTensor* input2, TfLiteEvalTensor* output) {
+    42	  float output_activation_min, output_activation_max;
+    43	  CalculateActivationRange(params->activation, &output_activation_min,
+    44	                           &output_activation_max);
+    45	  tflite::ArithmeticParams op_params;
+    46	  SetActivationParams(output_activation_min, output_activation_max, &op_params);
+    47	  if (data->requires_broadcast) {
+    48	    tflite::reference_ops::BroadcastSubSlow(
+    49	        op_params, tflite::micro::GetTensorShape(input1),
+    50	        tflite::micro::GetTensorData<float>(input1),
+    51	        tflite::micro::GetTensorShape(input2),
+    52	        tflite::micro::GetTensorData<float>(input2),
+    53	        tflite::micro::GetTensorShape(output),
+    54	        tflite::micro::GetTensorData<float>(output));
+    55	  } else {
+    56	    tflite::reference_ops::SubWithActivation(
+    57	        op_params, tflite::micro::GetTensorShape(input1),
+    58	        tflite::micro::GetTensorData<float>(input1),
+    59	        tflite::micro::GetTensorShape(input2),
+    60	        tflite::micro::GetTensorData<float>(input2),
+    61	        tflite::micro::GetTensorShape(output),
+    62	        tflite::micro::GetTensorData<float>(output));
+    63	  }
+    64	}
+    65	
+    66	TfLiteStatus EvalSubQuantized(TfLiteContext* context, TfLiteNode* node,
+    67	                              TfLiteSubParams* params, const OpDataSub* data,
+    68	                              const TfLiteEvalTensor* input1,
+    69	                              const TfLiteEvalTensor* input2,
+    70	                              TfLiteEvalTensor* output) {
+    71	  tflite::ArithmeticParams op_params;
+    72	  op_params.left_shift = data->left_shift;
+    73	  op_params.input1_offset = data->input1_offset;
+    74	  op_params.input1_multiplier = data->input1_multiplier;
+    75	  op_params.input1_shift = data->input1_shift;
+    76	  op_params.input2_offset = data->input2_offset;
+    77	  op_params.input2_multiplier = data->input2_multiplier;
+    78	  op_params.input2_shift = data->input2_shift;
+    79	  op_params.output_offset = data->output_offset;
+    80	  op_params.output_multiplier = data->output_multiplier;
+    81	  op_params.output_shift = data->output_shift;
+    82	  SetActivationParams(data->output_activation_min, data->output_activation_max,
+    83	                      &op_params);
+    84	  bool need_broadcast = reference_ops::ProcessBroadcastShapes(
+    85	      tflite::micro::GetTensorShape(input1),
+    86	      tflite::micro::GetTensorShape(input2), &op_params);
+    87	
+    88	  switch (output->type) {
+    89	    case kTfLiteInt8: {
+    90	      if (need_broadcast) {
+    91	        tflite::reference_ops::BroadcastQuantSubSlow(
+    92	            op_params, tflite::micro::GetTensorShape(input1),
+    93	            tflite::micro::GetTensorData<int8_t>(input1),
+    94	            tflite::micro::GetTensorShape(input2),
+    95	            tflite::micro::GetTensorData<int8_t>(input2),
+    96	            tflite::micro::GetTensorShape(output),
+    97	            tflite::micro::GetTensorData<int8_t>(output));
+    98	      } else {
+    99	        tflite::reference_ops::Sub(
+   100	            op_params, tflite::micro::GetTensorShape(input1),
+   101	            tflite::micro::GetTensorData<int8_t>(input1),
+   102	            tflite::micro::GetTensorShape(input2),
+   103	            tflite::micro::GetTensorData<int8_t>(input2),
+   104	            tflite::micro::GetTensorShape(output),
+   105	            tflite::micro::GetTensorData<int8_t>(output));
+   106	      }
+   107	      break;
+   108	    }
+   109	    case kTfLiteInt16: {
+   110	      if (need_broadcast) {
+   111	        tflite::reference_ops::BroadcastQuantSubSlow(
+   112	            op_params, tflite::micro::GetTensorShape(input1),
+   113	            tflite::micro::GetTensorData<int16_t>(input1),
+   114	            tflite::micro::GetTensorShape(input2),
+   115	            tflite::micro::GetTensorData<int16_t>(input2),
+   116	            tflite::micro::GetTensorShape(output),
+   117	            tflite::micro::GetTensorData<int16_t>(output));
+   118	      } else {
+   119	        tflite::reference_ops::Sub(
+   120	            op_params, tflite::micro::GetTensorShape(input1),
+   121	            tflite::micro::GetTensorData<int16_t>(input1),
+   122	            tflite::micro::GetTensorShape(input2),
+   123	            tflite::micro::GetTensorData<int16_t>(input2),
+   124	            tflite::micro::GetTensorShape(output),
+   125	            tflite::micro::GetTensorData<int16_t>(output));
+   126	      }
+   127	      break;
+   128	    }
+   129	    default:
+   130	      MicroPrintf("Quantized type %s not currently supported.",
+   131	                  TfLiteTypeGetName(output->type));
+   132	      return kTfLiteError;
+   133	  }
+   134	  return kTfLiteOk;
+   135	}
+   136	
+   137	TfLiteStatus SubEval(TfLiteContext* context, TfLiteNode* node) {
+   138	  auto* params = reinterpret_cast<TfLiteSubParams*>(node->builtin_data);
+   139	
+   140	  const TfLiteEvalTensor* input1 =
+   141	      tflite::micro::GetEvalInput(context, node, kSubInputTensor1);
+   142	  const TfLiteEvalTensor* input2 =
+   143	      tflite::micro::GetEvalInput(context, node, kSubInputTensor2);
+   144	  TfLiteEvalTensor* output =
+   145	      tflite::micro::GetEvalOutput(context, node, kSubOutputTensor);
+   146	
+   147	  TFLITE_DCHECK(node->user_data != nullptr);
+   148	  const OpDataSub& data = *(static_cast<const OpDataSub*>(node->user_data));
+   149	
+   150	  if (output->type == kTfLiteFloat32) {
+   151	    EvalSub(context, node, params, &data, input1, input2, output);
+   152	  } else if (output->type == kTfLiteInt8 || output->type == kTfLiteInt16) {
+   153	    TF_LITE_ENSURE_OK(context, EvalSubQuantized(context, node, params, &data,
+   154	                                                input1, input2, output));
+   155	  } else {
+   156	    MicroPrintf("Type %s (%d) not supported.", TfLiteTypeGetName(output->type),
+   157	                output->type);
+   158	    return kTfLiteError;
+   159	  }
+   160	
+   161	  return kTfLiteOk;
+   162	}
+   163	
+   164	TFLMRegistration Register_SUB() {
+   165	  return tflite::micro::RegisterOp(SubInit, SubPrepare, SubEval);
+   166	}
+   167	
+   168	}  // namespace tflite
+     1	/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	#include "tensorflow/lite/c/builtin_op_data.h"
+    17	#include "tensorflow/lite/c/common.h"
+    18	#include "tensorflow/lite/kernels/internal/common.h"
+    19	#include "tensorflow/lite/kernels/internal/quantization_util.h"
+    20	#include "tensorflow/lite/kernels/internal/reference/add.h"
+    21	#include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
+    22	#include "tensorflow/lite/kernels/internal/reference/sub.h"
+    23	#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+    24	#include "tensorflow/lite/kernels/internal/types.h"
+    25	#include "tensorflow/lite/kernels/kernel_util.h"
+    26	#include "tensorflow/lite/kernels/op_macros.h"
+    27	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    28	#include "tensorflow/lite/micro/kernels/sub.h"
+    29	
+    30	namespace tflite {
+    31	
+    32	const int kSubInputTensor1 = 0;
+    33	const int kSubInputTensor2 = 1;
+    34	const int kSubOutputTensor = 0;
+    35	
+    36	TfLiteStatus CalculateOpDataSub(TfLiteContext* context, TfLiteSubParams* params,
+    37	                                const TfLiteTensor* input1,
+    38	                                const TfLiteTensor* input2,
+    39	                                TfLiteTensor* output, OpDataSub* data) {
+    40	  data->requires_broadcast = !HaveSameShapes(input1, input2);
+    41	
+    42	  if (output->type == kTfLiteInt8 || output->type == kTfLiteInt16) {
+    43	    // 8bit -> 8bit general quantized path, with general rescalings
+    44	    data->input1_offset = -input1->params.zero_point;
+    45	    data->input2_offset = -input2->params.zero_point;
+    46	    data->output_offset = output->params.zero_point;
+    47	
+    48	    // The shift is set to 15 in case of 16-bit and 20 in case of 8-bit,
+    49	    // accordingly. In case of 16-bit we have 65535 << 15 which is less than 1
+    50	    // << 31, therefore the addition will still fit in a 32 bit accumulator.
+    51	    data->left_shift = output->type == kTfLiteInt16 ? 15 : 20;
+    52	    const float twice_max_input_scale =
+    53	        2 * std::max(input1->params.scale, input2->params.scale);
+    54	    const double real_input1_multiplier =
+    55	        static_cast<double>(input1->params.scale / twice_max_input_scale);
+    56	    const double real_input2_multiplier =
+    57	        static_cast<double>(input2->params.scale / twice_max_input_scale);
+    58	    const double real_output_multiplier =
+    59	        static_cast<double>(twice_max_input_scale /
+    60	                            ((1 << data->left_shift) * output->params.scale));
+    61	
+    62	    QuantizeMultiplierSmallerThanOneExp(
+    63	        real_input1_multiplier, &data->input1_multiplier, &data->input1_shift);
+    64	
+    65	    QuantizeMultiplierSmallerThanOneExp(
+    66	        real_input2_multiplier, &data->input2_multiplier, &data->input2_shift);
+    67	
+    68	    QuantizeMultiplierSmallerThanOneExp(
+    69	        real_output_multiplier, &data->output_multiplier, &data->output_shift);
+    70	
+    71	    TF_LITE_ENSURE_STATUS(CalculateActivationRangeQuantized(
+    72	        context, params->activation, output, &data->output_activation_min,
+    73	        &data->output_activation_max));
+    74	  }
+    75	
+    76	  return kTfLiteOk;
+    77	}
+    78	
+    79	TfLiteStatus SubPrepare(TfLiteContext* context, TfLiteNode* node) {
+    80	  TFLITE_DCHECK(node->user_data != nullptr);
+    81	  TFLITE_DCHECK(node->builtin_data != nullptr);
+    82	
+    83	  OpDataSub* data = static_cast<OpDataSub*>(node->user_data);
+    84	  auto* params = reinterpret_cast<TfLiteSubParams*>(node->builtin_data);
+    85	
+    86	  MicroContext* micro_context = GetMicroContext(context);
+    87	
+    88	  TfLiteTensor* input1 =
+    89	      micro_context->AllocateTempInputTensor(node, kSubInputTensor1);
+    90	  TF_LITE_ENSURE(context, input1 != nullptr);
+    91	  TfLiteTensor* input2 =
+    92	      micro_context->AllocateTempInputTensor(node, kSubInputTensor2);
+    93	  TF_LITE_ENSURE(context, input2 != nullptr);
+    94	  TfLiteTensor* output =
+    95	      micro_context->AllocateTempOutputTensor(node, kSubOutputTensor);
+    96	  TF_LITE_ENSURE(context, output != nullptr);
+    97	
+    98	  TF_LITE_ENSURE_STATUS(
+    99	      CalculateOpDataSub(context, params, input1, input2, output, data));
+   100	
+   101	  micro_context->DeallocateTempTfLiteTensor(input1);
+   102	  micro_context->DeallocateTempTfLiteTensor(input2);
+   103	  micro_context->DeallocateTempTfLiteTensor(output);
+   104	  return kTfLiteOk;
+   105	}
+   106	
+   107	}  // namespace tflite
+
+5. Locate DIV kernel and reference implementation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/floor_div.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h
+
+6. DIV broadcast implementation and alias-related code
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-49-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-50-  TF_LITE_ENSURE_TYPES_EQ(context, input1->type, input2->type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-51-  TF_LITE_ENSURE_TYPES_EQ(context, input1->type, output->type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-52-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-53-  micro_context->DeallocateTempTfLiteTensor(input1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-54-  micro_context->DeallocateTempTfLiteTensor(input2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-55-  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-56-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-57-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-58-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-59-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-60-void* FloorDivInit(TfLiteContext* context, const char* buffer, size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-61-  return nullptr;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-62-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-63-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc:64:TfLiteStatus FloorDivPrepare(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-65-  return CalculateOpData(context, node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-66-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-67-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-68-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-69-TfLiteStatus EvalFloorDiv(TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-70-                          const TfLiteEvalTensor* input1,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-71-                          const TfLiteEvalTensor* input2,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-72-                          TfLiteEvalTensor* output) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-73-  const T* denominator_data = tflite::micro::GetTensorData<T>(input2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-74-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-75-  // Validate the denominator.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-76-  for (int i = 0; i < tflite::ElementCount(*input2->dims); ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-77-    if (std::equal_to<T>()(denominator_data[i], 0)) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-78-      MicroPrintf("Division by 0");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-79-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-80-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-81-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-82-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-83-  bool requires_broadcast = !tflite::micro::HaveSameShapes(input1, input2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-84-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-85-  if (requires_broadcast) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-86-    reference_ops::BroadcastBinaryFunction4DSlow<T, T, T>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-87-        tflite::micro::GetTensorShape(input1),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-88-        tflite::micro::GetTensorData<T>(input1),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-89-        tflite::micro::GetTensorShape(input2), denominator_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-90-        tflite::micro::GetTensorShape(output),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-91-        tflite::micro::GetTensorData<T>(output), reference_ops::FloorDiv<T>);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-92-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-93-    reference_ops::BinaryFunction<T, T, T>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-94-        tflite::micro::GetTensorShape(input1),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-95-        tflite::micro::GetTensorData<T>(input1),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-96-        tflite::micro::GetTensorShape(input2), denominator_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-97-        tflite::micro::GetTensorShape(output),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-98-        tflite::micro::GetTensorData<T>(output), reference_ops::FloorDiv<T>);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-99-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-100-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-101-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-102-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-103-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc:104:TfLiteStatus FloorDivEval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-105-  const TfLiteEvalTensor* input1 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-106-      tflite::micro::GetEvalInput(context, node, kInputTensor1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-107-  const TfLiteEvalTensor* input2 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-108-      tflite::micro::GetEvalInput(context, node, kInputTensor2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-109-  TfLiteEvalTensor* output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-110-      tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-111-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-112-  switch (input1->type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-113-    case kTfLiteFloat32: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-114-      return EvalFloorDiv<float>(context, input1, input2, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-115-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-116-    default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-117-      MicroPrintf("Type '%s' is not supported by FLOOR_DIV.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-118-                  TfLiteTypeGetName(input1->type));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-119-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-120-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-121-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-122-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-123-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-124-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-125-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-126-TFLMRegistration Register_FLOOR_DIV() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc:127:  return tflite::micro::RegisterOp(FloorDivInit, FloorDivPrepare, FloorDivEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-128-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-129-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_div.cc-130-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-58-    QuantizeMultiplier(real_multiplier, &data->output_multiplier,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-59-                       &data->output_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-60-    data->input1_zero_point = input1->params.zero_point;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-61-    data->input2_zero_point = input2->params.zero_point;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-62-    data->output_zero_point = output->params.zero_point;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-63-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-64-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-65-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-66-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-67-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-68-void* DivInit(TfLiteContext* context, const char* buffer, size_t length) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-69-  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-70-  return context->AllocatePersistentBuffer(context, sizeof(OpDataDiv));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-71-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-72-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc:73:TfLiteStatus DivPrepare(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-74-  TFLITE_DCHECK(node->user_data != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-75-  TFLITE_DCHECK(node->builtin_data != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-76-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-77-  MicroContext* micro_context = GetMicroContext(context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-78-  TfLiteTensor* input1 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-79-      micro_context->AllocateTempInputTensor(node, kInputTensor1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-80-  TF_LITE_ENSURE(context, input1 != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-81-  TfLiteTensor* input2 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-82-      micro_context->AllocateTempInputTensor(node, kInputTensor2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-83-  TF_LITE_ENSURE(context, input2 != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-84-  TfLiteTensor* output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-85-      micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-86-  TF_LITE_ENSURE(context, output != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-87-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-88-  OpDataDiv* data = static_cast<OpDataDiv*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-89-  auto* params = reinterpret_cast<TfLiteDivParams*>(node->builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-90-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-91-  TF_LITE_ENSURE_STATUS(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-92-      CalculateOpDataDiv(context, input1, input2, output, params, data));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-93-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-94-  if (output->type == kTfLiteInt32) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-95-    // Only support int32 unquantized DIV for now.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-96-    TF_LITE_ENSURE_EQ(context, input1->quantization.type,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-97-                      kTfLiteNoQuantization);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-98-    TF_LITE_ENSURE_EQ(context, input2->quantization.type,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-99-                      kTfLiteNoQuantization);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-100-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-101-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-102-  micro_context->DeallocateTempTfLiteTensor(input1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-103-  micro_context->DeallocateTempTfLiteTensor(input2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-104-  micro_context->DeallocateTempTfLiteTensor(output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-105-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-106-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-107-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-108-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-109-void EvalDiv(TfLiteContext* context, TfLiteNode* node, TfLiteDivParams* params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-110-             const OpDataDiv* data, const TfLiteEvalTensor* input1,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-111-             const TfLiteEvalTensor* input2, TfLiteEvalTensor* output) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-112-  tflite::ArithmeticParams op_params = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-113-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-114-#define TF_LITE_DIV(type, opname, data_type)                           \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-115-  data_type output_activation_min, output_activation_max;              \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-116-  CalculateActivationRange(params->activation, &output_activation_min, \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-117-                           &output_activation_max);                    \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-118-  SetActivationParams(output_activation_min, output_activation_max,    \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-119-                      &op_params);                                     \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-120-  type::opname(op_params, tflite::micro::GetTensorShape(input1),       \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-121-               tflite::micro::GetTensorData<data_type>(input1),        \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-122-               tflite::micro::GetTensorShape(input2),                  \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-123-               tflite::micro::GetTensorData<data_type>(input2),        \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-124-               tflite::micro::GetTensorShape(output),                  \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-125-               tflite::micro::GetTensorData<data_type>(output))
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-126-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-127-  bool requires_broadcast = reference_ops::ProcessBroadcastShapes(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-128-      tflite::micro::GetTensorShape(input1),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-129-      tflite::micro::GetTensorShape(input2), &op_params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-130-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-131-  if (requires_broadcast) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc:132:    TF_LITE_DIV(reference_ops, BroadcastDivSlow, T);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-133-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-134-    TF_LITE_DIV(reference_ops, Div, T);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-135-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-136-#undef TF_LITE_DIV
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-137-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-138-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-139-TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-140-                           TfLiteDivParams* params, const OpDataDiv* data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-141-                           const TfLiteEvalTensor* input1,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-142-                           const TfLiteEvalTensor* input2,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-143-                           TfLiteEvalTensor* output) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-144-  tflite::ArithmeticParams op_params = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-145-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-146-#define TF_LITE_DIV(type, opname, dtype)                         \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-147-  type::opname(op_params, tflite::micro::GetTensorShape(input1), \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-148-               tflite::micro::GetTensorData<dtype>(input1),      \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-149-               tflite::micro::GetTensorShape(input2),            \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-150-               tflite::micro::GetTensorData<dtype>(input2),      \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-151-               tflite::micro::GetTensorShape(output),            \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-152-               tflite::micro::GetTensorData<dtype>(output))
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-153-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-154-  if (input1->type == kTfLiteInt8 && input2->type == kTfLiteInt8 &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-155-      output->type == kTfLiteInt8) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-156-    SetActivationParams(data->output_activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-157-                        data->output_activation_max, &op_params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-158-    op_params.input1_offset = -data->input1_zero_point;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-159-    op_params.input2_offset = -data->input2_zero_point;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-160-    op_params.output_offset = data->output_zero_point;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-161-    op_params.output_multiplier = data->output_multiplier;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-162-    op_params.output_shift = data->output_shift;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-163-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-164-    bool requires_broadcast = reference_ops::ProcessBroadcastShapes(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-165-        tflite::micro::GetTensorShape(input1),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-166-        tflite::micro::GetTensorShape(input2), &op_params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-167-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-168-    if (requires_broadcast) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc:169:      TF_LITE_DIV(reference_ops, BroadcastDivSlow, int8_t);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-170-    } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-171-      TF_LITE_DIV(reference_ops, Div, int8_t);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-172-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-173-#undef TF_LITE_DIV
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-174-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-175-    MicroPrintf("Unsupported combination of input and output types in DIV.");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-176-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-177-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-178-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-179-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-180-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-181-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc:182:TfLiteStatus DivEval(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-183-  TFLITE_DCHECK(node->builtin_data != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-184-  auto* params = static_cast<TfLiteDivParams*>(node->builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-185-  TFLITE_DCHECK(node->user_data != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-186-  auto* data = static_cast<OpDataDiv*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-187-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-188-  const TfLiteEvalTensor* input1 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-189-      tflite::micro::GetEvalInput(context, node, kInputTensor1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-190-  const TfLiteEvalTensor* input2 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-191-      tflite::micro::GetEvalInput(context, node, kInputTensor2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-192-  TfLiteEvalTensor* output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-193-      tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-194-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-195-  if (output->type == kTfLiteFloat32) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-196-    EvalDiv<float>(context, node, params, data, input1, input2, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-197-  } else if (output->type == kTfLiteInt32) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-198-    EvalDiv<int32_t>(context, node, params, data, input1, input2, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-199-  } else if (output->type == kTfLiteInt8) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-200-    TF_LITE_ENSURE_OK(context, EvalQuantized(context, node, params, data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-201-                                             input1, input2, output));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-202-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-203-    MicroPrintf(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-204-        "DIV only supports FLOAT32, INT32, quantized INT8 "
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-205-        "now, got type %s (%d).",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-206-        TfLiteTypeGetName(output->type), output->type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-207-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-208-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-209-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-210-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-211-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-212-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-213-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-214-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-215-TFLMRegistration Register_DIV() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc:216:  return tflite::micro::RegisterOp(DivInit, DivPrepare, DivEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-217-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-218-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-219-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-88-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-89-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-90-inline void Div(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-91-                const RuntimeShape& input1_shape, const int8_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-92-                const RuntimeShape& input2_shape, const int8_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-93-                const RuntimeShape& output_shape, int8_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-94-  TFLITE_DCHECK_LE(params.quantized_activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-95-                   params.quantized_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-96-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-97-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-98-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-99-  DivElementwise(flat_size, params, input1_data, input2_data, output_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-100-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-101-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-102-template <typename T, int N = 5>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h:103:inline void BroadcastDivSlowQuantized(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-104-    const ArithmeticParams& params, const RuntimeShape& unextended_input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-105-    const T* input1_data, const RuntimeShape& unextended_input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-106-    const T* input2_data, const RuntimeShape& unextended_output_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-107-    T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-108-  TFLITE_DCHECK_LE(unextended_input1_shape.DimensionsCount(), N);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-109-  TFLITE_DCHECK_LE(unextended_input2_shape.DimensionsCount(), N);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-110-  TFLITE_DCHECK_LE(unextended_output_shape.DimensionsCount(), N);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-111-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-112-  NdArrayDesc<N> desc1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-113-  NdArrayDesc<N> desc2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-114-  NdArrayDesc<N> output_desc;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-115-  NdArrayDescsForElementwiseBroadcast(unextended_input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-116-                                      unextended_input2_shape, &desc1, &desc2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-117-  CopyDimsToDesc(RuntimeShape::ExtendedShape(N, unextended_output_shape),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-118-                 &output_desc);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-119-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-120-  DivCheckArithmeticParams<T>(params);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-121-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-122-  auto div_func = [&](int indexes[N]) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-123-    int32_t input1_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-124-        params.input1_offset + input1_data[SubscriptToIndex(desc1, indexes)];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-125-    int32_t input2_val =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-126-        params.input2_offset + input2_data[SubscriptToIndex(desc2, indexes)];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-127-    TFLITE_DCHECK_NE(input2_val, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-128-    if (input2_val < 0) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-129-      // Invert signs to avoid a negative input2_val as input2_inv needs to be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-130-      // positive to be used as multiplier of MultiplyByQuantizedMultiplier.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-131-      input1_val = -input1_val;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-132-      input2_val = -input2_val;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-133-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-134-    int recip_shift;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-135-    const int32_t input2_inv = GetReciprocal(input2_val, 31, &recip_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-136-    const int headroom = CountLeadingSignBits(input1_val);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-137-    const int32_t unscaled_quotient =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-138-        MultiplyByQuantizedMultiplierGreaterThanOne(input1_val, input2_inv,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-139-                                                    headroom);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-140-    const int total_shift = params.output_shift - recip_shift - headroom;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-141-    const int32_t unclamped_result =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-142-        params.output_offset +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-143-        MultiplyByQuantizedMultiplierSmallerThanOneExp(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-144-            unscaled_quotient, params.output_multiplier, total_shift);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-145-    const int32_t clamped_output =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-146-        std::min(params.quantized_activation_max,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-147-                 std::max(params.quantized_activation_min, unclamped_result));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-148-    output_data[SubscriptToIndex(output_desc, indexes)] =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-149-        static_cast<T>(clamped_output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-150-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-151-  NDOpsHelper<N>(output_desc, div_func);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-152-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-153-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-154-template <int N = 5>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h:155:inline void BroadcastDivSlow(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-156-                             const RuntimeShape& unextended_input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-157-                             const uint8_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-158-                             const RuntimeShape& unextended_input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-159-                             const uint8_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-160-                             const RuntimeShape& unextended_output_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-161-                             uint8_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h:162:  BroadcastDivSlowQuantized<uint8_t, N>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-163-      params, unextended_input1_shape, input1_data, unextended_input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-164-      input2_data, unextended_output_shape, output_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-165-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-166-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-167-template <int N = 5>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h:168:inline void BroadcastDivSlow(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-169-                             const RuntimeShape& unextended_input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-170-                             const int8_t* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-171-                             const RuntimeShape& unextended_input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-172-                             const int8_t* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-173-                             const RuntimeShape& unextended_output_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-174-                             int8_t* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h:175:  BroadcastDivSlowQuantized<int8_t, N>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-176-      params, unextended_input1_shape, input1_data, unextended_input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-177-      input2_data, unextended_output_shape, output_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-178-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-179-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-180-// TODO(jiawen): We can implement BroadcastDiv on buffers of arbitrary
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-181-// dimensionality if the runtime code does a single loop over one dimension
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-182-// that handles broadcasting as the base case. The code generator would then
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-183-// generate max(D1, D2) nested for loops.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-184-template <typename T, int N = 5>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h:185:void BroadcastDivSlow(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-186-                      const RuntimeShape& unextended_input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-187-                      const T* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-188-                      const RuntimeShape& unextended_input2_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-189-                      const T* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-190-                      const RuntimeShape& unextended_output_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-191-                      T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-192-  T output_activation_min;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-193-  T output_activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-194-  GetActivationParams(params, &output_activation_min, &output_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-195-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-196-  TFLITE_DCHECK_LE(unextended_input1_shape.DimensionsCount(), N);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-197-  TFLITE_DCHECK_LE(unextended_input2_shape.DimensionsCount(), N);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-198-  TFLITE_DCHECK_LE(unextended_output_shape.DimensionsCount(), N);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-199-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-200-  NdArrayDesc<N> desc1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-201-  NdArrayDesc<N> desc2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-202-  NdArrayDesc<N> output_desc;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-203-  NdArrayDescsForElementwiseBroadcast(unextended_input1_shape,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-204-                                      unextended_input2_shape, &desc1, &desc2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-205-  CopyDimsToDesc(RuntimeShape::ExtendedShape(N, unextended_output_shape),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-206-                 &output_desc);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-207-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-208-  // In Tensorflow, the dimensions are canonically named (batch_number, row,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-209-  // col, channel), with extents (batches, height, width, depth), with the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-210-  // trailing dimension changing most rapidly (channels has the smallest
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-211-  // stride, typically 1 element).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-212-  //
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-213-  // In generated C code, we store arrays with the dimensions reversed. The
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-214-  // first dimension has smallest stride.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-215-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-216-  auto div_func = [&](int indexes[N]) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-217-    output_data[SubscriptToIndex(output_desc, indexes)] =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-218-        ActivationFunctionWithMinMax(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-219-            input1_data[SubscriptToIndex(desc1, indexes)] /
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-220-                input2_data[SubscriptToIndex(desc2, indexes)],
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-221-            output_activation_min, output_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-222-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-223-  NDOpsHelper<N>(output_desc, div_func);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-224-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-225-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-226-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-227-inline void Div(const ArithmeticParams& params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-228-                const RuntimeShape& input1_shape, const T* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-229-                const RuntimeShape& input2_shape, const T* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-230-                const RuntimeShape& output_shape, T* output_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-231-  T output_activation_min;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-232-  T output_activation_max;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-233-  GetActivationParams(params, &output_activation_min, &output_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-234-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-235-  const int flat_size =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-236-      MatchingElementsSize(input1_shape, input2_shape, output_shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-237-  for (int i = 0; i < flat_size; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-238-    output_data[i] = ActivationFunctionWithMinMax(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-239-        input1_data[i] / input2_data[i], output_activation_min,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-240-        output_activation_max);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-241-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-242-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-243-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-244-}  // namespace reference_ops
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-245-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-246-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/div.h-247-#endif  // TENSORFLOW_LITE_KERNELS_INTERNAL_REFERENCE_DIV_H_
+
+7. Exact DIV and SUB tensor metadata
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794217845.521561  141758 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794217845.521735  141758 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794217845.551283  141758 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794217846.361457  141758 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794217846.361649  141758 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+
+OPERATOR 95: DEQUANTIZE
+INPUT 0 tensor 149 name 'conv1d_3_DequantizeLinear_Output_1' shape [1, 900, 128] type 9 buffer 0
+OUTPUT 0 tensor 152 name 'conv1d_3_DequantizeLinear_Output_2' shape [1, 900, 128] type 0 buffer 0
+
+OPERATOR 96: SUB
+INPUT 0 tensor 152 name 'conv1d_3_DequantizeLinear_Output_2' shape [1, 900, 128] type 0 buffer 0
+INPUT 1 tensor 151 name 'node_layer_norm_1_mean_DequantizeLinear_Output' shape [1, 1, 128] type 0 buffer 0
+OUTPUT 0 tensor 153 name 'node_layer_norm_1_centered' shape [1, 900, 128] type 0 buffer 0
+
+OPERATOR 97: QUANTIZE
+INPUT 0 tensor 153 name 'node_layer_norm_1_centered' shape [1, 900, 128] type 0 buffer 0
+OUTPUT 0 tensor 154 name 'node_layer_norm_1_centered_DequantizeLinear_Output_1' shape [1, 900, 128] type 9 buffer 0
+
+OPERATOR 101: SQRT
+INPUT 0 tensor 158 name 'node_layer_norm_1_variance_eps' shape [1, 1, 128] type 0 buffer 0
+OUTPUT 0 tensor 159 name 'node_layer_norm_1_std' shape [1, 1, 128] type 0 buffer 0
+
+OPERATOR 102: DIV
+INPUT 0 tensor 153 name 'node_layer_norm_1_centered' shape [1, 900, 128] type 0 buffer 0
+INPUT 1 tensor 159 name 'node_layer_norm_1_std' shape [1, 1, 128] type 0 buffer 0
+OUTPUT 0 tensor 160 name 'node_layer_norm_1_normalized' shape [1, 900, 128] type 0 buffer 0
+
+OPERATOR 103: QUANTIZE
+INPUT 0 tensor 160 name 'node_layer_norm_1_normalized' shape [1, 900, 128] type 0 buffer 0
+OUTPUT 0 tensor 161 name 'node_layer_norm_1_normalized_DequantizeLinear_Output' shape [1, 900, 128] type 9 buffer 0
+
+8. TFLM build registration for SUB and DIV
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-245-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-246-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-247-  TfLiteStatus AddDetectionPostprocess() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-248-    return AddCustom("TFLite_Detection_PostProcess",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-249-                     tflite::Register_DETECTION_POSTPROCESS());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-250-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-251-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-252-  TfLiteStatus AddDiv() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:253:    return AddBuiltin(BuiltinOperator_DIV, tflite::Register_DIV(), ParseDiv);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-254-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-255-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-256-  TfLiteStatus AddEmbeddingLookup() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-257-    return AddBuiltin(BuiltinOperator_EMBEDDING_LOOKUP,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-258-                      Register_EMBEDDING_LOOKUP(), ParseEmbeddingLookup);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-259-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-260-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-261-  TfLiteStatus AddEnergy() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-262-    // TODO(b/286250473): change back name to "Energy" and remove namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-263-    return AddCustom("SignalEnergy", tflite::tflm_signal::Register_ENERGY());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-264-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-265-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-266-  TfLiteStatus AddElu() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-267-    return AddBuiltin(BuiltinOperator_ELU, tflite::Register_ELU(), ParseElu);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-268-  }
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-621-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-622-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-623-  TfLiteStatus AddStacker() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-624-    // TODO(b/286250473): change back name to "Stacker" and remove namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-625-    return AddCustom("SignalStacker", tflite::tflm_signal::Register_STACKER());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-626-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-627-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-628-  TfLiteStatus AddSub() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:629:    return AddBuiltin(BuiltinOperator_SUB, tflite::Register_SUB(), ParseSub);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-630-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-631-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-632-  TfLiteStatus AddSum() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-633-    return AddBuiltin(BuiltinOperator_SUM, Register_SUM(), ParseReducer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-634-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-635-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-636-  TfLiteStatus AddSvdf(const TFLMRegistration& registration = Register_SVDF()) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-637-    return AddBuiltin(BuiltinOperator_SVDF, registration, ParseSvdf);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-638-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-639-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-640-  TfLiteStatus AddTanh() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-641-    return AddBuiltin(BuiltinOperator_TANH, Register_TANH(), ParseTanh);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-642-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-643-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-644-  TfLiteStatus AddTransposeConv(
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-237-    MicroPrintf("Type %s (%d) not supported.", TfLiteTypeGetName(output->type),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-238-                output->type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-239-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-240-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-241-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-242-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-243-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-244-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc:245:TFLMRegistration Register_SUB() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-246-  return tflite::micro::RegisterOp(SubInit, SubPrepare, SubEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-247-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-248-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc-249-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-207-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-208-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-209-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-210-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-211-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-212-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-213-}  // namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-214-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc:215:TFLMRegistration Register_DIV() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-216-  return tflite::micro::RegisterOp(DivInit, DivPrepare, DivEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-217-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-218-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc-219-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-30-  TfLiteDivParams builtin_data = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-31-  builtin_data.activation = activation;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-32-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-33-  int kInputArrayData[] = {2, 0, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-34-  TfLiteIntArray* inputs_array = IntArrayFromInts(kInputArrayData);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-35-  int kOutputArrayData[] = {1, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-36-  TfLiteIntArray* outputs_array = IntArrayFromInts(kOutputArrayData);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-37-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc:38:  const TFLMRegistration registration = tflite::Register_DIV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-39-  micro::KernelRunner runner(registration, tensors, tensors_count, inputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-40-                             outputs_array, static_cast<void*>(&builtin_data));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-41-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-42-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-43-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-44-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-45-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-46-template <typename T>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-47-void TestDiv(int* input1_dims_data, const T* input1_data, int* input2_dims_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-48-             const T* input2_data, int* expected_dims, const T* expected_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-49-             T* output_data, TfLiteFusedActivation activation) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-50-  TfLiteIntArray* input1_dims = IntArrayFromInts(input1_dims_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-51-  TfLiteIntArray* input2_dims = IntArrayFromInts(input2_dims_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-52-  TfLiteIntArray* output_dims = IntArrayFromInts(expected_dims);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div_test.cc-53-  const int output_count = ElementCount(*output_dims);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-67-  TfLiteSubParams builtin_data;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-68-  builtin_data.activation = activation;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-69-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-70-  int inputs_array_data[] = {2, 0, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-71-  TfLiteIntArray* inputs_array = IntArrayFromInts(inputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-72-  int outputs_array_data[] = {1, 2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-73-  TfLiteIntArray* outputs_array = IntArrayFromInts(outputs_array_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-74-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc:75:  const TFLMRegistration registration = tflite::Register_SUB();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-76-  micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-77-                             outputs_array, &builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-78-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-79-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-80-  TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-81-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-82-  for (int i = 0; i < output_size; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-83-    TF_LITE_MICRO_EXPECT_NEAR(golden[i], output[i], tolerance);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-84-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-85-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-86-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-87-void TestSubFloat(int* input1_dims_data, const float* input1_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-88-                  int* input2_dims_data, const float* input2_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-89-                  int* output_dims_data, const float* expected_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub_test.cc-90-                  TfLiteFusedActivation activation, float* output_data) {
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-156-    MicroPrintf("Type %s (%d) not supported.", TfLiteTypeGetName(output->type),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-157-                output->type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-158-    return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-159-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-160-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-161-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-162-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-163-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc:164:TFLMRegistration Register_SUB() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-165-  return tflite::micro::RegisterOp(SubInit, SubPrepare, SubEval);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-166-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-167-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc-168-}  // namespace tflite
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-52-TFLMRegistration Register_CONCATENATION();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-53-TFLMRegistration Register_CONV_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-54-TFLMRegistration Register_COS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-55-TFLMRegistration Register_CUMSUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-56-TFLMRegistration Register_TOPK_V2();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-57-TFLMRegistration Register_DEPTH_TO_SPACE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-58-TFLMRegistration Register_DEPTHWISE_CONV_2D();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-59-TFLMRegistration Register_DEQUANTIZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:60:TFLMRegistration Register_DIV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-61-TFLMRegistration Register_ELU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-62-TFLMRegistration Register_EMBEDDING_LOOKUP();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-63-TFLMRegistration Register_EQUAL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-64-TFLMRegistration* Register_ETHOSU();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-65-TFLMRegistration Register_EXP();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-66-TFLMRegistration Register_EXPAND_DIMS();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-67-TFLMRegistration Register_FILL();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-68-TFLMRegistration Register_FLOOR();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-69-TFLMRegistration Register_FLOOR_DIV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-70-TFLMRegistration Register_FLOOR_MOD();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-71-TFLMRegistration Register_FULLY_CONNECTED();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-72-TFLMRegistration Register_GATHER();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-73-TFLMRegistration Register_GATHER_ND();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-74-TFLMRegistration Register_GREATER();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-75-TFLMRegistration Register_GREATER_EQUAL();
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-117-TFLMRegistration Register_SPACE_TO_DEPTH();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-118-TFLMRegistration Register_SPLIT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-119-TFLMRegistration Register_SPLIT_V();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-120-TFLMRegistration Register_SQRT();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-121-TFLMRegistration Register_SQUARE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-122-TFLMRegistration Register_SQUARED_DIFFERENCE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-123-TFLMRegistration Register_SQUEEZE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-124-TFLMRegistration Register_STRIDED_SLICE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h:125:TFLMRegistration Register_SUB();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-126-TFLMRegistration Register_SUM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-127-TFLMRegistration Register_SVDF();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-128-TFLMRegistration Register_TANH();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-129-TFLMRegistration Register_TRANSPOSE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-130-TFLMRegistration Register_TRANSPOSE_CONV();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-131-// TODO(b/230666079): resolve conflict with xtensa implementation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-132-TFLMRegistration Register_UNIDIRECTIONAL_SEQUENCE_LSTM();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-133-TFLMRegistration Register_UNPACK();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-134-TFLMRegistration Register_VAR_HANDLE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-135-TFLMRegistration Register_WHILE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-136-TFLMRegistration Register_ZEROS_LIKE();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-137-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-138-// TODO(b/295174388): Add the rest of inference only registration functions.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-139-TFLMInferenceRegistration RegisterInference_FULLY_CONNECTED();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h-140-
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
