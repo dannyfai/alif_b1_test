@@ -1,0 +1,1271 @@
+============================================================
+FUSED LAYERNORM CUSTOM KERNEL API AUDIT
+============================================================
+
+1. RegisterOp implementation and declarations
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-88-  return inst;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-89-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-90-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-91-// A wrapper around FlatBuffer API to help build model easily.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-92-class ModelBuilder {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-93- public:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-94-  typedef int32_t Tensor;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-95-  typedef int Operator;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-96-  typedef int Node;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-97-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-98-  // `builder` needs to be available until BuildModel is called.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-99-  explicit ModelBuilder(flatbuffers::FlatBufferBuilder* builder)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-100-      : builder_(builder) {}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-101-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-102-  // Registers an operator that will be used in the model.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:103:  Operator RegisterOp(BuiltinOperator op, const char* custom_code);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-104-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-105-  // Adds a tensor to the model.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-106-  Tensor AddTensor(TensorType type, std::initializer_list<int32_t> shape) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-107-    return AddTensorImpl(type, /* is_variable */ false, shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-108-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-109-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-110-  // Adds a variable tensor to the model.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-111-  Tensor AddVariableTensor(TensorType type,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-112-                           std::initializer_list<int32_t> shape) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-113-    return AddTensorImpl(type, /* is_variable */ true, shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-114-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-115-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-116-  // Adds a node to the model with given input and output Tensors.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-117-  Node AddNode(Operator op, std::initializer_list<Tensor> inputs,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-118-               std::initializer_list<Tensor> outputs,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-119-               std::initializer_list<Tensor> intermediates =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-120-                   std::initializer_list<Tensor>{});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-121-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-122-  void AddMetadata(const char* description_string,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-123-                   const int32_t* metadata_buffer_data, size_t num_elements);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-124-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-125-  // Constructs the flatbuffer model using `builder_` and return a pointer to
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-126-  // it. The returned model has the same lifetime as `builder_`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-127-  // Note the default value of 0 for num_subgraph_inputs means all tensor inputs
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-128-  // are in subgraph input list.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-129-  const Model* BuildModel(std::initializer_list<Tensor> inputs,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-130-                          std::initializer_list<Tensor> outputs,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-131-                          size_t num_subgraph_inputs = 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-132-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-133- private:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-134-  // Adds a tensor to the model.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-135-  Tensor AddTensorImpl(TensorType type, bool is_variable,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-136-                       std::initializer_list<int32_t> shape);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-137-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-138-  flatbuffers::FlatBufferBuilder* builder_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-139-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-140-  static constexpr int kMaxOperatorCodes = 10;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-141-  flatbuffers::Offset<tflite::OperatorCode> operator_codes_[kMaxOperatorCodes];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-142-  int next_operator_code_id_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-143-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-144-  static constexpr int kMaxOperators = 50;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-145-  flatbuffers::Offset<tflite::Operator> operators_[kMaxOperators];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-146-  int next_operator_id_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-147-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-148-  static constexpr int kMaxTensors = 50;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-149-  flatbuffers::Offset<tflite::Tensor> tensors_[kMaxTensors];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-150-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-151-  static constexpr int kMaxMetadataBuffers = 10;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-152-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-153-  static constexpr int kMaxMetadatas = 10;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-154-  flatbuffers::Offset<Metadata> metadata_[kMaxMetadatas];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-155-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-156-  flatbuffers::Offset<Buffer> metadata_buffers_[kMaxMetadataBuffers];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-157-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-158-  int nbr_of_metadata_buffers_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-159-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-160-  int next_tensor_id_ = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-161-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-162-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:163:ModelBuilder::Operator ModelBuilder::RegisterOp(BuiltinOperator op,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-164-                                                const char* custom_code) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-165-  TFLITE_DCHECK(next_operator_code_id_ <= kMaxOperatorCodes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-166-  operator_codes_[next_operator_code_id_] = tflite::CreateOperatorCodeDirect(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-167-      *builder_, /*deprecated_builtin_code=*/0, custom_code, /*version=*/0, op);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-168-  next_operator_code_id_++;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-169-  return next_operator_code_id_ - 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-170-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-171-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-172-ModelBuilder::Node ModelBuilder::AddNode(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-173-    ModelBuilder::Operator op,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-174-    std::initializer_list<ModelBuilder::Tensor> inputs,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-175-    std::initializer_list<ModelBuilder::Tensor> outputs,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-176-    std::initializer_list<ModelBuilder::Tensor> intermediates) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-177-  TFLITE_DCHECK(next_operator_id_ <= kMaxOperators);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-178-  operators_[next_operator_id_] = tflite::CreateOperator(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-179-      *builder_, op, builder_->CreateVector(inputs.begin(), inputs.size()),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-180-      builder_->CreateVector(outputs.begin(), outputs.size()),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-181-      BuiltinOptions_NONE,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-182-      /*builtin_options=*/0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-183-      /*custom_options=*/0, tflite::CustomOptionsFormat_FLEXBUFFERS,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-184-      /*mutating_variable_inputs =*/0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-185-      builder_->CreateVector(intermediates.begin(), intermediates.size()));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-186-  next_operator_id_++;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-187-  return next_operator_id_ - 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-188-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-189-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-190-void ModelBuilder::AddMetadata(const char* description_string,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-191-                               const int32_t* metadata_buffer_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-192-                               size_t num_elements) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-193-  metadata_[ModelBuilder::nbr_of_metadata_buffers_] =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-194-      CreateMetadata(*builder_, builder_->CreateString(description_string),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-195-                     1 + ModelBuilder::nbr_of_metadata_buffers_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-196-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-197-  metadata_buffers_[nbr_of_metadata_buffers_] = tflite::CreateBuffer(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-198-      *builder_, builder_->CreateVector((uint8_t*)metadata_buffer_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-199-                                        sizeof(uint32_t) * num_elements));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-200-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-201-  ModelBuilder::nbr_of_metadata_buffers_++;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-202-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-203-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-204-const Model* ModelBuilder::BuildModel(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-205-    std::initializer_list<ModelBuilder::Tensor> inputs,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-206-    std::initializer_list<ModelBuilder::Tensor> outputs,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-207-    size_t num_subgraph_inputs) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-208-  // Model schema requires an empty buffer at idx 0.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-209-  size_t buffer_size = 1 + ModelBuilder::nbr_of_metadata_buffers_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-210-  flatbuffers::Offset<Buffer> buffers[kMaxMetadataBuffers];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-211-  buffers[0] = tflite::CreateBuffer(*builder_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-212-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-213-  // Place the metadata buffers first in the buffer since the indices for them
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-214-  // have already been set in AddMetadata()
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-215-  for (int i = 1; i < ModelBuilder::nbr_of_metadata_buffers_ + 1; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-216-    buffers[i] = metadata_buffers_[i - 1];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-217-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-218-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-269-      *builder_, builder_->CreateVector(shape.begin(), shape.size()), type,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-270-      /* buffer */ 0, /* name */ 0, /* quantization */ 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-271-      /* is_variable */ is_variable,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-272-      /* sparsity */ 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-273-  next_tensor_id_++;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-274-  return next_tensor_id_ - 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-275-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-276-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-277-const Model* BuildSimpleStatefulModel() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-278-  using flatbuffers::Offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-279-  flatbuffers::FlatBufferBuilder* fb_builder = BuilderInstance();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-280-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-281-  ModelBuilder model_builder(fb_builder);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-282-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-283-  const int op_id =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:284:      model_builder.RegisterOp(BuiltinOperator_CUSTOM, "simple_stateful_op");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-285-  const int input_tensor = model_builder.AddTensor(TensorType_INT8, {3});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-286-  const int median_tensor = model_builder.AddTensor(TensorType_INT8, {3});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-287-  const int invoke_count_tensor =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-288-      model_builder.AddTensor(TensorType_INT32, {1});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-289-  const int intermediate_tensor =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-290-      model_builder.AddTensor(TensorType_FLOAT32, {0});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-291-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-292-  model_builder.AddNode(op_id, {input_tensor},
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-293-                        {median_tensor, invoke_count_tensor},
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-294-                        {intermediate_tensor});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-295-  return model_builder.BuildModel({input_tensor},
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-296-                                  {median_tensor, invoke_count_tensor});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-297-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-298-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-299-const Model* BuildSimpleModelWithBranch() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-300-  using flatbuffers::Offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-301-  flatbuffers::FlatBufferBuilder* fb_builder = BuilderInstance();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-302-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-303-  ModelBuilder model_builder(fb_builder);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-304-  /* Model structure
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-305-           | t0
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-306-    +------|
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-307-    |      v
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-308-    |   +---------+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-309-    |   |   n0    |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-310-    |   |         |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-311-    |   +---------+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-312-    v           +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-313-                |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-314-  +---------+   | t1
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-315-  |   n1    |   |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-316-  |         |   |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-317-  +---------+   |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-318-     |          |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-319- t2  |          v
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-320-     |   +---------+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-321-     +-->|    n2   |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-322-         |         |
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-323-         +-------|-+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-324-                 |t3
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-325-                 v
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-326-  */
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-327-  const int op_id =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:328:      model_builder.RegisterOp(BuiltinOperator_CUSTOM, "mock_custom");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-329-  const int t0 = model_builder.AddTensor(TensorType_FLOAT32, {2, 2, 3});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-330-  const int t1 = model_builder.AddTensor(TensorType_FLOAT32, {2, 2, 3});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-331-  const int t2 = model_builder.AddTensor(TensorType_FLOAT32, {2, 2, 3});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-332-  const int t3 = model_builder.AddTensor(TensorType_FLOAT32, {2, 2, 3});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-333-  model_builder.AddNode(op_id, {t0}, {t1});      // n0
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-334-  model_builder.AddNode(op_id, {t0}, {t2});      // n1
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-335-  model_builder.AddNode(op_id, {t1, t2}, {t3});  // n2
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-336-  return model_builder.BuildModel({t0}, {t3});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-337-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-338-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-339-const Model* BuildModelWithOfflinePlanning(int number_of_tensors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-340-                                           const int32_t* metadata_buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-341-                                           NodeConnection* node_conn,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-342-                                           int num_conns,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-343-                                           int num_subgraph_inputs) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-344-  using flatbuffers::Offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-345-  flatbuffers::FlatBufferBuilder* fb_builder = BuilderInstance();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-346-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-347-  ModelBuilder model_builder(fb_builder);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-348-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-349-  const int op_id =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:350:      model_builder.RegisterOp(BuiltinOperator_CUSTOM, "mock_custom");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-351-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-352-  for (int i = 0; i < number_of_tensors; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-353-    model_builder.AddTensor(TensorType_FLOAT32, {2, 2, 3});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-354-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-355-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-356-  for (int i = 0; i < num_conns; ++i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-357-    model_builder.AddNode(op_id, node_conn[i].input, node_conn[i].output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-358-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-359-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-360-  model_builder.AddMetadata(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-361-      "OfflineMemoryAllocation", metadata_buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-362-      number_of_tensors + tflite::testing::kOfflinePlannerHeaderSize);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-363-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-364-  return model_builder.BuildModel(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-365-      node_conn[0].input, node_conn[num_conns - 1].output, num_subgraph_inputs);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-366-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-367-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-368-const Model* BuildModelWithUnusedInputs() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-369-  using flatbuffers::Offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-370-  flatbuffers::FlatBufferBuilder* builder = BuilderInstance();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-371-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-372-  constexpr size_t buffers_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-373-  const Offset<Buffer> buffers[buffers_size] = {CreateBuffer(*builder)};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-374-  constexpr size_t tensor_shape_size = 2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-375-  const int32_t tensor_shape[tensor_shape_size] = {1, 64};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-376-  constexpr size_t tensors_size = 4;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-377-  const Offset<Tensor> tensors[tensors_size] = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-378-      CreateTensor(*builder,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-379-                   builder->CreateVector(tensor_shape, tensor_shape_size),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-380-                   TensorType_INT8, 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-381-                   builder->CreateString("test_input_tensor"), 0, false),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-382-      CreateTensor(*builder,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-383-                   builder->CreateVector(tensor_shape, tensor_shape_size),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-384-                   TensorType_INT8, 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-385-                   builder->CreateString("test_unused_input_tensor"), 0, false),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-386-      CreateTensor(*builder,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-387-                   builder->CreateVector(tensor_shape, tensor_shape_size),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-388-                   TensorType_INT8, 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-389-                   builder->CreateString("test_output_tensor"), 0, false),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-390-      CreateTensor(*builder,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-391-                   builder->CreateVector(tensor_shape, tensor_shape_size),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-392-                   TensorType_INT8, 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-393-                   builder->CreateString("test_unused_tensor"), 0, false),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-394-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-395-  constexpr size_t inputs_size = 2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-396-  const int32_t inputs[inputs_size] = {0, 1};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-397-  constexpr size_t outputs_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-398-  const int32_t outputs[outputs_size] = {2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-399-  constexpr size_t operator_inputs_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-400-  const int32_t operator_inputs[operator_inputs_size] = {0};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-401-  constexpr size_t operator_outputs_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-402-  const int32_t operator_outputs[operator_outputs_size] = {2};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-403-  constexpr size_t operators_size = 1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-404-  const Offset<Operator> operators[operators_size] = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-405-      CreateOperator(
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-483-      builder->CreateString("test_model"),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-484-      builder->CreateVector(buffers, buffers_size));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-485-  FinishModelBuffer(*builder, model_offset);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-486-  void* model_pointer = builder->GetBufferPointer();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-487-  const Model* model = flatbuffers::GetRoot<Model>(model_pointer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-488-  return model;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-489-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-490-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-491-const Model* BuildModelWith256x256Tensor() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-492-  using flatbuffers::Offset;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-493-  flatbuffers::FlatBufferBuilder* fb_builder = BuilderInstance();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-494-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-495-  ModelBuilder model_builder(fb_builder);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-496-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-497-  const int op_id =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:498:      model_builder.RegisterOp(BuiltinOperator_CUSTOM, "mock_custom");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-499-  const int input1_tensor =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-500-      model_builder.AddTensor(TensorType_INT8, {256, 256});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-501-  const int input2_tensor =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-502-      model_builder.AddTensor(TensorType_INT8, {256, 256});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-503-  const int output_tensor =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-504-      model_builder.AddTensor(TensorType_INT8, {256, 256});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-505-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-506-  model_builder.AddNode(op_id, {input1_tensor, input2_tensor}, {output_tensor});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-507-  return model_builder.BuildModel({input1_tensor, input2_tensor},
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-508-                                  {output_tensor});
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-509-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-510-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-511-const Model* BuildSimpleMockModel() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-512-  using flatbuffers::Offset;
+
+2. TfLiteRegistration and TFLMRegistration definitions
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-80-  kTfLiteGemmLowpContext = 1,    /// include gemm_support.h to use.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-81-  kTfLiteEdgeTpuContext = 2,     /// Placeholder for Edge TPU support.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-82-  kTfLiteCpuBackendContext = 3,  /// include cpu_backend_context.h to use.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-83-  kTfLiteLiteRtBufferContext =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-84-      4,  /// include external_litert_buffer_context.h to use.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-85-  kTfLiteMaxExternalContexts = 5
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-86-} TfLiteExternalContextType;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-87-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-88-// Forward declare so dependent structs and methods can reference these types
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-89-// prior to the struct definitions.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-90-struct TfLiteContext;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-91-struct TfLiteDelegate;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:92:struct TfLiteRegistration;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-93-struct TfLiteOpaqueDelegateBuilder;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-94-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-95-/// An external context is a collection of information unrelated to the TF Lite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-96-/// framework, but useful to a subset of the ops. TF Lite knows very little
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-97-/// about the actual contexts, but it keeps a list of them, and is able to
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-98-/// refresh them if configurations like the number of recommended threads
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-99-/// change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-100-typedef struct TfLiteExternalContext {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-101-  TfLiteExternalContextType type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-102-  TfLiteStatus (*Refresh)(struct TfLiteContext* context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-103-} TfLiteExternalContext;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-104-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-105-// LINT.IfChange(optional_tensor)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-106-#define kTfLiteOptionalTensor (-1)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-107-// LINT.ThenChange(//tensorflow/compiler/mlir/lite/flatbuffer_export.cc:optional_tensor)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-108-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-109-/// Fixed size list of integers. Used for dimensions and inputs/outputs tensor
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-110-/// indices
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-111-typedef struct TfLiteIntArray {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-112-  int size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-113-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-114-#if defined(_MSC_VER)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-115-  // Context for why this is needed is in http://b/189926408#comment21
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-116-  int data[1];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-117-#elif (!defined(__clang__) && defined(__GNUC__) && __GNUC__ == 6 && \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-118-       __GNUC_MINOR__ >= 1) ||                                      \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-119-    defined(HEXAGON) ||                                             \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-120-    (defined(__clang__) && __clang_major__ == 7 && __clang_minor__ == 1)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-121-  // gcc 6.1+ have a bug where flexible members aren't properly handled
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-122-  // https://github.com/google/re2/commit/b94b7cd42e9f02673cd748c1ac1d16db4052514c
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-123-  int data[0];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-124-#else
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-125-  int data[];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-126-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-127-} TfLiteIntArray;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-128-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-129-/// Given the size (number of elements) in a TfLiteIntArray, calculate its size
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-130-/// in bytes.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-131-size_t TfLiteIntArrayGetSizeInBytes(int size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-132-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-133-#ifndef TF_LITE_STATIC_MEMORY
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-134-/// Create a array of a given `size` (uninitialized entries).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-135-/// This returns a pointer, that you must free using TfLiteIntArrayFree().
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-136-TfLiteIntArray* TfLiteIntArrayCreate(int size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-137-#endif
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-138-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-139-/// Check if two intarrays are equal. Returns 1 if they are equal, 0 otherwise.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-140-int TfLiteIntArrayEqual(const TfLiteIntArray* a, const TfLiteIntArray* b);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-141-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-142-/// Check if an intarray equals an array. Returns 1 if equals, 0 otherwise.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-143-int TfLiteIntArrayEqualsArray(const TfLiteIntArray* a, int b_size,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-144-                              const int b_data[]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-145-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-146-#ifndef TF_LITE_STATIC_MEMORY
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-147-/// Create a copy of an array passed as `src`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-148-/// You are expected to free memory with TfLiteIntArrayFree
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-149-TfLiteIntArray* TfLiteIntArrayCopy(const TfLiteIntArray* src);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-150-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-151-/// Free memory of array `a`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-152-void TfLiteIntArrayFree(TfLiteIntArray* a);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-153-#endif  // TF_LITE_STATIC_MEMORY
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-154-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-155-/// Fixed size list of floats. Used for per-channel quantization.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-156-typedef struct TfLiteFloatArray {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-157-  int size;
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-864-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-865-  /// Add `tensors_to_add` tensors, preserving pre-existing Tensor entries.  If
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-866-  /// non-null, the value pointed to by `first_new_tensor_index` will be set to
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-867-  /// the index of the first new tensor.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-868-  TfLiteStatus (*AddTensors)(struct TfLiteContext*, int tensors_to_add,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-869-                             int* first_new_tensor_index);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-870-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-871-  /// Get a Tensor node by node_index.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-872-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-873-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-874-  TfLiteStatus (*GetNodeAndRegistration)(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-875-      struct TfLiteContext*, int node_index, TfLiteNode** node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:876:      struct TfLiteRegistration** registration);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-877-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-878-  /// Replace ops with one or more stub delegate operations. This function
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-879-  /// does not take ownership of `nodes_to_replace`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-880-  TfLiteStatus (*ReplaceNodeSubsetsWithDelegateKernels)(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:881:      struct TfLiteContext*, struct TfLiteRegistration registration,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-882-      const TfLiteIntArray* nodes_to_replace, struct TfLiteDelegate* delegate);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-883-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-884-  /// Number of threads that are recommended to subsystems like gemmlowp and
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-885-  /// eigen.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-886-  int recommended_num_threads;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-887-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-888-  /// Access external contexts by type.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-889-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-890-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-891-  TfLiteExternalContext* (*GetExternalContext)(struct TfLiteContext*,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-892-                                               TfLiteExternalContextType);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-893-  /// Set the value of a external context. Does not take ownership of the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-894-  /// pointer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-895-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-896-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-897-  void (*SetExternalContext)(struct TfLiteContext*, TfLiteExternalContextType,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-898-                             TfLiteExternalContext*);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-899-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-900-  /// Flag for allowing float16 precision for FP32 calculation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-901-  /// default: false.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-902-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-903-  /// WARNING: This is an experimental API and subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-904-  bool allow_fp32_relax_to_fp16;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-905-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-906-  /// Pointer to the op-level profiler, if set; nullptr otherwise.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-907-  void* profiler;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-908-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-909-  /// Allocate persistent buffer which has the same life time as the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-910-  /// interpreter. Returns `nullptr` on failure. The memory is allocated from
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-911-  /// heap for TFL, and from tail in TFLM. This method is only available in
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-912-  /// `Init` or `Prepare` stage.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-913-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-914-  /// WARNING: This is an experimental interface that is subject
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-915-  /// to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-916-  void* (*AllocatePersistentBuffer)(struct TfLiteContext* ctx, size_t bytes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-917-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-918-  /// Allocate a buffer which will be deallocated right after invoke phase.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-919-  /// The memory is allocated from heap in TFL, and from volatile arena in TFLM.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-920-  /// This method is only available in invoke stage.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-921-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-922-  /// NOTE: If possible use `RequestScratchBufferInArena` method to avoid memory
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-923-  /// allocation during inference time.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-924-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-925-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-926-  TfLiteStatus (*AllocateBufferForEval)(struct TfLiteContext* ctx, size_t bytes,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-927-                                        void** ptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-928-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-929-  /// Request a scratch buffer in the arena through static memory planning.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-930-  /// This method is only available in `Prepare` stage and the buffer is
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-931-  /// allocated by the interpreter between Prepare and Eval stage. In `Eval`
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-932-  /// stage, `GetScratchBuffer` API can be used to fetch the address.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-933-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-934-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-935-  TfLiteStatus (*RequestScratchBufferInArena)(struct TfLiteContext* ctx,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-936-                                              size_t bytes, int* buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-937-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-938-  /// Get the scratch buffer pointer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-939-  /// This method is only available in Eval stage.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-940-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-941-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-942-  void* (*GetScratchBuffer)(struct TfLiteContext* ctx, int buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-943-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-944-  /// Resize the memory pointer of the `tensor`. This method behaves the same as
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-945-  /// `ResizeTensor`, except that it makes a copy of the shape array internally
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-946-  /// so the shape array could be deallocated right afterwards.
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1095-} TfLiteInPlaceOp;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1096-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1097-/// The number of shareable inputs supported.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1098-static const int kTfLiteMaxSharableOpInputs = 3;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1099-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1100-/// `TfLiteRegistration` defines the implementation of an operation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1101-/// (a built-in op, custom op, or custom delegate kernel).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1102-///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1103-/// It is a struct containing "methods" (C function pointers) that will be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1104-/// invoked by the TF Lite runtime to evaluate instances of the operation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1105-///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1106-/// See also `TfLiteOperator` which is a more ABI-stable equivalent.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:1107:typedef struct TfLiteRegistration {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1108-  /// Initializes the op from serialized data.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1109-  /// Called only *once* for the lifetime of the op, so any one-time allocations
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1110-  /// should be made here (unless they depend on tensor sizes).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1111-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1112-  /// * If a built-in op:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1113-  ///       * `buffer` is the op's params data (TfLiteLSTMParams*).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1114-  ///       * `length` is zero.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1115-  /// * If custom op:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1116-  ///       * `buffer` is the op's `custom_options`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1117-  ///       * `length` is the size of the buffer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1118-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1119-  /// Returns a type-punned (i.e. void*) opaque data (e.g. a primitive pointer
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1120-  /// or an instance of a struct).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1121-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1122-  /// The returned pointer will be stored with the node in the `user_data`
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1123-  /// field, accessible within prepare and invoke functions below.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1124-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1125-  /// NOTE: if the data is already in the desired format, simply implement this
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1126-  /// function to return `nullptr` and implement the free function to be a
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1127-  /// no-op.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1128-  void* (*init)(TfLiteContext* context, const char* buffer, size_t length);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1129-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1130-  /// The pointer `buffer` is the data previously returned by an init
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1131-  /// invocation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1132-  void (*free)(TfLiteContext* context, void* buffer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1133-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1134-  /// prepare is called when the inputs this node depends on have been resized.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1135-  /// `context->ResizeTensor()` can be called to request output tensors to be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1136-  /// resized.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1137-  /// Can be called multiple times for the lifetime of the op.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1138-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1139-  /// Returns `kTfLiteOk` on success.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1140-  TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1141-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1142-  /// Execute the node (should read `node->inputs` and output to
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1143-  /// `node->outputs`).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1144-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1145-  /// Returns `kTfLiteOk` on success.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1146-  TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1147-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1148-  /// `profiling_string` is called during summarization of profiling information
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1149-  /// in order to group executions together. Providing a value here will cause a
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1150-  /// given op to appear multiple times is the profiling report. This is
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1151-  /// particularly useful for custom ops that can perform significantly
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1152-  /// different calculations depending on their `user-data`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1153-  const char* (*profiling_string)(const TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1154-                                  const TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1155-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1156-  /// Builtin codes. If this kernel refers to a builtin this is the code
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1157-  /// of the builtin. This is so we can do marshaling to other frameworks like
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1158-  /// NN API.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1159-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1160-  /// Note: It is the responsibility of the registration binder to set this
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1161-  /// properly.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1162-  int32_t builtin_code;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1163-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1164-  /// Custom op name. If the op is a builtin, this will be `null`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1165-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1166-  /// Note: It is the responsibility of the registration binder to set this
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1167-  /// properly.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1168-  ///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1169-  /// WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1170-  const char* custom_name;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1171-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1172-  /// The version of the op.
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1200-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1201-/// \private
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1202-/// Old version of `TfLiteRegistration` to maintain binary backward
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1203-/// compatibility.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1204-/// The legacy registration type must be a POD struct type whose field types
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1205-/// must be a prefix of the field types in TfLiteRegistration, and offset of the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1206-/// first field in TfLiteRegistration that is not present in the legacy
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1207-/// registration type must be greater than or equal to the size of the legacy
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1208-/// registration type.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1209-///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1210-/// WARNING: This structure is deprecated / not an official part of the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1211-/// API. It should be only used for binary backward compatibility.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:1212:typedef struct TfLiteRegistration_V3 {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1213-  void* (*init)(TfLiteContext* context, const char* buffer, size_t length);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1214-  void (*free)(TfLiteContext* context, void* buffer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1215-  TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1216-  TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1217-  const char* (*profiling_string)(const TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1218-                                  const TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1219-  int32_t builtin_code;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1220-  const char* custom_name;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1221-  int version;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1222-  TfLiteOperator* registration_external;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1223-  struct TfLiteAsyncKernel* (*async_kernel)(TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1224-                                            TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1225-} TfLiteRegistration_V3;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1226-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1227-/// \private
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1228-/// Old version of `TfLiteRegistration` to maintain binary backward
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1229-/// compatibility.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1230-/// The legacy registration type must be a POD struct type whose field types
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1231-/// must be a prefix of the field types in TfLiteRegistration, and offset of the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1232-/// first field in TfLiteRegistration that is not present in the legacy
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1233-/// registration type must be greater than or equal to the size of the legacy
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1234-/// registration type.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1235-///
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1236-/// WARNING: This structure is deprecated / not an official part of the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1237-/// API. It should be only used for binary backward compatibility.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:1238:typedef struct TfLiteRegistration_V2 {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1239-  void* (*init)(TfLiteContext* context, const char* buffer, size_t length);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1240-  void (*free)(TfLiteContext* context, void* buffer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1241-  TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1242-  TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1243-  const char* (*profiling_string)(const TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1244-                                  const TfLiteNode* node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1245-  int32_t builtin_code;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1246-  const char* custom_name;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1247-  int version;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1248-  TfLiteOperator* registration_external;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1249-} TfLiteRegistration_V2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1250-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1251-/// \private
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1252-/// Old version of `TfLiteRegistration` to maintain binary backward
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1253-/// compatibility.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1254-/// The legacy registration type must be a POD struct type whose field types
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1255-/// must be a prefix of the field types in TfLiteRegistration, and offset of the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1256-/// first field in TfLiteRegistration that is not present in the legacy
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-1257-/// registration type must be greater than or equal to the size of the legacy
+
+3. TfLiteEvalTensor and data-pointer definitions
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-681-  // Custom initial data. This is the opaque data provided in the flatbuffer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-682-  //
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-683-  // WARNING: This is an experimental interface that is subject to change.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-684-  const void* custom_initial_data;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-685-  int custom_initial_data_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-686-} TfLiteNode;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-687-#endif  // TF_LITE_STATIC_MEMORY
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-688-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-689-/// Light-weight tensor struct for TF Micro runtime. Provides the minimal amount
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-690-/// of information required for a kernel to run during TfLiteRegistration::Eval.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-691-// TODO(b/160955687): Move this field into TF_LITE_STATIC_MEMORY when TFLM
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-692-// builds with this flag by default internally.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:693:typedef struct TfLiteEvalTensor {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-694-  /// A union of data pointers. The appropriate type should be used for a typed
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-695-  /// tensor based on `type`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-696-  TfLitePtrUnion data;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-697-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-698-  /// A pointer to a structure representing the dimensionality interpretation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-699-  /// that the buffer should have.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-700-  TfLiteIntArray* dims;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-701-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-702-  /// The data type specification for data stored in `data`. This affects
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-703-  /// what member of `data` union should be used.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-704-  TfLiteType type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-705-} TfLiteEvalTensor;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-706-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-707-#ifndef TF_LITE_STATIC_MEMORY
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-708-/// Free data memory of tensor `t`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-709-void TfLiteTensorDataFree(TfLiteTensor* t);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-710-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-711-/// Free quantization data.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-712-void TfLiteQuantizationFree(TfLiteQuantization* quantization);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-713-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-714-/// Free sparsity parameters.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-715-void TfLiteSparsityFree(TfLiteSparsity* sparsity);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-716-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-717-/// Free memory of tensor `t`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-718-void TfLiteTensorFree(TfLiteTensor* t);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-719-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-720-/// Set all of a tensor's fields (and free any previously allocated data).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-721-void TfLiteTensorReset(TfLiteType type, const char* name, TfLiteIntArray* dims,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-722-                       TfLiteQuantizationParams quantization, char* buffer,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-723-                       size_t size, TfLiteAllocationType allocation_type,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-724-                       const void* allocation, bool is_variable,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-725-                       TfLiteTensor* tensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-726-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-727-/// Copies the contents of `src` in `dst`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-728-/// Function does nothing if either `src` or `dst` is passed as nullptr and
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-729-/// return `kTfLiteOk`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-730-/// Returns `kTfLiteError` if `src` and `dst` doesn't have matching data size.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-731-/// Note function copies contents, so it won't create new data pointer
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-732-/// or change allocation type.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-733-/// All Tensor related properties will be copied from `src` to `dst` like
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-734-/// quantization, sparsity, ...
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-735-TfLiteStatus TfLiteTensorCopy(const TfLiteTensor* src, TfLiteTensor* dst);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-736-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-737-/// Change the size of the memory block owned by `tensor` to `num_bytes`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-738-/// Tensors with allocation types other than `kTfLiteDynamic` will be ignored
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-739-/// and a `kTfLiteOk` will be returned. `tensor`'s internal data buffer will be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-740-/// assigned a pointer which can safely be passed to free or realloc if
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h-741-/// `num_bytes` is zero. If `preserve_data` is true, tensor data will be
+
+4. TFLM context tensor access functions
+
+5. Existing application-local custom kernel registration patterns
+56-        return kTfLiteError;
+57-    }
+58-
+59-    return kTfLiteOk;
+60-}
+61-
+62-/*
+63- * Application-local INT32 SIGN implementation.
+64- *
+65- * y = -1 when x < 0
+66- * y =  0 when x = 0
+67- * y =  1 when x > 0
+68- *
+69- * No temporary buffer or scratch allocation is required.
+70- */
+71:TfLiteStatus HeatstrokeSignEval(
+72-    TfLiteContext* context,
+73-    TfLiteNode* node)
+74-{
+75-    if (context == nullptr || node == nullptr) {
+76-        return kTfLiteError;
+77-    }
+78-
+79-    const TfLiteEvalTensor* input =
+80-        tflite::micro::GetEvalInput(context, node, 0);
+81-
+82-    TfLiteEvalTensor* output =
+83-        tflite::micro::GetEvalOutput(context, node, 0);
+84-
+85-    if (input == nullptr || output == nullptr) {
+86-        return kTfLiteError;
+87-    }
+88-
+89-    if (input->type != kTfLiteInt32 ||
+90-        output->type != kTfLiteInt32) {
+91-        MicroPrintf(
+92-            "Heatstroke SIGN requires INT32 input/output. "
+93-            "Input=%d Output=%d",
+94-            input->type,
+95-            output->type);
+96-        return kTfLiteError;
+97-    }
+98-
+99-    const auto input_shape =
+100-        tflite::micro::GetTensorShape(input);
+101-
+102-    const auto output_shape =
+103-        tflite::micro::GetTensorShape(output);
+104-
+105-    const int input_count = input_shape.FlatSize();
+106-    const int output_count = output_shape.FlatSize();
+--
+122-        MicroPrintf(
+123-            "Heatstroke SIGN received a null tensor data pointer.");
+124-        return kTfLiteError;
+125-    }
+126-
+127-    for (int i = 0; i < input_count; ++i) {
+128-        const int32_t value = input_data[i];
+129-
+130-        output_data[i] =
+131-            (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+132-    }
+133-
+134-    return kTfLiteOk;
+135-}
+136-
+137:TFLMRegistration RegisterHeatstrokeSignKernel()
+138-{
+139-    return tflite::micro::RegisterOp(
+140-        nullptr,
+141-        nullptr,
+142:        HeatstrokeSignEval);
+143-}
+144-
+145-} // namespace
+146-
+147-
+148-namespace tflite {
+149-namespace {
+150-
+151-constexpr int kHsGatherInput = 0;
+152-constexpr int kHsGatherIndices = 1;
+153-constexpr int kHsGatherOutput = 0;
+154-
+155-bool HeatstrokeGatherCheckedMultiply(
+156-    size_t a, size_t b, size_t* result)
+157-{
+158-    if (result == nullptr ||
+159-        (b != 0U &&
+160-         a > (std::numeric_limits<size_t>::max)() / b)) {
+161-        return false;
+162-    }
+163-
+164-    *result = a * b;
+165-    return true;
+166-}
+167-
+168-template <typename InputT, typename IndexT>
+169-TfLiteStatus HeatstrokeGatherCopy(
+170-    const TfLiteGatherParams* params,
+171-    const TfLiteEvalTensor* input,
+172-    const TfLiteEvalTensor* indices,
+173-    TfLiteEvalTensor* output)
+174-{
+175-    if (params == nullptr || input == nullptr ||
+176-        indices == nullptr || output == nullptr ||
+177-        input->dims == nullptr || indices->dims == nullptr ||
+--
+351-                         static_cast<size_t>(axis_size) +
+352-                     static_cast<size_t>(selected_index)) *
+353-                    inner_size;
+354-
+355-                std::memcpy(
+356-                    output_data + destination_offset,
+357-                    input_data + source_offset,
+358-                    copy_bytes);
+359-            }
+360-        }
+361-    }
+362-
+363-    return kTfLiteOk;
+364-}
+365-
+366:TfLiteStatus HeatstrokeGatherPrepare(
+367-    TfLiteContext* context,
+368-    TfLiteNode* node)
+369-{
+370-    if (context == nullptr || node == nullptr ||
+371-        node->builtin_data == nullptr) {
+372-        return kTfLiteError;
+373-    }
+374-
+375-    TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
+376-    TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+377-
+378-    MicroContext* micro_context = GetMicroContext(context);
+379-
+380-    TfLiteTensor* input =
+381-        micro_context->AllocateTempInputTensor(node, kHsGatherInput);
+382-    TF_LITE_ENSURE(context, input != nullptr);
+383-
+384-    TfLiteTensor* indices =
+385-        micro_context->AllocateTempInputTensor(node, kHsGatherIndices);
+386-    TF_LITE_ENSURE(context, indices != nullptr);
+387-
+388-    TfLiteTensor* output =
+389-        micro_context->AllocateTempOutputTensor(node, kHsGatherOutput);
+390-    TF_LITE_ENSURE(context, output != nullptr);
+391-
+392-    if (input->dims == nullptr || indices->dims == nullptr ||
+393-        output->dims == nullptr) {
+394-        MicroPrintf("Heatstroke GATHER has missing tensor dimensions.");
+395-        return kTfLiteError;
+396-    }
+397-
+398-    if (indices->type != kTfLiteInt32 &&
+399-        indices->type != kTfLiteInt64) {
+400-        MicroPrintf(
+401-            "Heatstroke GATHER indices must be INT32 or INT64; got %s.",
+--
+477-        output_shape->data[output_index++] = input->dims->data[i];
+478-    }
+479-
+480-    if (output_index != output_rank) {
+481-        MicroPrintf("Heatstroke GATHER output-rank calculation failed.");
+482-        return kTfLiteError;
+483-    }
+484-
+485-    micro_context->DeallocateTempTfLiteTensor(input);
+486-    micro_context->DeallocateTempTfLiteTensor(indices);
+487-    micro_context->DeallocateTempTfLiteTensor(output);
+488-
+489-    return kTfLiteOk;
+490-}
+491-
+492:TfLiteStatus HeatstrokeGatherEval(
+493-    TfLiteContext* context,
+494-    TfLiteNode* node)
+495-{
+496-    if (context == nullptr || node == nullptr ||
+497-        node->builtin_data == nullptr) {
+498-        return kTfLiteError;
+499-    }
+500-
+501-    const TfLiteGatherParams* params =
+502-        reinterpret_cast<const TfLiteGatherParams*>(node->builtin_data);
+503-
+504-    const TfLiteEvalTensor* input =
+505-        tflite::micro::GetEvalInput(
+506-            context, node, kHsGatherInput);
+507-
+508-    const TfLiteEvalTensor* indices =
+509-        tflite::micro::GetEvalInput(
+510-            context, node, kHsGatherIndices);
+511-
+512-    TfLiteEvalTensor* output =
+513-        tflite::micro::GetEvalOutput(
+514-            context, node, kHsGatherOutput);
+515-
+516-    if (input == nullptr || indices == nullptr || output == nullptr) {
+517-        MicroPrintf("Heatstroke GATHER could not retrieve eval tensors.");
+518-        return kTfLiteError;
+519-    }
+520-
+521-    if (indices->type == kTfLiteInt32) {
+522-        switch (input->type) {
+523-            case kTfLiteFloat32:
+524-                return HeatstrokeGatherCopy<float, int32_t>(
+525-                    params, input, indices, output);
+526-
+527-            case kTfLiteInt8:
+--
+545-                break;
+546-        }
+547-    }
+548-
+549-    MicroPrintf(
+550-        "Heatstroke GATHER unsupported data/index type combination: "
+551-        "data=%s indices=%s.",
+552-        TfLiteTypeGetName(input->type),
+553-        TfLiteTypeGetName(indices->type));
+554-
+555-    return kTfLiteError;
+556-}
+557-
+558-}  // namespace
+559-
+560:TFLMRegistration RegisterHeatstrokeGatherKernel()
+561-{
+562-    return micro::RegisterOp(
+563-        nullptr,
+564:        HeatstrokeGatherPrepare,
+565:        HeatstrokeGatherEval);
+566-}
+567-
+568-}  // namespace tflite
+569-
+570-namespace tflite {
+571-TFLMRegistration
+572-RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+573-}
+574-
+575-/*
+576- * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+577- * Keep its existing parser and implementation unchanged.
+578- */
+579-TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+580-    const tflite::Operator* op,
+581-    tflite::ErrorReporter* error_reporter,
+582-    tflite::BuiltinDataAllocator* allocator,
+583-    void** builtin_data)
+584-{
+585-    return tflite::ParseOpData(
+586-        op,
+587-        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+588-        error_reporter,
+589-        allocator,
+590-        builtin_data);
+591-}
+592-
+593-bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+594-{
+595-#define HS_ADD_REQUIRED(method)                                      \
+596-    do {                                                              \
+597-        const TfLiteStatus status = this->m_opResolver.method();      \
+598-        if (status != kTfLiteOk) {                                    \
+599-            printf_err(                                               \
+600-                "Failed to register heat-stress operator: %s\n",     \
+--
+612-    HS_ADD_REQUIRED(AddBroadcastTo);
+613-    HS_ADD_REQUIRED(AddCast);
+614-    HS_ADD_REQUIRED(AddConcatenation);
+615-    HS_ADD_REQUIRED(AddCumSum);
+616-    HS_ADD_REQUIRED(AddDequantize);
+617-    HS_ADD_REQUIRED(AddDiv);
+618-    HS_ADD_REQUIRED(AddEqual);
+619-    HS_ADD_REQUIRED(AddFloorMod);
+620-    /*
+621-     * Application-local GATHER replacement supporting INT32 and INT64
+622-     * indices. It reuses the existing output tensor and allocates no
+623-     * index-conversion or scratch buffer.
+624-     */
+625-    {
+626-        const TFLMRegistration registration =
+627:            tflite::RegisterHeatstrokeGatherKernel();
+628-
+629-        if (this->m_opResolver.AddBuiltin(
+630-                tflite::BuiltinOperator_GATHER,
+631-                registration,
+632-                tflite::ParseGather) != kTfLiteOk) {
+633-            printf_err(
+634-                "Failed to register heat-stress INT64 GATHER.\n");
+635-            return false;
+636-        }
+637-    }
+638-    HS_ADD_REQUIRED(AddGreater);
+639-    HS_ADD_REQUIRED(AddLogicalAnd);
+640-    HS_ADD_REQUIRED(AddLogicalNot);
+641-    HS_ADD_REQUIRED(AddMaximum);
+642-    HS_ADD_REQUIRED(AddMean);
+643-    HS_ADD_REQUIRED(AddMul);
+644-    HS_ADD_REQUIRED(AddNeg);
+645-    HS_ADD_REQUIRED(AddQuantize);
+646-    HS_ADD_REQUIRED(AddReshape);
+647-    HS_ADD_REQUIRED(AddRsqrt);
+648-    HS_ADD_REQUIRED(AddSelectV2);
+649-    HS_ADD_REQUIRED(AddSoftmax);
+650-    HS_ADD_REQUIRED(AddSplitV);
+651-    HS_ADD_REQUIRED(AddSqrt);
+652-    HS_ADD_REQUIRED(AddSquare);
+653-    HS_ADD_REQUIRED(AddSub);
+654-    HS_ADD_REQUIRED(AddSum);
+655-    HS_ADD_REQUIRED(AddTopKV2);
+656-
+657-#undef HS_ADD_REQUIRED
+658-
+659-    /*
+660-     * Custom SIGN registration under the built-in SIGN opcode.
+661-     */
+662-    {
+663-        const TFLMRegistration registration =
+664:            RegisterHeatstrokeSignKernel();
+665-
+666-        if (this->m_opResolver.AddBuiltin(
+667-                tflite::BuiltinOperator_SIGN,
+668-                registration,
+669-                ParseHeatstrokeSign) != kTfLiteOk) {
+670-            printf_err("Failed to register heat-stress SIGN.\n");
+671-            return false;
+672-        }
+673-    }
+674-
+675-    /*
+676-     * Select the application-local BiLSTM implementation.
+677-     * Experimental mode is opt-in and paired with the repaired model.
+678-     */
+679-    {
+680-#if defined(HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+681-        const TFLMRegistration registration =
+682-            tflite::RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+683-#else
+684-        const TFLMRegistration registration =
+685-            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+686-#endif
+687-
+688-        if (this->m_opResolver.AddBuiltin(
+689-                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+690-                registration,
+691-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+692-            printf_err(
+693-                "Failed to register heat-stress bidirectional LSTM.\n");
+694-            return false;
+695-        }
+696-    }
+697-
+698-    /*
+699-     * Ethos-U registration.
+
+6. Quantization rounding implementation
+
+7. TFLite tensor type and shape utility functions
+
+8. Custom operator schema fields and options format
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5069-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5070-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5071-inline const char *EnumNameReduceWindowFunction(ReduceWindowFunction e) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5072-  if (::flatbuffers::IsOutRange(e, ReduceWindowFunction_UNSUPPORTED, ReduceWindowFunction_ANY)) return "";
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5073-  const size_t index = static_cast<size_t>(e);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5074-  return EnumNamesReduceWindowFunction()[index];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5075-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5076-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5077:enum CustomOptionsFormat : int8_t {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5078:  CustomOptionsFormat_FLEXBUFFERS = 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5079:  CustomOptionsFormat_MIN = CustomOptionsFormat_FLEXBUFFERS,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5080:  CustomOptionsFormat_MAX = CustomOptionsFormat_FLEXBUFFERS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5081-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5082-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5083:inline const CustomOptionsFormat (&EnumValuesCustomOptionsFormat())[1] {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5084:  static const CustomOptionsFormat values[] = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5085:    CustomOptionsFormat_FLEXBUFFERS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5086-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5087-  return values;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5088-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5089-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5090:inline const char * const *EnumNamesCustomOptionsFormat() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5091-  static const char * const names[2] = {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5092-    "FLEXBUFFERS",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5093-    nullptr
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5094-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5095-  return names;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5096-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5097-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5098:inline const char *EnumNameCustomOptionsFormat(CustomOptionsFormat e) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5099:  if (::flatbuffers::IsOutRange(e, CustomOptionsFormat_FLEXBUFFERS, CustomOptionsFormat_FLEXBUFFERS)) return "";
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5100-  const size_t index = static_cast<size_t>(e);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:5101:  return EnumNamesCustomOptionsFormat()[index];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5102-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5103-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5104-struct CustomQuantizationT : public ::flatbuffers::NativeTable {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5105-  typedef CustomQuantization TableType;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5106-  std::vector<uint8_t> custom{};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5107-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5108-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5109-struct CustomQuantization FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5110-  typedef CustomQuantizationT NativeTableType;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5111-  typedef CustomQuantizationBuilder Builder;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5112-  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5113-    VT_CUSTOM = 4
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5114-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5115-  const ::flatbuffers::Vector<uint8_t> *custom() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5116-    return GetPointer<const ::flatbuffers::Vector<uint8_t> *>(VT_CUSTOM);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5117-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5118-  bool Verify(::flatbuffers::Verifier &verifier) const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5119-    return VerifyTableStart(verifier) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5120-           VerifyOffset(verifier, VT_CUSTOM) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5121-           verifier.VerifyVector(custom()) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5122-           verifier.EndTable();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5123-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5124-  CustomQuantizationT *UnPack(const ::flatbuffers::resolver_function_t *_resolver = nullptr) const;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-5125-  void UnPackTo(CustomQuantizationT *_o, const ::flatbuffers::resolver_function_t *_resolver = nullptr) const;
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14845-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14846-::flatbuffers::Offset<OperatorCode> CreateOperatorCode(::flatbuffers::FlatBufferBuilder &_fbb, const OperatorCodeT *_o, const ::flatbuffers::rehasher_function_t *_rehasher = nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14847-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14848-struct StableHLOCompositeOptionsT : public ::flatbuffers::NativeTable {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14849-  typedef StableHLOCompositeOptions TableType;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14850-  std::string name{};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14851-  int32_t decomposition_subgraph_index = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14852-  std::vector<uint8_t> composite_attributes{};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:14853:  tflite::CustomOptionsFormat composite_attributes_format = tflite::CustomOptionsFormat_FLEXBUFFERS;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14854-  int32_t version = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14855-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14856-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14857-struct StableHLOCompositeOptions FLATBUFFERS_FINAL_CLASS : private ::flatbuffers::Table {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14858-  typedef StableHLOCompositeOptionsT NativeTableType;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14859-  typedef StableHLOCompositeOptionsBuilder Builder;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14860-  enum FlatBuffersVTableOffset FLATBUFFERS_VTABLE_UNDERLYING_TYPE {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14861-    VT_NAME = 4,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14862-    VT_DECOMPOSITION_SUBGRAPH_INDEX = 6,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14863-    VT_COMPOSITE_ATTRIBUTES = 8,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14864-    VT_COMPOSITE_ATTRIBUTES_FORMAT = 10,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14865-    VT_VERSION = 12
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14866-  };
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14867-  const ::flatbuffers::String *name() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14868-    return GetPointer<const ::flatbuffers::String *>(VT_NAME);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14869-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14870-  int32_t decomposition_subgraph_index() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14871-    return GetField<int32_t>(VT_DECOMPOSITION_SUBGRAPH_INDEX, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14872-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14873-  const ::flatbuffers::Vector<uint8_t> *composite_attributes() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14874-    return GetPointer<const ::flatbuffers::Vector<uint8_t> *>(VT_COMPOSITE_ATTRIBUTES);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14875-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:14876:  tflite::CustomOptionsFormat composite_attributes_format() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:14877:    return static_cast<tflite::CustomOptionsFormat>(GetField<int8_t>(VT_COMPOSITE_ATTRIBUTES_FORMAT, 0));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14878-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14879-  int32_t version() const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14880-    return GetField<int32_t>(VT_VERSION, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14881-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14882-  bool Verify(::flatbuffers::Verifier &verifier) const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14883-    return VerifyTableStart(verifier) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14884-           VerifyOffset(verifier, VT_NAME) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14885-           verifier.VerifyString(name()) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14886-           VerifyField<int32_t>(verifier, VT_DECOMPOSITION_SUBGRAPH_INDEX, 4) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14887-           VerifyOffset(verifier, VT_COMPOSITE_ATTRIBUTES) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14888-           verifier.VerifyVector(composite_attributes()) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14889-           VerifyField<int8_t>(verifier, VT_COMPOSITE_ATTRIBUTES_FORMAT, 1) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14890-           VerifyField<int32_t>(verifier, VT_VERSION, 4) &&
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14891-           verifier.EndTable();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14892-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14893-  StableHLOCompositeOptionsT *UnPack(const ::flatbuffers::resolver_function_t *_resolver = nullptr) const;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14894-  void UnPackTo(StableHLOCompositeOptionsT *_o, const ::flatbuffers::resolver_function_t *_resolver = nullptr) const;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14895-  static ::flatbuffers::Offset<StableHLOCompositeOptions> Pack(::flatbuffers::FlatBufferBuilder &_fbb, const StableHLOCompositeOptionsT* _o, const ::flatbuffers::rehasher_function_t *_rehasher = nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14896-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14897-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14898-struct StableHLOCompositeOptionsBuilder {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14899-  typedef StableHLOCompositeOptions Table;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14900-  ::flatbuffers::FlatBufferBuilder &fbb_;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14901-  ::flatbuffers::uoffset_t start_;
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14903-    fbb_.AddOffset(StableHLOCompositeOptions::VT_NAME, name);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14904-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14905-  void add_decomposition_subgraph_index(int32_t decomposition_subgraph_index) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14906-    fbb_.AddElement<int32_t>(StableHLOCompositeOptions::VT_DECOMPOSITION_SUBGRAPH_INDEX, decomposition_subgraph_index, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14907-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14908-  void add_composite_attributes(::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> composite_attributes) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14909-    fbb_.AddOffset(StableHLOCompositeOptions::VT_COMPOSITE_ATTRIBUTES, composite_attributes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14910-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:14911:  void add_composite_attributes_format(tflite::CustomOptionsFormat composite_attributes_format) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14912-    fbb_.AddElement<int8_t>(StableHLOCompositeOptions::VT_COMPOSITE_ATTRIBUTES_FORMAT, static_cast<int8_t>(composite_attributes_format), 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14913-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14914-  void add_version(int32_t version) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14915-    fbb_.AddElement<int32_t>(StableHLOCompositeOptions::VT_VERSION, version, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14916-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14917-  explicit StableHLOCompositeOptionsBuilder(::flatbuffers::FlatBufferBuilder &_fbb)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14918-        : fbb_(_fbb) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14919-    start_ = fbb_.StartTable();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14920-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14921-  ::flatbuffers::Offset<StableHLOCompositeOptions> Finish() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14922-    const auto end = fbb_.EndTable(start_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14923-    auto o = ::flatbuffers::Offset<StableHLOCompositeOptions>(end);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14924-    return o;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14925-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14926-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14927-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14928-inline ::flatbuffers::Offset<StableHLOCompositeOptions> CreateStableHLOCompositeOptions(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14929-    ::flatbuffers::FlatBufferBuilder &_fbb,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14930-    ::flatbuffers::Offset<::flatbuffers::String> name = 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14931-    int32_t decomposition_subgraph_index = 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14932-    ::flatbuffers::Offset<::flatbuffers::Vector<uint8_t>> composite_attributes = 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:14933:    tflite::CustomOptionsFormat composite_attributes_format = tflite::CustomOptionsFormat_FLEXBUFFERS,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14934-    int32_t version = 0) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14935-  StableHLOCompositeOptionsBuilder builder_(_fbb);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14936-  builder_.add_version(version);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14937-  builder_.add_composite_attributes(composite_attributes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14938-  builder_.add_decomposition_subgraph_index(decomposition_subgraph_index);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14939-  builder_.add_name(name);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14940-  builder_.add_composite_attributes_format(composite_attributes_format);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14941-  return builder_.Finish();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14942-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14943-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14944-inline ::flatbuffers::Offset<StableHLOCompositeOptions> CreateStableHLOCompositeOptionsDirect(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14945-    ::flatbuffers::FlatBufferBuilder &_fbb,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14946-    const char *name = nullptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14947-    int32_t decomposition_subgraph_index = 0,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14948-    const std::vector<uint8_t> *composite_attributes = nullptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h:14949:    tflite::CustomOptionsFormat composite_attributes_format = tflite::CustomOptionsFormat_FLEXBUFFERS,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14950-    int32_t version = 0) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14951-  auto name__ = name ? _fbb.CreateString(name) : 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14952-  auto composite_attributes__ = composite_attributes ? _fbb.CreateVector<uint8_t>(*composite_attributes) : 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14953-  return tflite::CreateStableHLOCompositeOptions(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14954-      _fbb,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14955-      name__,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14956-      decomposition_subgraph_index,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14957-      composite_attributes__,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14958-      composite_attributes_format,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14959-      version);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14960-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14961-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14962-::flatbuffers::Offset<StableHLOCompositeOptions> CreateStableHLOCompositeOptions(::flatbuffers::FlatBufferBuilder &_fbb, const StableHLOCompositeOptionsT *_o, const ::flatbuffers::rehasher_function_t *_rehasher = nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14963-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14964-struct StablehloShiftLeftOptionsT : public ::flatbuffers::NativeTable {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14965-  typedef StablehloShiftLeftOptions TableType;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/schema/schema_generated.h-14966-};
+
+9. Application CMake source registration
+170-    "${INC_GEN_DIR}"
+171-)
+172-
+173-target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+174-
+175-
+176-if (CONFIG_USE_APP_MENU)
+177-target_compile_definitions(app PRIVATE USE_APP_MENU)
+178-endif()
+179-
+180:target_sources(app PRIVATE
+181-    src/application/main/Main.cc
+182-    src/use_case/alif_asr/src/MainLoop.cc
+183-    src/use_case/alif_asr/src/reverse_v2.cc
+184:    src/use_case/alif_asr/src/PolyUModel1.cc
+185-    src/power/power_mgr.c
+186-    "${POLYU_MODEL_CPP}"
+187-)
+188-
+189-if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+190:    target_sources(app PRIVATE
+191:        src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc)
+192-    target_compile_definitions(app PRIVATE
+193-        HEATSTROKE_SINGLE_STEP_EXPERIMENT=1)
+194-else()
+195:    target_sources(app PRIVATE
+196-        src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc)
+197-endif()
+198-
+199-set(SRC_MAIN "src/application/main/Main.cc")
+200-
+201-list(APPEND SRC_MAIN_DEFS
+202-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+203-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+204-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+205-
+206-set_source_files_properties(${SRC_MAIN}
+207-    PROPERTIES COMPILE_DEFINITIONS
+208-    "${SRC_MAIN_DEFS}")
+209-
+210-target_link_libraries(app PRIVATE
+211-    mlek::ml_framework_impl
+212-)
+
+10. Current experimental model and firmware remain unchanged
+72bf7dba9d0234458108fc413915cdb161050edccf4327dd6cf34597e1cb556a  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+b9268b3a33e0771ad161ae08f1f59e479d0e52ff40e213f43ee7812722563e2d  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
