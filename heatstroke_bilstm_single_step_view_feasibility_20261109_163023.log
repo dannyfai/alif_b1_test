@@ -1,0 +1,1597 @@
+============================================================
+BILSTM SINGLE-STEP VIEW FEASIBILITY
+============================================================
+
+1. Complete application-local BiLSTM kernel
+     1	#include "heatstroke_bidirectional_lstm.h"
+     2	
+     3	#include <cstddef>
+     4	#include <cstdint>
+     5	#include <cstring>
+     6	
+     7	#include "tensorflow/lite/c/builtin_op_data.h"
+     8	#include "tensorflow/lite/c/common.h"
+     9	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    10	#include "tensorflow/lite/micro/kernels/lstm_eval.h"
+    11	#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+    12	#include "tensorflow/lite/micro/micro_log.h"
+    13	
+    14	namespace tflite {
+    15	namespace {
+    16	
+    17	struct HeatstrokeBidirectionalLstmOpData {
+    18	  OpDataLSTM forward;
+    19	  OpDataLSTM backward;
+    20	  TfLiteIntArray* staged_output_dims;
+    21	  int reverse_input_buffer;
+    22	  int stage_output_buffer;
+    23	};
+    24	
+    25	TfLiteEvalTensor* GetInputEvalTensor(TfLiteContext* context,
+    26	                                     TfLiteNode* node,
+    27	                                     int input_position) {
+    28	  if (input_position < 0 || input_position >= node->inputs->size) {
+    29	    return nullptr;
+    30	  }
+    31	
+    32	  const int tensor_index = node->inputs->data[input_position];
+    33	  if (tensor_index < 0) {
+    34	    return nullptr;
+    35	  }
+    36	
+    37	  return context->GetEvalTensor(context, tensor_index);
+    38	}
+    39	
+    40	size_t TensorElementCount(const TfLiteEvalTensor* tensor) {
+    41	  if (tensor == nullptr || tensor->dims == nullptr) {
+    42	    return 0;
+    43	  }
+    44	
+    45	  size_t count = 1;
+    46	  for (int i = 0; i < tensor->dims->size; ++i) {
+    47	    if (tensor->dims->data[i] < 0) {
+    48	      return 0;
+    49	    }
+    50	    count *= static_cast<size_t>(tensor->dims->data[i]);
+    51	  }
+    52	  return count;
+    53	}
+    54	
+    55	bool IsFloatTensorType(const TfLiteEvalTensor* tensor) {
+    56	  return tensor != nullptr && tensor->type == kTfLiteFloat32;
+    57	}
+    58	
+    59	bool IsFloatTensor(const TfLiteEvalTensor* tensor) {
+    60	  return IsFloatTensorType(tensor) && tensor->data.f != nullptr;
+    61	}
+    62	
+    63	bool IsMatrix(const TfLiteEvalTensor* tensor, int rows, int columns) {
+    64	  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+    65	         tensor->dims->size == 2 &&
+    66	         tensor->dims->data[0] == rows &&
+    67	         tensor->dims->data[1] == columns;
+    68	}
+    69	
+    70	bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+    71	  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+    72	         tensor->dims->size == 1 &&
+    73	         tensor->dims->data[0] == length;
+    74	}
+    75	
+    76	bool ValidateDirection(TfLiteContext* context,
+    77	                       TfLiteNode* node,
+    78	                       int input_weight_base,
+    79	                       int recurrent_weight_base,
+    80	                       int bias_base,
+    81	                       int hidden_state_position,
+    82	                       int cell_state_position,
+    83	                       int input_dimension,
+    84	                       int batch_size,
+    85	                       int* hidden_dimension) {
+    86	  TfLiteEvalTensor* first_weight =
+    87	      GetInputEvalTensor(context, node, input_weight_base);
+    88	
+    89	  if (first_weight == nullptr || first_weight->dims == nullptr ||
+    90	      first_weight->dims->size != 2) {
+    91	    return false;
+    92	  }
+    93	
+    94	  const int hidden = first_weight->dims->data[0];
+    95	
+    96	  if (hidden <= 0 || first_weight->dims->data[1] != input_dimension) {
+    97	    return false;
+    98	  }
+    99	
+   100	  for (int gate = 0; gate < 4; ++gate) {
+   101	    TfLiteEvalTensor* input_weight =
+   102	        GetInputEvalTensor(context, node, input_weight_base + gate);
+   103	
+   104	    TfLiteEvalTensor* recurrent_weight =
+   105	        GetInputEvalTensor(context, node, recurrent_weight_base + gate);
+   106	
+   107	    TfLiteEvalTensor* bias =
+   108	        GetInputEvalTensor(context, node, bias_base + gate);
+   109	
+   110	    if (!IsMatrix(input_weight, hidden, input_dimension) ||
+   111	        !IsMatrix(recurrent_weight, hidden, hidden) ||
+   112	        !IsVector(bias, hidden)) {
+   113	      return false;
+   114	    }
+   115	  }
+   116	
+   117	  TfLiteEvalTensor* hidden_state =
+   118	      GetInputEvalTensor(context, node, hidden_state_position);
+   119	
+   120	  TfLiteEvalTensor* cell_state =
+   121	      GetInputEvalTensor(context, node, cell_state_position);
+   122	
+   123	  if (!IsFloatTensorType(hidden_state) || !IsFloatTensorType(cell_state) ||
+   124	      TensorElementCount(hidden_state) !=
+   125	          static_cast<size_t>(batch_size * hidden) ||
+   126	      TensorElementCount(cell_state) !=
+   127	          static_cast<size_t>(batch_size * hidden)) {
+   128	    return false;
+   129	  }
+   130	
+   131	  *hidden_dimension = hidden;
+   132	  return true;
+   133	}
+   134	
+   135	void InitializeFloatLstmParameters(
+   136	    OpDataLSTM* op_data,
+   137	    bool time_major,
+   138	    int batch_size,
+   139	    int time_steps,
+   140	    int input_dimension,
+   141	    int hidden_dimension,
+   142	    TfLiteFusedActivation activation,
+   143	    float cell_clip) {
+   144	  op_data->size_info.time_major = time_major;
+   145	  op_data->size_info.batch_size = batch_size;
+   146	  op_data->size_info.time_steps = time_steps;
+   147	  op_data->size_info.input_dimension = input_dimension;
+   148	  op_data->size_info.state_dimension = hidden_dimension;
+   149	
+   150	  op_data->cell_gate_nonlinear_type = activation;
+   151	  op_data->cell_state_info = CreateLstmCellStateInfoFloat(cell_clip);
+   152	
+   153	  op_data->forget_gate_parameters = CreateGateParamsFloat();
+   154	  op_data->input_gate_parameters = CreateGateParamsFloat();
+   155	  op_data->cell_gate_parameters = CreateGateParamsFloat();
+   156	  op_data->output_gate_parameters = CreateGateParamsFloat();
+   157	
+   158	  op_data->inter_gate_parameters.forget_cell_mul_params =
+   159	      CreateInterGateMulParamsFloat();
+   160	  op_data->inter_gate_parameters.input_mul_params =
+   161	      CreateInterGateMulParamsFloat();
+   162	  op_data->inter_gate_parameters.output_mul_params =
+   163	      CreateInterGateMulParamsFloat();
+   164	}
+   165	
+   166	void* HeatstrokeBidirectionalLstmInit(TfLiteContext* context,
+   167	                                      const char* buffer,
+   168	                                      size_t length) {
+   169	  (void)buffer;
+   170	  (void)length;
+   171	
+   172	  auto* data = static_cast<HeatstrokeBidirectionalLstmOpData*>(
+   173	      context->AllocatePersistentBuffer(
+   174	          context, sizeof(HeatstrokeBidirectionalLstmOpData)));
+   175	
+   176	  if (data != nullptr) {
+   177	    std::memset(data, 0, sizeof(*data));
+   178	  }
+   179	  return data;
+   180	}
+   181	
+   182	TfLiteStatus HeatstrokeBidirectionalLstmPrepare(TfLiteContext* context,
+   183	                                                TfLiteNode* node) {
+   184	  if (node == nullptr || node->builtin_data == nullptr ||
+   185	      node->inputs == nullptr || node->outputs == nullptr ||
+   186	      node->inputs->size != 29 || node->outputs->size != 1 ||
+   187	      node->user_data == nullptr) {
+   188	    MicroPrintf("Heatstroke BiLSTM: invalid node configuration");
+   189	    return kTfLiteError;
+   190	  }
+   191	
+   192	  auto* op_data =
+   193	      static_cast<HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+   194	
+   195	  const auto* params =
+   196	      static_cast<const TfLiteBidirectionalSequenceLSTMParams*>(
+   197	          node->builtin_data);
+   198	
+   199	  if (!params->time_major || !params->merge_outputs ||
+   200	      params->activation != kTfLiteActTanh) {
+   201	    MicroPrintf("Heatstroke BiLSTM: unsupported LSTM options");
+   202	    return kTfLiteError;
+   203	  }
+   204	
+   205	  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+   206	  TfLiteEvalTensor* output =
+   207	      context->GetEvalTensor(context, node->outputs->data[0]);
+   208	
+   209	  if (!IsFloatTensorType(input) || !IsFloatTensorType(output) ||
+   210	      input->dims == nullptr || output->dims == nullptr ||
+   211	      input->dims->size != 3 || output->dims->size != 3) {
+   212	    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+   213	    return kTfLiteError;
+   214	  }
+   215	
+   216	  const int time_steps = input->dims->data[0];
+   217	  const int batch_size = input->dims->data[1];
+   218	  const int input_dimension = input->dims->data[2];
+   219	
+   220	  // The supplied heat-stress model uses time-major, single-batch sequences.
+   221	  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+   222	    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+   223	    return kTfLiteError;
+   224	  }
+   225	
+   226	  int forward_hidden = 0;
+   227	  int backward_hidden = 0;
+   228	
+   229	  if (!ValidateDirection(context, node, 1, 5, 9, 25, 26, input_dimension, batch_size, &forward_hidden) ||
+   230	      !ValidateDirection(context, node, 13, 17, 21, 27, 28, input_dimension, batch_size, &backward_hidden) ||
+   231	      forward_hidden != backward_hidden) {
+   232	    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+   233	    return kTfLiteError;
+   234	  }
+   235	
+   236	  const int hidden = forward_hidden;
+   237	
+   238	  if (output->dims->data[0] != time_steps ||
+   239	      output->dims->data[1] != batch_size ||
+   240	      output->dims->data[2] != 2 * hidden) {
+   241	    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+   242	    return kTfLiteError;
+   243	  }
+   244	
+   245	  // The directional evaluator must see [time_steps, batch_size, hidden],
+   246	  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+   247	  const size_t staged_dims_bytes =
+   248	      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+   249	  op_data->staged_output_dims =
+   250	      static_cast<TfLiteIntArray*>(
+   251	          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+   252	
+   253	  if (op_data->staged_output_dims == nullptr) {
+   254	    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+   255	    return kTfLiteError;
+   256	  }
+   257	
+   258	  op_data->staged_output_dims->size = 3;
+   259	  op_data->staged_output_dims->data[0] = time_steps;
+   260	  op_data->staged_output_dims->data[1] = batch_size;
+   261	  op_data->staged_output_dims->data[2] = hidden;
+   262	
+   263	  // Compact 29-slot model: no separate auxiliary input slots exist.
+   264	
+   265	  InitializeFloatLstmParameters(
+   266	      &op_data->forward, true, batch_size, time_steps,
+   267	      input_dimension, hidden, params->activation, params->cell_clip);
+   268	
+   269	  InitializeFloatLstmParameters(
+   270	      &op_data->backward, true, batch_size, time_steps,
+   271	      input_dimension, hidden, params->activation, params->cell_clip);
+   272	
+   273	  const size_t reverse_bytes =
+   274	      static_cast<size_t>(time_steps) * batch_size *
+   275	      input_dimension * sizeof(float);
+   276	
+   277	  const size_t stage_bytes =
+   278	      static_cast<size_t>(time_steps) * batch_size *
+   279	      hidden * sizeof(float);
+   280	
+   281	  const size_t internal_bytes =
+   282	      static_cast<size_t>(batch_size) * hidden * sizeof(float);
+   283	
+   284	  if (context->RequestScratchBufferInArena(
+   285	          context, reverse_bytes, &op_data->reverse_input_buffer) !=
+   286	          kTfLiteOk ||
+   287	      context->RequestScratchBufferInArena(
+   288	          context, stage_bytes, &op_data->stage_output_buffer) !=
+   289	          kTfLiteOk) {
+   290	    MicroPrintf("Heatstroke BiLSTM: scratch allocation failed");
+   291	    return kTfLiteError;
+   292	  }
+   293	
+   294	  // Match the four scratch buffers requested by TFLM's existing
+   295	  // unidirectional FP32 LSTM implementation.
+   296	  for (int i = 0; i < 4; ++i) {
+   297	    if (context->RequestScratchBufferInArena(
+   298	            context, internal_bytes,
+   299	            &op_data->forward.buffer_indices[i]) != kTfLiteOk) {
+   300	      MicroPrintf("Heatstroke BiLSTM: LSTM scratch allocation failed");
+   301	      return kTfLiteError;
+   302	    }
+   303	
+   304	    // Forward and backward passes execute sequentially, so they can
+   305	    // safely reuse the same four evaluator scratch buffers.
+   306	    op_data->backward.buffer_indices[i] =
+   307	        op_data->forward.buffer_indices[i];
+   308	  }
+   309	
+   310	  return kTfLiteOk;
+   311	}
+   312	
+   313	void PopulateDirectionContents(TfLiteContext* context,
+   314	                               TfLiteNode* node,
+   315	                               int input_weight_base,
+   316	                               int recurrent_weight_base,
+   317	                               int bias_base,
+   318	                               int hidden_state_position,
+   319	                               int cell_state_position,
+   320	                               const TfLiteEvalTensor* input,
+   321	                               TfLiteEvalTensor* staged_output,
+   322	                               LSTMKernelContents* contents) {
+   323	  for (int i = 0; i < 24; ++i) {
+   324	    contents->internal_tensors[i] = nullptr;
+   325	  }
+   326	
+   327	  contents->internal_tensors[0] =
+   328	      const_cast<TfLiteEvalTensor*>(input);
+   329	
+   330	  for (int gate = 0; gate < 4; ++gate) {
+   331	    contents->internal_tensors[1 + gate] =
+   332	        GetInputEvalTensor(context, node, input_weight_base + gate);
+   333	
+   334	    contents->internal_tensors[5 + gate] =
+   335	        GetInputEvalTensor(context, node, recurrent_weight_base + gate);
+   336	
+   337	    contents->internal_tensors[12 + gate] =
+   338	        GetInputEvalTensor(context, node, bias_base + gate);
+   339	  }
+   340	
+   341	  // Optional peephole, projection, and layer-normalization tensors
+   342	  // are not present in this model and remain nullptr.
+   343	
+   344	  contents->internal_tensors[18] =
+   345	      GetInputEvalTensor(context, node, hidden_state_position);
+   346	
+   347	  contents->internal_tensors[19] =
+   348	      GetInputEvalTensor(context, node, cell_state_position);
+   349	
+   350	  contents->output_tensor = staged_output;
+   351	}
+   352	
+   353	TfLiteStatus HeatstrokeBidirectionalLstmEval(TfLiteContext* context,
+   354	                                             TfLiteNode* node) {
+   355	  if (node == nullptr || node->user_data == nullptr) {
+   356	    return kTfLiteError;
+   357	  }
+   358	
+   359	  const auto* op_data =
+   360	      static_cast<const HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+   361	
+   362	  const TfLiteEvalTensor* input =
+   363	      GetInputEvalTensor(context, node, 0);
+   364	
+   365	  TfLiteEvalTensor* output =
+   366	      context->GetEvalTensor(context, node->outputs->data[0]);
+   367	
+   368	  if (!IsFloatTensor(input) || !IsFloatTensor(output)) {
+   369	    return kTfLiteError;
+   370	  }
+   371	
+   372	  const int time_steps = op_data->forward.size_info.time_steps;
+   373	  const int input_dimension = op_data->forward.size_info.input_dimension;
+   374	  const int hidden = op_data->forward.size_info.state_dimension;
+   375	
+   376	  auto* reversed_input = static_cast<float*>(
+   377	      context->GetScratchBuffer(
+   378	          context, op_data->reverse_input_buffer));
+   379	
+   380	  auto* staged_output = static_cast<float*>(
+   381	      context->GetScratchBuffer(
+   382	          context, op_data->stage_output_buffer));
+   383	
+   384	  if (reversed_input == nullptr || staged_output == nullptr) {
+   385	    MicroPrintf("Heatstroke BiLSTM: scratch buffer unavailable");
+   386	    return kTfLiteError;
+   387	  }
+   388	
+   389	  const float* input_data = input->data.f;
+   390	  float* output_data = output->data.f;
+   391	
+   392	  // Reverse the time dimension for the backward direction.
+   393	  for (int t = 0; t < time_steps; ++t) {
+   394	    std::memcpy(
+   395	        reversed_input + t * input_dimension,
+   396	        input_data + (time_steps - 1 - t) * input_dimension,
+   397	        input_dimension * sizeof(float));
+   398	  }
+   399	
+   400	  TfLiteEvalTensor reversed_input_tensor = *input;
+   401	  reversed_input_tensor.data.f = reversed_input;
+   402	
+   403	  TfLiteEvalTensor staged_output_tensor = *output;
+   404	  staged_output_tensor.data.f = staged_output;
+   405	  staged_output_tensor.dims = op_data->staged_output_dims;
+   406	
+   407	  LSTMKernelContents forward_contents{};
+   408	  PopulateDirectionContents(context, node, 1, 5, 9, 25, 26, input, &staged_output_tensor, &forward_contents);
+   409	
+   410	  LSTMBuffers<float> buffers =
+   411	      CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+   412	
+   413	  TfLiteStatus forward_status =
+   414	      EvalLstm<float, float, float, float>(
+   415	          op_data->forward, forward_contents, buffers);
+   416	  if (forward_status != kTfLiteOk) {
+   417	    return forward_status;
+   418	  }
+   419	
+   420	  // Copy forward outputs into the first half of the merged output.
+   421	  for (int t = 0; t < time_steps; ++t) {
+   422	    std::memcpy(
+   423	        output_data + t * (2 * hidden),
+   424	        staged_output + t * hidden,
+   425	        hidden * sizeof(float));
+   426	  }
+   427	
+   428	  LSTMKernelContents backward_contents{};
+   429	  PopulateDirectionContents(context, node, 13, 17, 21, 27, 28, &reversed_input_tensor, &staged_output_tensor, &backward_contents);
+   430	
+   431	  TfLiteStatus backward_status =
+   432	      EvalLstm<float, float, float, float>(
+   433	          op_data->backward, backward_contents, buffers);
+   434	  if (backward_status != kTfLiteOk) {
+   435	    return backward_status;
+   436	  }
+   437	
+   438	  // Restore backward outputs to original time order and copy them
+   439	  // into the second half of the merged output.
+   440	  for (int t = 0; t < time_steps; ++t) {
+   441	    std::memcpy(
+   442	        output_data + t * (2 * hidden) + hidden,
+   443	        staged_output + (time_steps - 1 - t) * hidden,
+   444	        hidden * sizeof(float));
+   445	  }
+   446	
+   447	  return kTfLiteOk;
+   448	}
+   449	
+   450	}  // namespace
+   451	
+   452	TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstm() {
+   453	  return micro::RegisterOp(
+   454	      HeatstrokeBidirectionalLstmInit,
+   455	      HeatstrokeBidirectionalLstmPrepare,
+   456	      HeatstrokeBidirectionalLstmEval);
+   457	}
+   458	
+   459	}  // namespace tflite
+
+2. LSTMKernelContents and LstmStepManager declarations
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	
+    16	// Functions to perform integer evaulation for standard LSTM (e.g., defined in
+    17	// the keras lstm layer, no peephole etc.). Currently used by the 16 bits
+    18	// activation case only
+    19	
+    20	#ifndef TENSORFLOW_LITE_MICRO_KERNELS_LSTM_EVAL_GENERAL_H_
+    21	#define TENSORFLOW_LITE_MICRO_KERNELS_LSTM_EVAL_GENERAL_H_
+    22	#include <algorithm>
+    23	#include <cstdint>
+    24	
+    25	#include "tensorflow/lite/c/builtin_op_data.h"
+    26	#include "tensorflow/lite/c/common.h"
+    27	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    28	#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+    29	#include "tensorflow/lite/micro/micro_log.h"
+    30	
+    31	namespace tflite {
+    32	
+    33	// Interface to access all the TempTfLiteTensors of the LSTM kernel during the
+    34	// preparation phase. Can only be constructed through the constructor to avoid
+    35	// memory leakage. All TempTfLiteTensors will be deallocated through the
+    36	// destructor.
+    37	class LstmTensors {
+    38	 public:
+    39	  LstmTensors(const LstmTensors& other) = delete;
+    40	  LstmTensors& operator=(const LstmTensors& other) = delete;
+    41	
+    42	  LstmTensors(TfLiteContext* context, TfLiteNode* node);
+    43	  ~LstmTensors();
+    44	
+    45	  // Verify the LSTM internal tensor properties (e.g., type checks)
+    46	  // Input/output/states/fc weights tensors are required for kernel evaulation.
+    47	  // The state tensors should be variables. Variants of the standard LSTM
+    48	  // are not supported here, therefore their corresponding tensors should be
+    49	  // invalid
+    50	  TfLiteStatus ValidateTensorStatus(TfLiteContext* context) const;
+    51	
+    52	  // Internal tensors. see lstm_shared.h for tensor names
+    53	  const TfLiteTensor* GetInternalTensor(const int tensor_index) const {
+    54	    return internal_tensors_[tensor_index];
+    55	  }
+    56	
+    57	  const TfLiteTensor* HiddenStateTensor() const {
+    58	    return internal_tensors_[kLstmOutputStateTensor];
+    59	  }
+    60	  const TfLiteTensor* CellStateTensor() const {
+    61	    return internal_tensors_[kLstmCellStateTensor];
+    62	  }
+    63	  const TfLiteTensor* OutputTensor() const { return output_tensor_; }
+    64	
+    65	 private:
+    66	  // see lstm_shared.h for tensor names
+    67	  MicroContext* micro_context_;
+    68	  TfLiteTensor* internal_tensors_[24];
+    69	  TfLiteTensor* output_tensor_;
+    70	};
+    71	
+    72	// Deduce the size information (Batch (B), Time Steps (T), Input dimension (I),
+    73	// State dimension (S)) that defines the LSTM using the input and hidden state
+    74	// tensor
+    75	LstmSizeInfo CreateLstmSizeInfo(
+    76	    const bool time_major, const TfLiteIntArray* input_tensor_shape,
+    77	    const TfLiteIntArray* hidden_state_tensor_shape);
+    78	
+    79	TfLiteStatus ValidateWeightTensorSize(TfLiteContext* context,
+    80	                                      const TfLiteTensor* tensor, int dim1_size,
+    81	                                      int dim2_size);
+    82	
+    83	TfLiteStatus ValidateBiasTensorSize(TfLiteContext* context,
+    84	                                    const TfLiteTensor* tensor, int size);
+    85	
+    86	// Go through every tensors and make sure their shape match the kernel
+    87	// configuration
+    88	TfLiteStatus ValidateTensorSize(TfLiteContext* context,
+    89	                                const LstmTensors& tensors,
+    90	                                const LstmSizeInfo& size_info);
+    91	
+    92	// Wrapper function to create gate parameters for the four internal LSTM gates
+    93	TfLiteStatus CreateGateParams(
+    94	    TfLiteContext* context,
+    95	    /*Input tensors*/
+    96	    const TfLiteTensor* input, const TfLiteTensor* input_weight,
+    97	    const TfLiteTensor* input_bias,
+    98	    /*Hidden state tensors*/
+    99	    const TfLiteTensor* hidden_state, const TfLiteTensor* hidden_state_weight,
+   100	    const TfLiteTensor* hidden_state_bias,
+   101	    /*Scale of the fc output (input to non-linear activation)*/
+   102	    const float nonlinear_activation_input_scale, const TfLiteType cell_type,
+   103	    const tflite::GateParameters& gate_params);
+   104	
+   105	// Create parameters for element wise multiplication that happens in a) cell
+   106	// state update ; b) hidden state update
+   107	// Note that all the output of gates are symmetrically quantized so only scales
+   108	// are required for input. However, during the hidden state update phase, the
+   109	// output is the updated hidden state, which is asymmetrically quantized. Thus
+   110	// output may require zero point
+   111	tflite::ArithmeticParams CreateInterGateMulParams(const float input1_scale,
+   112	                                                  const float input2_scale,
+   113	                                                  const float output_scale,
+   114	                                                  const TfLiteType output_type,
+   115	                                                  const int output_zp = 0);
+   116	
+   117	// Create the additional information about the cell state, which include:
+   118	// cell_state_scale_power: used in integer nonlinear function (e.g., tanh)
+   119	// quantized_cell_clip: quantized cell clip range
+   120	CellStateInfo CreateLstmCellStateInfo(const float cell_state_scale,
+   121	                                      const float cell_clip);
+   122	
+   123	CellStateInfo CreateLstmCellStateInfoFloat(const float cell_clip);
+   124	tflite::FullyConnectedParams CreateFCParamsFloat();
+   125	
+   126	tflite::GateParameters CreateGateParamsFloat();
+   127	
+   128	tflite::ArithmeticParams CreateInterGateMulParamsFloat();
+   129	
+   130	TfLiteStatus PrepareGateParametersFloat(TfLiteContext* context,
+   131	                                        const LstmTensors& lstm_tensors,
+   132	                                        OpDataLSTM* op_data_lstm);
+   133	
+   134	TfLiteStatus PrepareGateParametersInteger(TfLiteContext* context,
+   135	                                          const LstmTensors& lstm_tensors,
+   136	                                          OpDataLSTM* op_data_lstm);
+   137	
+   138	LSTMKernelContents CreateLSTMKernelContent(TfLiteContext* context,
+   139	                                           TfLiteNode* node);
+   140	
+   141	template <typename CellType>
+   142	LSTMBuffers<CellType> CreateLSTMBuffers(TfLiteContext* context,
+   143	                                        const int* buffer_indices) {
+   144	  LSTMBuffers<CellType> buffers;
+   145	  buffers.buffer0 = reinterpret_cast<CellType*>(
+   146	      context->GetScratchBuffer(context, buffer_indices[0]));
+   147	  buffers.buffer1 = reinterpret_cast<CellType*>(
+   148	      context->GetScratchBuffer(context, buffer_indices[1]));
+   149	  buffers.buffer2 = reinterpret_cast<CellType*>(
+   150	      context->GetScratchBuffer(context, buffer_indices[2]));
+   151	  buffers.buffer3 = reinterpret_cast<CellType*>(
+   152	      context->GetScratchBuffer(context, buffer_indices[3]));
+   153	  return buffers;
+   154	}
+   155	
+   156	// Since LSTM includes multiple intermediate stages, introducing the internal
+   157	// namespace to expose them for testing
+   158	namespace lstm_internal {
+   159	
+   160	void Sigmoid(const RuntimeShape& data_shape, int16_t* data);
+   161	
+   162	void Sigmoid(const RuntimeShape& data_shape, float* data);
+   163	
+   164	void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+   165	          int16_t* input_data, const RuntimeShape& output_data_shape,
+   166	          int16_t* output_data);
+   167	
+   168	void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+   169	          float* input_data, const RuntimeShape& output_data_shape,
+   170	          float* output_data);
+   171	
+   172	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   173	         const int16_t* input1_data, const int16_t* input2_data,
+   174	         int8_t* output_data);
+   175	
+   176	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   177	         const int16_t* input1_data, const int16_t* input2_data,
+   178	         int16_t* output_data);
+   179	
+   180	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+
+3. LstmStep implementation and evaluator
+   300	    case kTfLiteActSigmoid:
+   301	      Sigmoid(gate_output_shape, gate_output);
+   302	      break;
+   303	    case kTfLiteActTanh: {
+   304	      // Set the scale power to -12 to avoid shift
+   305	      Tanh(/*cell_state_scale_power=*/-12, gate_output_shape, gate_output,
+   306	           gate_output_shape, gate_output);
+   307	    } break;
+   308	    default:
+   309	      // Only Sigmoid or Tanh is used.
+   310	      TFLITE_ASSERT_FALSE;
+   311	  }
+   312	}
+   313	
+   314	// Update the cell state using the output from the forget gate, input gate, and
+   315	// cell gate Formula: updated_cell_state = forget_gate_output*cell_state +
+   316	// input_gate_output * cell_gate_output, where * denotes element wise
+   317	// multiplication
+   318	template <typename CellType>
+   319	void UpdateLstmCell(const LstmStepManager& step_info,
+   320	                    TfLiteEvalTensor* cell_state,
+   321	                    // Gate outputs
+   322	                    CellType* forget_gate_output,
+   323	                    const CellType* input_gate_output,
+   324	                    const CellType* cell_gate_output,
+   325	                    // Mul parameters
+   326	                    const ArithmeticParams& forget_cell_mul_params,
+   327	                    const ArithmeticParams& input_mul_params,
+   328	                    const CellStateInfo& cell_state_info, CellType* buffer) {
+   329	  // Check offset validity to avoid memory overflow
+   330	  TFLITE_DCHECK_LE(
+   331	      step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+   332	      tflite::micro::GetTensorShape(cell_state).FlatSize());
+   333	
+   334	  auto cell_state_shape = step_info.StateShape();
+   335	  // Forget Gate x Cell State
+   336	  Mul(cell_state_shape, forget_cell_mul_params, forget_gate_output,
+   337	      tflite::micro::GetTensorData<CellType>(cell_state) +
+   338	          step_info.CellStateOffset(),
+   339	      tflite::micro::GetTensorData<CellType>(cell_state) +
+   340	          step_info.CellStateOffset());
+   341	  // Input Gate x Cell Gate
+   342	  Mul(cell_state_shape, input_mul_params, input_gate_output, cell_gate_output,
+   343	      buffer);
+   344	
+   345	  // Update the cell state
+   346	  AddElementWise(tflite::micro::GetTensorData<CellType>(cell_state) +
+   347	                     step_info.CellStateOffset(),
+   348	                 buffer,
+   349	                 /*n_batch=*/cell_state_shape.DimsData()[0],
+   350	                 /*n_state=*/cell_state_shape.DimsData()[1],
+   351	                 tflite::micro::GetTensorData<CellType>(cell_state) +
+   352	                     step_info.CellStateOffset());
+   353	
+   354	  if (cell_state_info.cell_clip > 0) {
+   355	    Clipping(cell_state_shape.FlatSize(), cell_state_info,
+   356	             tflite::micro::GetTensorData<CellType>(cell_state) +
+   357	                 step_info.CellStateOffset());
+   358	  }
+   359	}
+   360	
+   361	// Update the hidden state of the LSTM kernel using the following formula:
+   362	// updated_hidden_state = Tanh(updated_cell_state) * output_gate_output, * means
+   363	// element wise multiplication
+   364	template <typename CellType, typename ActivationType>
+   365	void UpdateLstmHidden(const LstmStepManager& step_info,
+   366	                      TfLiteEvalTensor* cell_state,
+   367	                      TfLiteEvalTensor* hidden_state,
+   368	                      const CellType* output_gate_output,
+   369	                      const ArithmeticParams& mul_params,
+   370	                      int32_t cell_state_scale_power, CellType* buffer) {
+   371	  // Check offset validity to avoid memory overflow
+   372	  TFLITE_DCHECK_LE(
+   373	      step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+   374	      tflite::micro::GetTensorShape(cell_state).FlatSize());
+   375	  TFLITE_DCHECK_LE(
+   376	      step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+   377	      tflite::micro::GetTensorShape(hidden_state).FlatSize());
+   378	
+   379	  auto cell_state_shape = step_info.StateShape();
+   380	  CellType* cell_state_data =
+   381	      tflite::micro::GetTensorData<CellType>(cell_state) +
+   382	      step_info.CellStateOffset();
+   383	  // Tanh(cell_state)
+   384	  Tanh(cell_state_scale_power, cell_state_shape, cell_state_data,
+   385	       cell_state_shape, buffer);
+   386	  // Update the hidden state
+   387	  Mul(cell_state_shape, mul_params, buffer, output_gate_output,
+   388	      tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+   389	          step_info.HiddenStateOffset());
+   390	}
+   391	
+   392	template <typename ActivationType, typename WeightType, typename CellType,
+   393	          typename BiasType>
+   394	void LstmStep(const LstmStepManager& step_info, const OpDataLSTM& op_data,
+   395	              LSTMKernelContents& kernel_content,
+   396	              const LSTMBuffers<CellType>& buffers) {
+   397	  /*Step1: Calculate gate outputs to prepare cell state update*/
+   398	  CellType* gate_internal_buffer = buffers.buffer3;
+   399	  CellType* forget_gate_output = buffers.buffer0;
+   400	  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+   401	      step_info, op_data.forget_gate_parameters,
+   402	      // Input FC
+   403	      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+   404	      kernel_content.GetInternalTensor(tflite::kLstmInputToForgetWeightsTensor),
+   405	      kernel_content.GetInternalTensor(tflite::kLstmForgetGateBiasTensor),
+   406	      // Recurrent FC
+   407	      kernel_content.HiddenStateTensor(),
+   408	      kernel_content.GetInternalTensor(
+   409	          tflite::kLstmRecurrentToForgetWeightsTensor),
+   410	      /*recurrent_bias*/ nullptr,
+   411	      // Output
+   412	      forget_gate_output,
+   413	      // Scratch arrays
+   414	      gate_internal_buffer, kTfLiteActSigmoid);
+   415	
+   416	  // Input Gate calculation;
+   417	  CellType* input_gate_output = buffers.buffer1;
+   418	  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+   419	      step_info, op_data.input_gate_parameters,
+   420	      // Input FC
+   421	      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+   422	      kernel_content.GetInternalTensor(tflite::kLstmInputToInputWeightsTensor),
+   423	      kernel_content.GetInternalTensor(tflite::kLstmInputGateBiasTensor),
+   424	      // Recurrent FC
+   425	      kernel_content.HiddenStateTensor(),
+   426	      kernel_content.GetInternalTensor(
+   427	          tflite::kLstmRecurrentToInputWeightsTensor),
+   428	      /*recurrent_bias*/ nullptr,
+   429	      // Output
+   430	      input_gate_output,
+   431	      // Scratch arrays
+   432	      gate_internal_buffer, kTfLiteActSigmoid);
+   433	
+   434	  // Cell Gate calculation
+   435	  CellType* cell_gate_output = buffers.buffer2;
+   436	  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+   437	      step_info, op_data.cell_gate_parameters,
+   438	      // Input FC
+   439	      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+   440	      kernel_content.GetInternalTensor(tflite::kLstmInputToCellWeightsTensor),
+   441	      kernel_content.GetInternalTensor(tflite::kLstmCellGateBiasTensor),
+   442	      // Recurrent FC
+   443	      kernel_content.HiddenStateTensor(),
+   444	      kernel_content.GetInternalTensor(
+   445	          tflite::kLstmRecurrentToCellWeightsTensor),
+   446	      /*recurrent_bias*/ nullptr,
+   447	      // Output
+   448	      cell_gate_output,
+   449	      // Scratch arrays
+   450	      gate_internal_buffer, op_data.cell_gate_nonlinear_type);
+   451	
+   452	  /*Step2: update the cell state */
+   453	  const InterGateParameters& inter_gate_params = op_data.inter_gate_parameters;
+   454	  CellType* updated_input_buffer = buffers.buffer1;  // reuse buffer
+   455	
+   456	  UpdateLstmCell<CellType>(step_info, kernel_content.CellStateTensor(),
+   457	                           forget_gate_output, input_gate_output,
+   458	                           cell_gate_output,
+   459	                           inter_gate_params.forget_cell_mul_params,
+   460	                           inter_gate_params.input_mul_params,
+   461	                           op_data.cell_state_info, updated_input_buffer);
+   462	
+   463	  /*Step3: update the hidden state */
+   464	  CellType* output_gate_output = buffers.buffer1;  // reuse buffer
+   465	  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+   466	      step_info, op_data.output_gate_parameters,
+   467	      // Input FC
+   468	      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+   469	      kernel_content.GetInternalTensor(tflite::kLstmInputToOutputWeightsTensor),
+   470	      kernel_content.GetInternalTensor(tflite::kLstmOutputGateBiasTensor),
+   471	      // Recurrent FC
+   472	      kernel_content.HiddenStateTensor(),
+   473	      kernel_content.GetInternalTensor(
+   474	          tflite::kLstmRecurrentToOutputWeightsTensor),
+   475	      /*recurrent_bias*/ nullptr,
+   476	      // Output
+   477	      output_gate_output,
+   478	      // Scratch arrays
+   479	      gate_internal_buffer, kTfLiteActSigmoid);
+   480	
+   481	  CellType* tanh_activated_cell_buffer = buffers.buffer0;  // reuse buffer
+   482	  tflite::lstm_internal::UpdateLstmHidden<CellType, ActivationType>(
+   483	      step_info, kernel_content.CellStateTensor(),
+   484	      kernel_content.HiddenStateTensor(), output_gate_output,
+   485	      inter_gate_params.output_mul_params,
+   486	      op_data.cell_state_info.cell_state_scale_power,
+   487	      tanh_activated_cell_buffer);
+   488	
+   489	  /*Step4: copy the update the hidden state to output*/
+   490	  // Check offset validity to avoid memory overflow
+   491	  TFLITE_DCHECK_LE(
+   492	      step_info.OutputOffset() + step_info.StateShape().FlatSize(),
+   493	      tflite::micro::GetTensorShape(kernel_content.output_tensor).FlatSize());
+   494	  // record the output (from the updated hidden state)
+   495	  ActivationType* output_ptr = tflite::micro::GetTensorData<ActivationType>(
+   496	      kernel_content.output_tensor);
+   497	  const auto* hidden_state = kernel_content.HiddenStateTensor();
+   498	  std::memcpy(output_ptr + step_info.OutputOffset(),
+   499	              tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+   500	                  step_info.HiddenStateOffset(),
+   501	              step_info.StateShape().FlatSize() * sizeof(ActivationType));
+   502	}
+   503	
+   504	}  // namespace lstm_internal
+   505	
+   506	// Evaulate the LSTM kernel with (potential) multi-steps and multi-batch input
+   507	// Since
+   508	template <typename ActivationType, typename WeightType, typename CellType,
+   509	          typename BiasType>
+   510	TfLiteStatus EvalLstm(const OpDataLSTM& op_data,
+   511	                      LSTMKernelContents& kernel_content,
+   512	                      const LSTMBuffers<CellType>& buffers) {
+   513	  lstm_internal::LstmStepManager step_info(&op_data.size_info);
+   514	  const auto& size_info = op_data.size_info;
+   515	  // time is the first dimention, enable batch computation
+   516	  if (size_info.time_major) {
+   517	    for (int t = 0; t < size_info.time_steps; t++) {
+   518	      lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+   519	          step_info, op_data, kernel_content, buffers);
+   520	      // prepare for the next time step
+   521	      step_info.UpdateTime();
+   522	    }
+   523	  } else {
+   524	    // batch first, unable to size the input data. single batch inference
+   525	    for (int b = 0; b < size_info.batch_size; b++) {
+   526	      for (int t = 0; t < size_info.time_steps; t++) {
+   527	        lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+   528	            step_info, op_data, kernel_content, buffers);
+   529	        // prepare for the next time step
+   530	        step_info.UpdateTime();
+   531	      }
+   532	      // prepare for the next batch
+   533	      step_info.UpdateBatch();
+   534	      step_info.ResetTime();
+   535	    }
+   536	  }
+   537	  return kTfLiteOk;
+   538	}
+   539	}  // namespace tflite
+   540	
+   541	#endif  // TENSORFLOW_LITE_MICRO_KERNELS_LSTM_EVAL_16ACT_H_
+
+4. LSTM evaluator manager implementation
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	#include "tensorflow/lite/micro/kernels/lstm_eval.h"
+    16	
+    17	#include <limits>
+    18	
+    19	#include "tensorflow/lite/kernels/internal/reference/fully_connected.h"
+    20	#include "tensorflow/lite/kernels/internal/reference/integer_ops/fully_connected.h"
+    21	#include "tensorflow/lite/kernels/internal/reference/integer_ops/logistic.h"
+    22	#include "tensorflow/lite/kernels/internal/reference/integer_ops/mul.h"
+    23	#include "tensorflow/lite/kernels/internal/reference/integer_ops/tanh.h"
+    24	#include "tensorflow/lite/kernels/internal/reference/logistic.h"
+    25	#include "tensorflow/lite/kernels/internal/reference/mul.h"
+    26	#include "tensorflow/lite/kernels/internal/reference/tanh.h"
+    27	#include "tensorflow/lite/kernels/internal/types.h"
+    28	
+    29	namespace tflite {
+    30	
+    31	LstmTensors::LstmTensors(TfLiteContext* context, TfLiteNode* node) {
+    32	  micro_context_ = GetMicroContext(context);
+    33	  // 24 internal tensors. see lstm_shared.h for tensor names
+    34	  for (size_t i = 0; i < 24; i++) {
+    35	    internal_tensors_[i] = micro_context_->AllocateTempInputTensor(node, i);
+    36	  }
+    37	  output_tensor_ =
+    38	      micro_context_->AllocateTempOutputTensor(node, kLstmOutputTensor);
+    39	}
+    40	
+    41	LstmTensors::~LstmTensors() {
+    42	  for (size_t i = 0; i < 24; i++) {
+    43	    if (internal_tensors_[i] != nullptr) {
+    44	      micro_context_->DeallocateTempTfLiteTensor(internal_tensors_[i]);
+    45	    }
+    46	  }
+    47	  micro_context_->DeallocateTempTfLiteTensor(output_tensor_);
+    48	}
+    49	
+    50	// Verify the LSTM internal tensor properties (e.g., type checks)
+    51	// Input/output/states/fc weights tensors are required for kernel evaulation.
+    52	// The state tensors should be variables. Variants of the standard LSTM
+    53	// are not supported here, therefore their corresponding tensors should be
+    54	// invalid
+    55	TfLiteStatus LstmTensors::ValidateTensorStatus(TfLiteContext* context) const {
+    56	  // Verify certain tensor properties
+    57	  // input tensor
+    58	  TF_LITE_ENSURE(context, internal_tensors_[kLstmInputTensor] != nullptr);
+    59	  // hidden state
+    60	  TF_LITE_ENSURE(context, internal_tensors_[kLstmOutputStateTensor] != nullptr);
+    61	  TF_LITE_ENSURE(context,
+    62	                 internal_tensors_[kLstmOutputStateTensor]->is_variable);
+    63	  // hidden state becomes input so they must have the same type
+    64	  TF_LITE_ENSURE_EQ(context, internal_tensors_[kLstmOutputStateTensor]->type,
+    65	                    internal_tensors_[kLstmInputTensor]->type);
+    66	  // cell state
+    67	  TF_LITE_ENSURE(context, internal_tensors_[kLstmCellStateTensor] != nullptr);
+    68	  TF_LITE_ENSURE(context, internal_tensors_[kLstmCellStateTensor]->is_variable);
+    69	  // output
+    70	  TF_LITE_ENSURE(context, output_tensor_ != nullptr);
+    71	  // output type is the same as the input type (activations)
+    72	  TF_LITE_ENSURE_EQ(context, output_tensor_->type,
+    73	                    internal_tensors_[kLstmInputTensor]->type);
+    74	
+    75	  // weight tensors (1-9, see lstm_shared for index definition)
+    76	  const auto weight_type =
+    77	      internal_tensors_[kLstmInputToForgetWeightsTensor]->type;
+    78	  for (size_t i = 1; i < 9; i++) {
+    79	    TF_LITE_ENSURE(context, internal_tensors_[i] != nullptr);
+    80	    TF_LITE_ENSURE_EQ(context, internal_tensors_[i]->type, weight_type);
+    81	  }
+    82	
+    83	  // bias tensors (12-15, see lstm_shared for index definition)
+    84	  const auto bias_type = internal_tensors_[kLstmForgetGateBiasTensor]->type;
+    85	  for (size_t i = 12; i < 16; i++) {
+    86	    TF_LITE_ENSURE(context, internal_tensors_[i] != nullptr);
+    87	    TF_LITE_ENSURE_EQ(context, internal_tensors_[i]->type, bias_type);
+    88	  }
+    89	  // Tensors from LSTM variants are invalid
+    90	  // No peephole
+    91	  for (size_t i = 9; i < 12; i++) {
+    92	    TF_LITE_ENSURE(context, internal_tensors_[i] == nullptr);
+    93	  }
+    94	  // No projection
+    95	  for (size_t i = 16; i < 18; i++) {
+    96	    TF_LITE_ENSURE(context, internal_tensors_[i] == nullptr);
+    97	  }
+    98	  // No internal layer norm
+    99	  for (size_t i = 20; i < 24; i++) {
+   100	    TF_LITE_ENSURE(context, internal_tensors_[i] == nullptr);
+   101	  }
+   102	  return kTfLiteOk;
+   103	}
+   104	
+   105	namespace lstm_internal {
+   106	
+   107	const int32_t kInt16Max = std::numeric_limits<int16_t>::max();
+   108	const int32_t kInt16Min = std::numeric_limits<int16_t>::min();
+   109	
+   110	void AddElementWise(const int16_t* input_1, const int16_t* input_2, int n_batch,
+   111	                    int n_input, int16_t* output) {
+   112	  for (int batch = 0; batch < n_batch; ++batch) {
+   113	    for (int i = 0; i < n_input; ++i) {
+   114	      const int index = batch * n_input + i;
+   115	      int32_t sum = input_1[index] + input_2[index];
+   116	      const int32_t sum_clamped = std::min(kInt16Max, std::max(kInt16Min, sum));
+   117	      output[index] = static_cast<int16_t>(sum_clamped);
+   118	    }
+   119	  }
+   120	}
+   121	
+   122	void AddElementWise(const float* input_1, const float* input_2, int n_batch,
+   123	                    int n_input, float* output) {
+   124	  for (int batch = 0; batch < n_batch; ++batch) {
+   125	    for (int i = 0; i < n_input; ++i) {
+   126	      const int index = batch * n_input + i;
+   127	      output[index] = input_1[index] + input_2[index];
+   128	    }
+   129	  }
+   130	}
+   131	
+   132	void Sigmoid(const RuntimeShape& data_shape, int16_t* data) {
+   133	  reference_integer_ops::Logistic(
+   134	      0 /*data->input_multiplier*/, 0 /*data->input_left_shift */,
+   135	      data_shape.FlatSize() /*NumElements(input->dims)*/,
+   136	      data /* tflite::micro::GetTensorData<int16_t>(input) */,
+   137	      data /*tflite::micro::GetTensorData<int16_t>(output) */);
+   138	}
+   139	
+   140	void Sigmoid(const RuntimeShape& data_shape, float* data) {
+   141	  reference_ops::Logistic(data_shape, data, data_shape, data);
+   142	}
+   143	
+   144	void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+   145	          int16_t* input_data, const RuntimeShape& output_data_shape,
+   146	          int16_t* output_data) {
+   147	  int32_t tanh_input_left_shift = (15 + cell_state_scale_power) - 3;
+   148	  int32_t input_multiplier = 0;
+   149	  if (tanh_input_left_shift < 0) /* handling negative shift value */
+   150	  {
+   151	    tanh_input_left_shift = -tanh_input_left_shift;
+   152	    input_multiplier = 3;
+   153	  }
+   154	  reference_integer_ops::Tanh(input_multiplier, tanh_input_left_shift,
+   155	                              input_data_shape, input_data, output_data_shape,
+   156	                              output_data);
+   157	}
+   158	
+   159	void Tanh(int32_t cell_state_scale_power, const RuntimeShape& input_data_shape,
+   160	          float* input_data, const RuntimeShape& output_data_shape,
+   161	          float* output_data) {
+   162	  reference_ops::Tanh(input_data_shape, input_data, output_data_shape,
+   163	                      output_data);
+   164	}
+   165	
+   166	// Input and output have the same shape in LSTM
+   167	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   168	         const int16_t* input1_data, const int16_t* input2_data,
+   169	         int8_t* output_data) {
+   170	  return reference_integer_ops::MulElementwise(
+   171	      shape.FlatSize(), params, input1_data, input2_data, output_data);
+   172	}
+   173	
+   174	// Input and output have the same shape in LSTM
+   175	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   176	         const int16_t* input1_data, const int16_t* input2_data,
+   177	         int16_t* output_data) {
+   178	  return reference_integer_ops::MulElementwise(
+   179	      shape.FlatSize(), params, input1_data, input2_data, output_data);
+   180	}
+   181	
+   182	// Input and output have the same shape in LSTM
+   183	void Mul(const RuntimeShape& shape, const ArithmeticParams& params,
+   184	         const float* input1_data, const float* input2_data,
+   185	         float* output_data) {
+   186	  return reference_ops::Mul(params, shape, input1_data, shape, input2_data,
+   187	                            shape, output_data);
+   188	}
+   189	
+   190	void FullyConnected(const FullyConnectedParams& params,
+   191	                    const RuntimeShape& input_shape, const int8_t* input_data,
+   192	                    const RuntimeShape& filter_shape, const int8_t* filter_data,
+   193	                    const RuntimeShape& bias_shape, const int32_t* bias_data,
+   194	                    const RuntimeShape& output_shape, int16_t* output_data) {
+   195	  return tflite::reference_integer_ops::FullyConnected(
+   196	      params, input_shape, input_data, filter_shape, filter_data, bias_shape,
+   197	      bias_data, output_shape, output_data);
+   198	}
+   199	
+   200	void FullyConnected(const FullyConnectedParams& params,
+   201	                    const RuntimeShape& input_shape, const int16_t* input_data,
+   202	                    const RuntimeShape& filter_shape, const int8_t* filter_data,
+   203	                    const RuntimeShape& bias_shape, const int64_t* bias_data,
+   204	                    const RuntimeShape& output_shape, int16_t* output_data) {
+   205	  return tflite::reference_integer_ops::FullyConnected(
+   206	      params, input_shape, input_data, filter_shape, filter_data, bias_shape,
+   207	      bias_data, output_shape, output_data);
+   208	}
+   209	
+   210	void FullyConnected(const FullyConnectedParams& params,
+   211	                    const RuntimeShape& input_shape, const float* input_data,
+   212	                    const RuntimeShape& filter_shape, const float* filter_data,
+   213	                    const RuntimeShape& bias_shape, const float* bias_data,
+   214	                    const RuntimeShape& output_shape, float* output_data) {
+   215	  return tflite::reference_ops::FullyConnected(
+   216	      params, input_shape, input_data, filter_shape, filter_data, bias_shape,
+   217	      bias_data, output_shape, output_data);
+   218	}
+   219	
+   220	void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+   221	              int16_t* vector) {
+   222	  for (int i = 0; i < v_size; i++) {
+   223	    vector[i] =
+   224	        std::max(std::min(cell_state_info.quantized_cell_clip, vector[i]),
+   225	                 static_cast<int16_t>(-cell_state_info.quantized_cell_clip));
+   226	  }
+   227	}
+   228	
+   229	void Clipping(const int v_size, const CellStateInfo& cell_state_info,
+   230	              float* vector) {
+   231	  for (int i = 0; i < v_size; i++) {
+   232	    vector[i] = std::max(std::min(cell_state_info.cell_clip, vector[i]),
+   233	                         -cell_state_info.cell_clip);
+   234	  }
+   235	}
+   236	
+   237	// Increment the data offset so the sigle time step invocation call can access
+   238	// the corresponding input/output tensor data at the time step
+   239	void LstmStepManager::UpdateTime() {
+   240	  current_time_ += 1;
+   241	  TFLITE_DCHECK_LE(current_time_, size_info_.time_steps);
+   242	  // default as one batch per inference
+   243	  int input_step = size_info_.input_dimension;
+   244	  int output_step = size_info_.state_dimension;
+   245	  // time major: batch inference
+   246	  if (size_info_.time_major) {
+   247	    input_step = input_step * size_info_.batch_size;
+   248	    output_step = output_step * size_info_.batch_size;
+   249	  }
+   250	
+   251	  input_offset_ += input_step;
+   252	  output_offset_ += output_step;
+   253	}
+   254	
+   255	// Increment the data offset so the sigle time step invocation call can access
+   256	// the corresponding hidden/cell state tensor data at the time step (for single
+   257	// batch inference only)
+   258	void LstmStepManager::UpdateBatch() {
+   259	  current_batch_ += 1;
+   260	  TFLITE_DCHECK_LE(current_batch_, size_info_.batch_size);
+   261	  // batch inference for time major: no action needed
+   262	  if (size_info_.time_major) {
+   263	    return;
+   264	  }
+   265	  // otherwise: singe batch inference, go to the next batch
+   266	  hidden_state_offset_ += size_info_.state_dimension;
+   267	  cell_state_offset_ += size_info_.state_dimension;
+   268	}
+   269	
+   270	// Input shape for each single time LSTM invocation.
+   271	// Multi-batch for time_major input
+   272	RuntimeShape LstmStepManager::InputShape() const {
+   273	  int batch_size = 1;
+   274	  if (size_info_.time_major) {
+   275	    batch_size = size_info_.batch_size;
+   276	  }
+   277	  const int dims[2] = {batch_size, size_info_.input_dimension};
+   278	  const int32_t* dims_data = reinterpret_cast<const int32_t*>(dims);
+   279	  return RuntimeShape(2, dims_data);
+   280	}
+   281	
+   282	// State shape (both hidden and cell) for each single time LSTM invocation.
+   283	// Multi-batch for time_major input
+   284	RuntimeShape LstmStepManager::StateShape() const {
+   285	  int batch_size = 1;
+   286	  if (size_info_.time_major) {
+   287	    batch_size = size_info_.batch_size;
+   288	  }
+   289	  const int dims[2] = {batch_size, size_info_.state_dimension};
+   290	  const int32_t* dims_data = reinterpret_cast<const int32_t*>(dims);
+   291	  return RuntimeShape(2, dims_data);
+   292	}
+   293	
+   294	}  // namespace lstm_internal
+   295	}  // namespace tflite
+
+5. LSTM tensor access and mutable tensor APIs
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1616-  // In place insertion sort on `sorting_buffer`.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1617-  for (int i = 1; i < size; i++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1618-    for (int j = i; j > 0 && sorting_buffer[j] < sorting_buffer[j - 1]; j--) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1619-      std::swap(sorting_buffer[j], sorting_buffer[j - 1]);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1620-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1621-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1622-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1623-  TfLiteEvalTensor* median =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:1624:      tflite::micro::GetEvalOutput(context, node, kMedianTensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1625-  TF_LITE_ENSURE(context, median != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1626-  uint8_t* median_data = median->data.uint8;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1627-  TfLiteEvalTensor* invoke_count =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:1628:      tflite::micro::GetEvalOutput(context, node, kInvokeCount);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1629-  TF_LITE_ENSURE(context, invoke_count != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1630-  int32_t* invoke_count_data = invoke_count->data.i32;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1631-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1632-  median_data[0] = sorting_buffer[size / 2];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1633-  invoke_count_data[0] = *data->invoke_count;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1634-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1635-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1636-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1637-const TFLMRegistration* MockCustom::getRegistration() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1638-  return GetMutableRegistration();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1639-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1640-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1641-TFLMRegistration* MockCustom::GetMutableRegistration() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1642-  static TFLMRegistration r;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1643-  r.init = Init;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1644-  r.prepare = Prepare;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1645-  r.invoke = Invoke;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1646-  r.free = Free;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1647-  return &r;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1648-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1649-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1650-void* MockCustom::Init(TfLiteContext* context, const char* buffer,
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1666-TfLiteStatus MockCustom::Invoke(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1667-  const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1668-  TF_LITE_ENSURE(context, input != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1669-  const int32_t* input_data = input->data.i32;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1670-  const TfLiteEvalTensor* weight =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1671-      tflite::micro::GetEvalInput(context, node, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1672-  TF_LITE_ENSURE(context, weight != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1673-  const uint8_t* weight_data = weight->data.uint8;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:1674:  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1675-  TF_LITE_ENSURE(context, output != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1676-  int32_t* output_data = output->data.i32;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1677-  output_data[0] =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1678-      0;  // Catch output tensor sharing memory with an input tensor
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1679-  output_data[0] = input_data[0] + weight_data[0];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1680-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1681-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1682-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1683-bool MockCustom::freed_ = false;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1684-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1685-const TFLMRegistration* MultipleInputs::getRegistration() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1686-  return GetMutableRegistration();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1687-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1688-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1689-TFLMRegistration* MultipleInputs::GetMutableRegistration() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1690-  static TFLMRegistration r;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1691-  r.init = Init;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1692-  r.prepare = Prepare;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1693-  r.invoke = Invoke;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1694-  r.free = Free;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1695-  return &r;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1696-}
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1721-      tflite::micro::GetEvalInput(context, node, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1722-  TF_LITE_ENSURE(context, input1 != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1723-  const int32_t* input_data1 = input1->data.i32;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1724-  const TfLiteEvalTensor* input2 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1725-      tflite::micro::GetEvalInput(context, node, 2);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1726-  TF_LITE_ENSURE(context, input2 != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1727-  const int32_t* input_data2 = input2->data.i32;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1728-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc:1729:  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1730-  TF_LITE_ENSURE(context, output != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1731-  int32_t* output_data = output->data.i32;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1732-  output_data[0] =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1733-      0;  // Catch output tensor sharing memory with an input tensor
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1734-  output_data[0] = input_data[0] + input_data1[0] + input_data2[0];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1735-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1736-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1737-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1738-bool MultipleInputs::freed_ = false;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1739-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1740-const TFLMRegistration* NoOp::getRegistration() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1741-  return GetMutableRegistration();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1742-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1743-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1744-TFLMRegistration* NoOp::GetMutableRegistration() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1745-  static TFLMRegistration r;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1746-  r.init = Init;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1747-  r.prepare = Prepare;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1748-  r.invoke = Invoke;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1749-  r.free = Free;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1750-  return &r;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helpers.cc-1751-}
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-84-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-85-  const TfLiteEvalTensor* input2 =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-86-      tflite::micro::GetEvalInput(context, node, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-87-  TF_LITE_ENSURE(context, input2 != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-88-  const int32_t* input2_data = input2->data.i32;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-89-  TF_LITE_ENSURE_EQ(context, input2->dims->size, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-90-  const int32_t input2_len = input2->dims->data[0];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-91-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc:92:  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-93-  TF_LITE_ENSURE(context, output != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-94-  int32_t* output_data = output->data.i32;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-95-  int32_t output_len = output->dims->data[0];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-96-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-97-  // Fill output with input: first with the first tensor, then with the second
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-98-  // tensor up to the size of the output tensor.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-99-  int cnt = 0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-100-  int i;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-101-  for (i = 0; i < input1_len && cnt < output_len; i++, cnt++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-102-    output_data[cnt] = input1_data[i];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-103-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-104-  if (cnt >= output_len) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-105-    return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-106-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-107-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-108-  for (i = 0; i < input2_len && cnt < output_len; i++, cnt++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-109-    output_data[cnt] = input2_data[i];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-110-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-111-  if (cnt >= output_len) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-112-    return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-113-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-114-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-189-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-190-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-191-TfLiteStatus BroadcastAddOp::Invoke(TfLiteContext* context, TfLiteNode* node) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-192-  const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-193-  TF_LITE_ENSURE(context, input != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-194-  const TfLiteEvalTensor* weights =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-195-      tflite::micro::GetEvalInput(context, node, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-196-  TF_LITE_ENSURE(context, weights != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc:197:  TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-198-  TF_LITE_ENSURE(context, output != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-199-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-200-#ifdef USE_TFLM_COMPRESSION
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-201-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-202-  MicroContext* micro_context = GetMicroContext(context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-203-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-204-  const CompressionTensorData* weights_comp_td =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-205-      micro_context->GetTensorCompressionData(node, 1);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-206-  if (micro_context->IsTensorCompressed(node, 1)) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-207-    TF_LITE_ENSURE(context, weights_comp_td != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-208-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-209-    TF_LITE_ENSURE(context, weights_comp_td == nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-210-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-211-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-212-#endif  // USE_TFLM_COMPRESSION
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-213-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-214-  switch (input->type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-215-    case kTfLiteFloat32: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-216-      BroadcastAdd(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-217-          tflite::micro::GetTensorData<float>(input)[0],
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-218-#ifdef USE_TFLM_COMPRESSION
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/test_helper_custom_ops.cc-219-          tflite::micro::GetTensorData<float>(
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-118-      if (tensor_ptr->type == typeToTfLiteType<T>()) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-119-        return GetTensorData<T>(tensor_ptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-120-      }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-121-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-122-    return nullptr;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-123-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-124-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-125-  // Returns a pointer to the tensor for the corresponding tensor_index
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h:126:  TfLiteEvalTensor* GetTensor(int tensor_index, int subgraph_index = 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-127-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-128-  // Reset the state to be what you would expect when the interpreter is first
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-129-  // created. i.e. after Init and Prepare is called for the very first time.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-130-  TfLiteStatus Reset();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-131-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-132-  TfLiteStatus initialization_status() const { return initialization_status_; }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-133-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-134-  // Populates node and registration pointers representing the inference graph
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-135-  // of the model from values inside the flatbuffer (loaded from the TfLiteModel
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-136-  // instance). Persistent data (e.g. operator data) is allocated from the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-137-  // arena.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-138-  TfLiteStatus PrepareNodeAndRegistrationDataFromFlatbuffer();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-139-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-140-  // For debugging only.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-141-  // Returns the actual used arena in bytes. This method gives the optimal arena
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-142-  // size. It's only available after `AllocateTensors` has been called.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-143-  // Note that normally `tensor_arena` requires 16 bytes alignment to fully
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-144-  // utilize the space. If it's not the case, the optimial arena size would be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-145-  // arena_used_bytes() + 16.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-146-  size_t arena_used_bytes() const { return allocator_.used_bytes(); }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-147-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h-148-  // Returns True if all Tensors are being preserves
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-187-inline TfLiteStatus MicroContextRequestScratchBufferInArena(TfLiteContext* ctx,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-188-                                                            size_t bytes,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-189-                                                            int* buffer_idx) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-190-  return GetMicroContext(ctx)->RequestScratchBufferInArena(bytes, buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-191-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-192-inline void* MicroContextGetScratchBuffer(TfLiteContext* ctx, int buffer_idx) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-193-  return GetMicroContext(ctx)->GetScratchBuffer(buffer_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-194-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h:195:inline TfLiteTensor* MicroContextGetTensor(const struct TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-196-                                           int tensor_idx) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-197-  return GetMicroContext(context)->AllocateTempTfLiteTensor(tensor_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-198-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-199-inline TfLiteEvalTensor* MicroContextGetEvalTensor(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-200-    const struct TfLiteContext* context, int tensor_idx) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-201-  return GetMicroContext(context)->GetEvalTensor(tensor_idx);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-202-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-203-inline TfLiteExternalContext* MicroContextGetExternalContext(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-204-    TfLiteContext* context, TfLiteExternalContextType unused) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-205-  return reinterpret_cast<TfLiteExternalContext*>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-206-      GetMicroContext(context)->external_context());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-207-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-208-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-209-// Requests that an error be reported with format string msg.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-210-void MicroContextReportOpError(struct TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-211-                               const char* format, ...);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-212-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-213-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-214-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h-215-#endif  // TENSORFLOW_LITE_MICRO_MICRO_CONTEXT_H_
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-315-TfLiteStatus MicroInterpreter::Reset() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-316-  TfLiteStatus status = graph_.ResetSubgraphs();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-317-  if (status != kTfLiteOk) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-318-    return status;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-319-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-320-  return graph_.ResetVariableTensors();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-321-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-322-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc:323:TfLiteEvalTensor* MicroInterpreter::GetTensor(int tensor_index,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-324-                                              int subgraph_index) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-325-  if (!allocator_.preserves_all_tensor()) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-326-    MicroPrintf("GetTensor requires all tensors to be preserved");
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-327-    return nullptr;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-328-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-329-  return &graph_.GetAllocations()[subgraph_index].tensors[tensor_index];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-330-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-331-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-332-TfLiteStatus MicroInterpreter::SetMicroExternalContext(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-333-    void* external_context_payload) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-334-  return micro_context_.set_external_context(external_context_payload);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-335-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-336-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-337-TfLiteStatus MicroInterpreter::SetAlternateProfiler(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-338-    MicroProfilerInterface* alt_profiler) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-339-  return micro_context_.SetAlternateProfiler(alt_profiler);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-340-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-341-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-342-#ifdef USE_TFLM_COMPRESSION
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-343-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-344-TfLiteStatus MicroInterpreter::SetDecompressionMemory(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc-345-    const std::initializer_list<MicroInterpreterContext::AlternateMemoryRegion>&
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-198-        // input_index
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-199-        tensor_data->input_index = -1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-200-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-201-        // tensor index
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-202-        tensor_data->tensor_index =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-203-            tflite_model.subgraphs[i]->operators[j]->outputs[k];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-204-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-205-        TfLiteEvalTensor* layer_output_tensor =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc:206:            interpreter.GetTensor(subgraph_data->outputs.back()->tensor_index,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-207-                                  subgraph_data->subgraph_index);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-208-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-209-        // dims
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-210-        tensor_data->shape.assign(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-211-            layer_output_tensor->dims->data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-212-            layer_output_tensor->dims->data + layer_output_tensor->dims->size);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-213-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-214-        // dtype
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-215-        TF_LITE_ENSURE_STATUS(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-216-            ConvertTensorType(layer_output_tensor->type, tensor_data->dtype));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-217-        // num_bytes
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-218-        tensor_data->num_bytes = EvalTensorBytes(layer_output_tensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-219-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-220-        uint8_t* tensor_values =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-221-            micro::GetTensorData<uint8_t>(layer_output_tensor);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-222-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-223-        // data
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-224-        tensor_data->data.assign(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-225-            tensor_values,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-226-            tensor_values + EvalTensorBytes(layer_output_tensor));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-227-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/tools/layer_by_layer.cc-228-        // layer_number
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-520-                                                      TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-521-                                                      OpData* op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-522-                                                      const float* scores) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-523-  const TfLiteEvalTensor* input_box_encodings =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-524-      tflite::micro::GetEvalInput(context, node, kInputTensorBoxEncodings);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-525-  const TfLiteEvalTensor* input_class_predictions =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-526-      tflite::micro::GetEvalInput(context, node, kInputTensorClassPredictions);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-527-  TfLiteEvalTensor* detection_boxes =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:528:      tflite::micro::GetEvalOutput(context, node, kOutputTensorDetectionBoxes);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:529:  TfLiteEvalTensor* detection_classes = tflite::micro::GetEvalOutput(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-530-      context, node, kOutputTensorDetectionClasses);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-531-  TfLiteEvalTensor* detection_scores =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:532:      tflite::micro::GetEvalOutput(context, node, kOutputTensorDetectionScores);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-533-  TfLiteEvalTensor* num_detections =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc:534:      tflite::micro::GetEvalOutput(context, node, kOutputTensorNumDetections);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-535-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-536-  const int num_boxes = input_box_encodings->dims->data[1];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-537-  const int num_classes = op_data->num_classes;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-538-  const int num_detections_per_class = op_data->detections_per_class;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-539-  const int max_detections = op_data->max_detections;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-540-  const int num_classes_with_background =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-541-      input_class_predictions->dims->data[2];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-542-  // The row index offset is 1 if background class is included and 0 otherwise.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-543-  int label_offset = num_classes_with_background - num_classes;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-544-  TF_LITE_ENSURE(context, num_detections_per_class > 0);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-545-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-546-  // For each class, perform non-max suppression.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-547-  float* class_scores = reinterpret_cast<float*>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-548-      context->GetScratchBuffer(context, op_data->score_buffer_idx));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/detection_postprocess.cc-549-  int* box_indices_after_regular_non_max_suppression = reinterpret_cast<int*>(
+
+6. OpDataLSTM definition and size information
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-72-  FullyConnectedParams recurrent_fc_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-73-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-74-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-75-// Paramaters for the element wise multiplications between gate outputs
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-76-struct InterGateParameters {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-77-  ArithmeticParams forget_cell_mul_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-78-  ArithmeticParams input_mul_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-79-  ArithmeticParams output_mul_params;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-80-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-81-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-82-// Size information about the LSTM kernel, which is deduced from tensors stored
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-83-// in the flat buffer file.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h:84:struct LstmSizeInfo {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-85-  bool time_major;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-86-  int batch_size;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-87-  int time_steps;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-88-  int input_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-89-  int state_dimension;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-90-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-91-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-92-// Contains information about the cell state tensor
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-93-struct CellStateInfo {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-94-  float cell_clip;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-95-  // clipping range for cell state only 16 bits cell is supported (could be
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-96-  // generalized through templatation)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-97-  int16_t quantized_cell_clip;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-98-  // 2^-cell_state_scale_power = cell state scale, required by integer tanh
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-99-  // computation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-100-  int32_t cell_state_scale_power;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-101-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-102-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-103-// Contains required computation information for LSTM kernel evaluation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-104-// Specifically, it includes shape and quantization settings for the LSTM
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-105-// internal operations. Formatted to support operations defined in the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-106-// tensorflow/lite/kernels/internal/reference/integer_ops
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-107-// Should be constructed during the preparation phase
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h:108:struct OpDataLSTM {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-109-  LstmSizeInfo size_info;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-110-  CellStateInfo cell_state_info;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-111-  TfLiteFusedActivation cell_gate_nonlinear_type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-112-  GateParameters forget_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-113-  GateParameters input_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-114-  GateParameters cell_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-115-  GateParameters output_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-116-  InterGateParameters inter_gate_parameters;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-117-  int buffer_indices[4];  // TFLM only
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-118-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-119-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-120-// Provide an interface to access the internal tensors and buffers used for LSTM
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-121-// invocation. Constructed during the invocation phase
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-122-struct LSTMKernelContents {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-123- public:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-124-  // Internal tensors, fixed (const). see lstm_shared.h for tensor names
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-125-  const TfLiteEvalTensor* GetInternalTensor(const int tensor_index) const {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-126-    return internal_tensors[tensor_index];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-127-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-128-  // Variable tensors (will be changed, can not be const)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-129-  TfLiteEvalTensor* HiddenStateTensor() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-130-    return internal_tensors[kLstmOutputStateTensor];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-131-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-132-  TfLiteEvalTensor* CellStateTensor() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-133-    return internal_tensors[kLstmCellStateTensor];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-134-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-135-  // Node internal tensors with indexes defined at the beginning of the file
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-136-  TfLiteEvalTensor* internal_tensors[24];
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-137-  TfLiteEvalTensor* output_tensor;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-138-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-139-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-140-template <typename CellType>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-141-struct LSTMBuffers {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-142-  // TFLM buffers requires buffer index from LstmOpData.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-143-  CellType* buffer0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-144-  CellType* buffer1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-145-  CellType* buffer2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-146-  CellType* buffer3;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-147-};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-148-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-149-}  // namespace tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h-150-#endif  // TENSORFLOW_LITE_MICRO_KERNELS_LSTM_SHARED_H_
+
+7. Existing application kernel identity
+8d4b0a724119dcb7783c46a6e5feb1b57b02d1b8839bdc6574ad6205a1770eac  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+
+============================================================
+INSPECTION COMPLETE - NO FILES MODIFIED
+============================================================
