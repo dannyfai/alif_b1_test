@@ -1,0 +1,102 @@
+===== BILSTM PREPARE RANK/TYPE GUARD =====
+Mon Nov  9 10:35:02 AM HKT 2026
+
+572aa39c5a1ca7bfa55c57d14694b97a43d661044cbbd390dc503b160f92c2fd  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+
+===== GUARD AND PREPARE IMPLEMENTATION =====
+
+===== CUSTOM BILSTM REGISTRATION =====
+570-/*
+571- * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+572- * Keep its existing parser and implementation unchanged.
+573- */
+574-TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+575-    const tflite::Operator* op,
+576-    tflite::ErrorReporter* error_reporter,
+577-    tflite::BuiltinDataAllocator* allocator,
+578-    void** builtin_data)
+579-{
+580-    return tflite::ParseOpData(
+581-        op,
+582:        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+583-        error_reporter,
+584-        allocator,
+585-        builtin_data);
+586-}
+587-
+588-bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+589-{
+590-#define HS_ADD_REQUIRED(method)                                      \
+591-    do {                                                              \
+592-        const TfLiteStatus status = this->m_opResolver.method();      \
+593-        if (status != kTfLiteOk) {                                    \
+594-            printf_err(                                               \
+595-                "Failed to register heat-stress operator: %s\n",     \
+596-                #method);                                             \
+597-            return false;                                             \
+--
+663-                registration,
+664-                ParseHeatstrokeSign) != kTfLiteOk) {
+665-            printf_err("Failed to register heat-stress SIGN.\n");
+666-            return false;
+667-        }
+668-    }
+669-
+670-    /*
+671-     * Custom compact bidirectional LSTM registration.
+672-     */
+673-    {
+674-        const TFLMRegistration registration =
+675:            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+676-
+677-        if (this->m_opResolver.AddBuiltin(
+678:                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+679-                registration,
+680-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+681-            printf_err(
+682-                "Failed to register heat-stress bidirectional LSTM.\n");
+683-            return false;
+684-        }
+685-    }
+686-
+687-    /*
+688-     * Ethos-U registration.
+689-     *
+690-     * AddEthosU() in this SDK can report success even when the hardware
+691-     * registration is null. Therefore, explicitly verify FindOp().
+692-     */
+693-    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+--
+729-        tflite::BuiltinOperator_QUANTIZE,
+730-        tflite::BuiltinOperator_RESHAPE,
+731-        tflite::BuiltinOperator_RSQRT,
+732-        tflite::BuiltinOperator_SELECT_V2,
+733-        tflite::BuiltinOperator_SIGN,
+734-        tflite::BuiltinOperator_SOFTMAX,
+735-        tflite::BuiltinOperator_SPLIT_V,
+736-        tflite::BuiltinOperator_SQRT,
+737-        tflite::BuiltinOperator_SQUARE,
+738-        tflite::BuiltinOperator_SUB,
+739-        tflite::BuiltinOperator_SUM,
+740-        tflite::BuiltinOperator_TOPK_V2,
+741:        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+742-    };
+743-
+744-    for (const auto op : required_ops) {
+745-        if (this->m_opResolver.FindOp(op) == nullptr) {
+746-            printf_err(
+747-                "Required heat-stress builtin registration is missing: %d\n",
+748-                static_cast<int>(op));
+749-            return false;
+750-        }
+751-
+752-        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+753-            printf_err(
+754-                "Required heat-stress builtin parser is missing: %d\n",
+755-                static_cast<int>(op));
+756-            return false;
+
+===== SOURCE PATCH STATUS =====
+582:        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+678:                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+741:        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
