@@ -1,0 +1,769 @@
+===== APPLICATION GATHER RESOLVER PATCH ANCHOR =====
+Mon Nov  9 09:29:25 AM HKT 2026
+===== PolyUModel1.cc COMPLETE SOURCE =====
+-rw-rw-r-- 1 user user 9.1K Nov  8 19:37 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+a49ca5b50454f5132079355c62217f1d821131c74de5051e33dc85837056347c  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+     3	 * SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Application-local heat-stress TFLM operator registrations.
+     6	 */
+     7	
+     8	#include "PolyUModel1.hpp"
+     9	
+    10	#include <cstdint>
+    11	
+    12	#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+    13	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    14	#include "tensorflow/lite/micro/micro_log.h"
+    15	
+    16	#include "mlek/log/log_macros.h"
+    17	#include "heatstroke_bidirectional_lstm.h"
+    18	
+    19	const tflite::MicroOpResolver&
+    20	arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    21	{
+    22	    return this->m_opResolver;
+    23	}
+    24	
+    25	namespace
+    26	{
+    27	
+    28	/*
+    29	 * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+    30	 * required by this implementation. Validate its options type and leave
+    31	 * builtin_data null.
+    32	 */
+    33	TfLiteStatus ParseHeatstrokeSign(
+    34	    const tflite::Operator* op,
+    35	    tflite::ErrorReporter*,
+    36	    tflite::BuiltinDataAllocator*,
+    37	    void** builtin_data)
+    38	{
+    39	    if (builtin_data != nullptr) {
+    40	        *builtin_data = nullptr;
+    41	    }
+    42	
+    43	    if (op == nullptr ||
+    44	        op->builtin_options_type() !=
+    45	            tflite::BuiltinOptions_SignOptions) {
+    46	        return kTfLiteError;
+    47	    }
+    48	
+    49	    return kTfLiteOk;
+    50	}
+    51	
+    52	/*
+    53	 * Application-local INT32 SIGN implementation.
+    54	 *
+    55	 * y = -1 when x < 0
+    56	 * y =  0 when x = 0
+    57	 * y =  1 when x > 0
+    58	 *
+    59	 * No temporary buffer or scratch allocation is required.
+    60	 */
+    61	TfLiteStatus HeatstrokeSignEval(
+    62	    TfLiteContext* context,
+    63	    TfLiteNode* node)
+    64	{
+    65	    if (context == nullptr || node == nullptr) {
+    66	        return kTfLiteError;
+    67	    }
+    68	
+    69	    const TfLiteEvalTensor* input =
+    70	        tflite::micro::GetEvalInput(context, node, 0);
+    71	
+    72	    TfLiteEvalTensor* output =
+    73	        tflite::micro::GetEvalOutput(context, node, 0);
+    74	
+    75	    if (input == nullptr || output == nullptr) {
+    76	        return kTfLiteError;
+    77	    }
+    78	
+    79	    if (input->type != kTfLiteInt32 ||
+    80	        output->type != kTfLiteInt32) {
+    81	        MicroPrintf(
+    82	            "Heatstroke SIGN requires INT32 input/output. "
+    83	            "Input=%d Output=%d",
+    84	            input->type,
+    85	            output->type);
+    86	        return kTfLiteError;
+    87	    }
+    88	
+    89	    const auto input_shape =
+    90	        tflite::micro::GetTensorShape(input);
+    91	
+    92	    const auto output_shape =
+    93	        tflite::micro::GetTensorShape(output);
+    94	
+    95	    const int input_count = input_shape.FlatSize();
+    96	    const int output_count = output_shape.FlatSize();
+    97	
+    98	    if (input_count < 0 || input_count != output_count) {
+    99	        MicroPrintf(
+   100	            "Heatstroke SIGN tensor element-count mismatch.");
+   101	        return kTfLiteError;
+   102	    }
+   103	
+   104	    const int32_t* input_data =
+   105	        tflite::micro::GetTensorData<int32_t>(input);
+   106	
+   107	    int32_t* output_data =
+   108	        tflite::micro::GetTensorData<int32_t>(output);
+   109	
+   110	    if (input_count > 0 &&
+   111	        (input_data == nullptr || output_data == nullptr)) {
+   112	        MicroPrintf(
+   113	            "Heatstroke SIGN received a null tensor data pointer.");
+   114	        return kTfLiteError;
+   115	    }
+   116	
+   117	    for (int i = 0; i < input_count; ++i) {
+   118	        const int32_t value = input_data[i];
+   119	
+   120	        output_data[i] =
+   121	            (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+   122	    }
+   123	
+   124	    return kTfLiteOk;
+   125	}
+   126	
+   127	TFLMRegistration RegisterHeatstrokeSignKernel()
+   128	{
+   129	    return tflite::micro::RegisterOp(
+   130	        nullptr,
+   131	        nullptr,
+   132	        HeatstrokeSignEval);
+   133	}
+   134	
+   135	} // namespace
+   136	
+   137	/*
+   138	 * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+   139	 * Keep its existing parser and implementation unchanged.
+   140	 */
+   141	TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+   142	    const tflite::Operator* op,
+   143	    tflite::ErrorReporter* error_reporter,
+   144	    tflite::BuiltinDataAllocator* allocator,
+   145	    void** builtin_data)
+   146	{
+   147	    return tflite::ParseOpData(
+   148	        op,
+   149	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   150	        error_reporter,
+   151	        allocator,
+   152	        builtin_data);
+   153	}
+   154	
+   155	bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+   156	{
+   157	#define HS_ADD_REQUIRED(method)                                      \
+   158	    do {                                                              \
+   159	        const TfLiteStatus status = this->m_opResolver.method();      \
+   160	        if (status != kTfLiteOk) {                                    \
+   161	            printf_err(                                               \
+   162	                "Failed to register heat-stress operator: %s\n",     \
+   163	                #method);                                             \
+   164	            return false;                                             \
+   165	        }                                                             \
+   166	    } while (0)
+   167	
+   168	    /*
+   169	     * 29 ordinary built-in operators required by the exact Vela model.
+   170	     * These CPU registrations must remain available with Ethos-U enabled.
+   171	     */
+   172	    HS_ADD_REQUIRED(AddAdd);
+   173	    HS_ADD_REQUIRED(AddBroadcastArgs);
+   174	    HS_ADD_REQUIRED(AddBroadcastTo);
+   175	    HS_ADD_REQUIRED(AddCast);
+   176	    HS_ADD_REQUIRED(AddConcatenation);
+   177	    HS_ADD_REQUIRED(AddCumSum);
+   178	    HS_ADD_REQUIRED(AddDequantize);
+   179	    HS_ADD_REQUIRED(AddDiv);
+   180	    HS_ADD_REQUIRED(AddEqual);
+   181	    HS_ADD_REQUIRED(AddFloorMod);
+   182	    HS_ADD_REQUIRED(AddGather);
+   183	    HS_ADD_REQUIRED(AddGreater);
+   184	    HS_ADD_REQUIRED(AddLogicalAnd);
+   185	    HS_ADD_REQUIRED(AddLogicalNot);
+   186	    HS_ADD_REQUIRED(AddMaximum);
+   187	    HS_ADD_REQUIRED(AddMean);
+   188	    HS_ADD_REQUIRED(AddMul);
+   189	    HS_ADD_REQUIRED(AddNeg);
+   190	    HS_ADD_REQUIRED(AddQuantize);
+   191	    HS_ADD_REQUIRED(AddReshape);
+   192	    HS_ADD_REQUIRED(AddRsqrt);
+   193	    HS_ADD_REQUIRED(AddSelectV2);
+   194	    HS_ADD_REQUIRED(AddSoftmax);
+   195	    HS_ADD_REQUIRED(AddSplitV);
+   196	    HS_ADD_REQUIRED(AddSqrt);
+   197	    HS_ADD_REQUIRED(AddSquare);
+   198	    HS_ADD_REQUIRED(AddSub);
+   199	    HS_ADD_REQUIRED(AddSum);
+   200	    HS_ADD_REQUIRED(AddTopKV2);
+   201	
+   202	#undef HS_ADD_REQUIRED
+   203	
+   204	    /*
+   205	     * Custom SIGN registration under the built-in SIGN opcode.
+   206	     */
+   207	    {
+   208	        const TFLMRegistration registration =
+   209	            RegisterHeatstrokeSignKernel();
+   210	
+   211	        if (this->m_opResolver.AddBuiltin(
+   212	                tflite::BuiltinOperator_SIGN,
+   213	                registration,
+   214	                ParseHeatstrokeSign) != kTfLiteOk) {
+   215	            printf_err("Failed to register heat-stress SIGN.\n");
+   216	            return false;
+   217	        }
+   218	    }
+   219	
+   220	    /*
+   221	     * Custom compact bidirectional LSTM registration.
+   222	     */
+   223	    {
+   224	        const TFLMRegistration registration =
+   225	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+   226	
+   227	        if (this->m_opResolver.AddBuiltin(
+   228	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   229	                registration,
+   230	                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+   231	            printf_err(
+   232	                "Failed to register heat-stress bidirectional LSTM.\n");
+   233	            return false;
+   234	        }
+   235	    }
+   236	
+   237	    /*
+   238	     * Ethos-U registration.
+   239	     *
+   240	     * AddEthosU() in this SDK can report success even when the hardware
+   241	     * registration is null. Therefore, explicitly verify FindOp().
+   242	     */
+   243	    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+   244	        printf_err("Failed to add Ethos-U to the resolver.\n");
+   245	        return false;
+   246	    }
+   247	
+   248	    const char* ethos_name = tflite::GetString_ETHOSU();
+   249	
+   250	    if (ethos_name == nullptr ||
+   251	        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+   252	        printf_err(
+   253	            "Ethos-U registration is missing from the resolver.\n");
+   254	        return false;
+   255	    }
+   256	
+   257	    /*
+   258	     * Verify all built-in registrations and parser callbacks.
+   259	     */
+   260	    const tflite::BuiltinOperator required_ops[] = {
+   261	        tflite::BuiltinOperator_ADD,
+   262	        tflite::BuiltinOperator_BROADCAST_ARGS,
+   263	        tflite::BuiltinOperator_BROADCAST_TO,
+   264	        tflite::BuiltinOperator_CAST,
+   265	        tflite::BuiltinOperator_CONCATENATION,
+   266	        tflite::BuiltinOperator_CUMSUM,
+   267	        tflite::BuiltinOperator_DEQUANTIZE,
+   268	        tflite::BuiltinOperator_DIV,
+   269	        tflite::BuiltinOperator_EQUAL,
+   270	        tflite::BuiltinOperator_FLOOR_MOD,
+   271	        tflite::BuiltinOperator_GATHER,
+   272	        tflite::BuiltinOperator_GREATER,
+   273	        tflite::BuiltinOperator_LOGICAL_AND,
+   274	        tflite::BuiltinOperator_LOGICAL_NOT,
+   275	        tflite::BuiltinOperator_MAXIMUM,
+   276	        tflite::BuiltinOperator_MEAN,
+   277	        tflite::BuiltinOperator_MUL,
+   278	        tflite::BuiltinOperator_NEG,
+   279	        tflite::BuiltinOperator_QUANTIZE,
+   280	        tflite::BuiltinOperator_RESHAPE,
+   281	        tflite::BuiltinOperator_RSQRT,
+   282	        tflite::BuiltinOperator_SELECT_V2,
+   283	        tflite::BuiltinOperator_SIGN,
+   284	        tflite::BuiltinOperator_SOFTMAX,
+   285	        tflite::BuiltinOperator_SPLIT_V,
+   286	        tflite::BuiltinOperator_SQRT,
+   287	        tflite::BuiltinOperator_SQUARE,
+   288	        tflite::BuiltinOperator_SUB,
+   289	        tflite::BuiltinOperator_SUM,
+   290	        tflite::BuiltinOperator_TOPK_V2,
+   291	        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+   292	    };
+   293	
+   294	    for (const auto op : required_ops) {
+   295	        if (this->m_opResolver.FindOp(op) == nullptr) {
+   296	            printf_err(
+   297	                "Required heat-stress builtin registration is missing: %d\n",
+   298	                static_cast<int>(op));
+   299	            return false;
+   300	        }
+   301	
+   302	        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+   303	            printf_err(
+   304	                "Required heat-stress builtin parser is missing: %d\n",
+   305	                static_cast<int>(op));
+   306	            return false;
+   307	        }
+   308	    }
+   309	
+   310	    info(
+   311	        "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+   312	        ethos_name);
+   313	
+   314	    return true;
+   315	}
+===== PolyUModel1.hpp COMPLETE SOURCE =====
+-rw-rw-r-- 1 user user 1.4K Nov  8 19:37 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+4035b46cc8da6da3b556f9751a6e414f997ee243982c87e15511eea184b3d377  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+     1	#ifndef POLYU_MODEL1_HPP
+     2	#define POLYU_MODEL1_HPP
+     3	
+     4	#include "mlek/fwk/tflm/TflmModel.hpp"
+     5	
+     6	namespace arm::app::asr {
+     7	extern const int g_FrameLength;
+     8	extern const int g_FrameStride;
+     9	extern const float g_ScoreThreshold;
+    10	extern const int g_ctxLen;
+    11	} // namespace arm::app::asr
+    12	
+    13	namespace arm::app::fwk::tflm {
+    14	
+    15	class PolyUModel1 : public TflmModel {
+    16	
+    17	public:
+    18	    /* Indices for the expected model - based on input and output tensor shapes */
+    19	    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    20	    static constexpr uint32_t ms_inputColsIdx  = 2;
+    21	    static constexpr uint32_t ms_outputRowsIdx = 2;
+    22	    static constexpr uint32_t ms_outputColsIdx = 3;
+    23	
+    24	    /* Model specific constants. */
+    25	    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    26	    static constexpr uint32_t ms_numMfccFeatures = 13;
+    27	
+    28	protected:
+    29	    /** @brief   Gets the reference to op resolver interface class. */
+    30	    const tflite::MicroOpResolver& GetOpResolver() override;
+    31	
+    32	    /** @brief   Adds operations to the op resolver instance. */
+    33	    bool EnlistOperations() override;
+    34	
+    35	private:
+    36	    /* Maximum number of individual operations that can be enlisted. */
+    37	    static constexpr int ms_maxOpCnt = 32;
+    38	
+    39	    /* A mutable op resolver instance. */
+    40	    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+    41	};
+    42	
+    43	} /* namespace arm::app::fwk::tflm */
+    44	
+    45	#endif /* POLYU_MODEL1_HPP */
+===== GATHER AND RESOLVER REFERENCES =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-174-    HS_ADD_REQUIRED(AddBroadcastTo);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-175-    HS_ADD_REQUIRED(AddCast);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-176-    HS_ADD_REQUIRED(AddConcatenation);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-177-    HS_ADD_REQUIRED(AddCumSum);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-178-    HS_ADD_REQUIRED(AddDequantize);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-179-    HS_ADD_REQUIRED(AddDiv);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-180-    HS_ADD_REQUIRED(AddEqual);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-181-    HS_ADD_REQUIRED(AddFloorMod);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:182:    HS_ADD_REQUIRED(AddGather);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-183-    HS_ADD_REQUIRED(AddGreater);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-184-    HS_ADD_REQUIRED(AddLogicalAnd);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-185-    HS_ADD_REQUIRED(AddLogicalNot);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-186-    HS_ADD_REQUIRED(AddMaximum);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-187-    HS_ADD_REQUIRED(AddMean);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-188-    HS_ADD_REQUIRED(AddMul);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-189-    HS_ADD_REQUIRED(AddNeg);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-190-    HS_ADD_REQUIRED(AddQuantize);
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-203-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-204-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-205-     * Custom SIGN registration under the built-in SIGN opcode.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-206-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-207-    {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-208-        const TFLMRegistration registration =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-209-            RegisterHeatstrokeSignKernel();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-210-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:211:        if (this->m_opResolver.AddBuiltin(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-212-                tflite::BuiltinOperator_SIGN,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-213-                registration,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-214-                ParseHeatstrokeSign) != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-215-            printf_err("Failed to register heat-stress SIGN.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-216-            return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-217-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-218-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-219-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-220-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-221-     * Custom compact bidirectional LSTM registration.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-222-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-223-    {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-224-        const TFLMRegistration registration =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-225-            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-226-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:227:        if (this->m_opResolver.AddBuiltin(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-228-                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-229-                registration,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-230-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-231-            printf_err(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-232-                "Failed to register heat-stress bidirectional LSTM.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-233-            return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-234-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-235-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-236-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-237-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-238-     * Ethos-U registration.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-239-     *
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-240-     * AddEthosU() in this SDK can report success even when the hardware
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-241-     * registration is null. Therefore, explicitly verify FindOp().
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-242-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-243-    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:244:        printf_err("Failed to add Ethos-U to the resolver.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-245-        return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-246-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-247-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-248-    const char* ethos_name = tflite::GetString_ETHOSU();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-249-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-250-    if (ethos_name == nullptr ||
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-251-        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-252-        printf_err(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:253:            "Ethos-U registration is missing from the resolver.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-254-        return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-255-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-256-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-257-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-258-     * Verify all built-in registrations and parser callbacks.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-259-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-260-    const tflite::BuiltinOperator required_ops[] = {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-261-        tflite::BuiltinOperator_ADD,
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-263-        tflite::BuiltinOperator_BROADCAST_TO,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-264-        tflite::BuiltinOperator_CAST,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-265-        tflite::BuiltinOperator_CONCATENATION,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-266-        tflite::BuiltinOperator_CUMSUM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-267-        tflite::BuiltinOperator_DEQUANTIZE,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-268-        tflite::BuiltinOperator_DIV,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-269-        tflite::BuiltinOperator_EQUAL,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-270-        tflite::BuiltinOperator_FLOOR_MOD,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:271:        tflite::BuiltinOperator_GATHER,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-272-        tflite::BuiltinOperator_GREATER,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-273-        tflite::BuiltinOperator_LOGICAL_AND,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-274-        tflite::BuiltinOperator_LOGICAL_NOT,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-275-        tflite::BuiltinOperator_MAXIMUM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-276-        tflite::BuiltinOperator_MEAN,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-277-        tflite::BuiltinOperator_MUL,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-278-        tflite::BuiltinOperator_NEG,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-279-        tflite::BuiltinOperator_QUANTIZE,
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-294-    for (const auto op : required_ops) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-295-        if (this->m_opResolver.FindOp(op) == nullptr) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-296-            printf_err(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-297-                "Required heat-stress builtin registration is missing: %d\n",
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-298-                static_cast<int>(op));
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-299-            return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-300-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-301-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:302:        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-303-            printf_err(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-304-                "Required heat-stress builtin parser is missing: %d\n",
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-305-                static_cast<int>(op));
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-306-            return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-307-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-308-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-309-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-310-    info(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:311:        "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-312-        ethos_name);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-313-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-314-    return true;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-315-}
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-21-    static constexpr uint32_t ms_outputRowsIdx = 2;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-22-    static constexpr uint32_t ms_outputColsIdx = 3;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-23-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-24-    /* Model specific constants. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-25-    static constexpr uint32_t ms_blankTokenIdx   = 28;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-26-    static constexpr uint32_t ms_numMfccFeatures = 13;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-27-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-28-protected:
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:29:    /** @brief   Gets the reference to op resolver interface class. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-30-    const tflite::MicroOpResolver& GetOpResolver() override;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-31-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:32:    /** @brief   Adds operations to the op resolver instance. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-33-    bool EnlistOperations() override;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-34-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-35-private:
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-36-    /* Maximum number of individual operations that can be enlisted. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-37-    static constexpr int ms_maxOpCnt = 32;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-38-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp:39:    /* A mutable op resolver instance. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-40-    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-41-};
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-42-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-43-} /* namespace arm::app::fwk::tflm */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-44-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp-45-#endif /* POLYU_MODEL1_HPP */
+===== EXISTING APPLICATION CUSTOM KERNEL REGISTRATION =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-17-#include "heatstroke_bidirectional_lstm.h"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-18-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-19-const tflite::MicroOpResolver&
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-20-arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-21-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-22-    return this->m_opResolver;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-23-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-24-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-25-namespace
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-26-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-27-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-28-/*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:29: * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-30- * required by this implementation. Validate its options type and leave
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-31- * builtin_data null.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-32- */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-33-TfLiteStatus ParseHeatstrokeSign(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-34-    const tflite::Operator* op,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-35-    tflite::ErrorReporter*,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-36-    tflite::BuiltinDataAllocator*,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-37-    void** builtin_data)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-38-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-39-    if (builtin_data != nullptr) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-40-        *builtin_data = nullptr;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-41-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-42-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-43-    if (op == nullptr ||
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-44-        op->builtin_options_type() !=
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-45-            tflite::BuiltinOptions_SignOptions) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-46-        return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-47-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-48-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-49-    return kTfLiteOk;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-50-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-51-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-52-/*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:53: * Application-local INT32 SIGN implementation.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-54- *
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-55- * y = -1 when x < 0
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-56- * y =  0 when x = 0
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-57- * y =  1 when x > 0
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-58- *
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-59- * No temporary buffer or scratch allocation is required.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-60- */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-61-TfLiteStatus HeatstrokeSignEval(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-62-    TfLiteContext* context,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-63-    TfLiteNode* node)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-64-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-65-    if (context == nullptr || node == nullptr) {
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-70-        tflite::micro::GetEvalInput(context, node, 0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-71-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-72-    TfLiteEvalTensor* output =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-73-        tflite::micro::GetEvalOutput(context, node, 0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-74-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-75-    if (input == nullptr || output == nullptr) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-76-        return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-77-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-78-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-79-    if (input->type != kTfLiteInt32 ||
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-80-        output->type != kTfLiteInt32) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-81-        MicroPrintf(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:82:            "Heatstroke SIGN requires INT32 input/output. "
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-83-            "Input=%d Output=%d",
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-84-            input->type,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-85-            output->type);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-86-        return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-87-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-88-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-89-    const auto input_shape =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-90-        tflite::micro::GetTensorShape(input);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-91-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-92-    const auto output_shape =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-93-        tflite::micro::GetTensorShape(output);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-94-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-95-    const int input_count = input_shape.FlatSize();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-96-    const int output_count = output_shape.FlatSize();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-97-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-98-    if (input_count < 0 || input_count != output_count) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-99-        MicroPrintf(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:100:            "Heatstroke SIGN tensor element-count mismatch.");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-101-        return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-102-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-103-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-104-    const int32_t* input_data =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-105-        tflite::micro::GetTensorData<int32_t>(input);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-106-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-107-    int32_t* output_data =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-108-        tflite::micro::GetTensorData<int32_t>(output);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-109-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-110-    if (input_count > 0 &&
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-111-        (input_data == nullptr || output_data == nullptr)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-112-        MicroPrintf(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:113:            "Heatstroke SIGN received a null tensor data pointer.");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-114-        return kTfLiteError;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-115-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-116-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-117-    for (int i = 0; i < input_count; ++i) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-118-        const int32_t value = input_data[i];
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-119-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-120-        output_data[i] =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-121-            (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-122-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-123-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-124-    return kTfLiteOk;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-125-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-126-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:127:TFLMRegistration RegisterHeatstrokeSignKernel()
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-128-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-129-    return tflite::micro::RegisterOp(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-130-        nullptr,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-131-        nullptr,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-132-        HeatstrokeSignEval);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-133-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-134-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-135-} // namespace
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-136-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-137-/*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-138- * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-139- * Keep its existing parser and implementation unchanged.
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-193-    HS_ADD_REQUIRED(AddSelectV2);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-194-    HS_ADD_REQUIRED(AddSoftmax);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-195-    HS_ADD_REQUIRED(AddSplitV);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-196-    HS_ADD_REQUIRED(AddSqrt);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-197-    HS_ADD_REQUIRED(AddSquare);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-198-    HS_ADD_REQUIRED(AddSub);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-199-    HS_ADD_REQUIRED(AddSum);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-200-    HS_ADD_REQUIRED(AddTopKV2);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-201-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-202-#undef HS_ADD_REQUIRED
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-203-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-204-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:205:     * Custom SIGN registration under the built-in SIGN opcode.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-206-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-207-    {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-208-        const TFLMRegistration registration =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:209:            RegisterHeatstrokeSignKernel();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-210-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:211:        if (this->m_opResolver.AddBuiltin(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:212:                tflite::BuiltinOperator_SIGN,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-213-                registration,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-214-                ParseHeatstrokeSign) != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:215:            printf_err("Failed to register heat-stress SIGN.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-216-            return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-217-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-218-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-219-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-220-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-221-     * Custom compact bidirectional LSTM registration.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-222-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-223-    {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-224-        const TFLMRegistration registration =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-225-            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-226-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:227:        if (this->m_opResolver.AddBuiltin(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-228-                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-229-                registration,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-230-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-231-            printf_err(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-232-                "Failed to register heat-stress bidirectional LSTM.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-233-            return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-234-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-235-    }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-236-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-237-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-238-     * Ethos-U registration.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-239-     *
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-271-        tflite::BuiltinOperator_GATHER,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-272-        tflite::BuiltinOperator_GREATER,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-273-        tflite::BuiltinOperator_LOGICAL_AND,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-274-        tflite::BuiltinOperator_LOGICAL_NOT,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-275-        tflite::BuiltinOperator_MAXIMUM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-276-        tflite::BuiltinOperator_MEAN,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-277-        tflite::BuiltinOperator_MUL,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-278-        tflite::BuiltinOperator_NEG,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-279-        tflite::BuiltinOperator_QUANTIZE,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-280-        tflite::BuiltinOperator_RESHAPE,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-281-        tflite::BuiltinOperator_RSQRT,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-282-        tflite::BuiltinOperator_SELECT_V2,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:283:        tflite::BuiltinOperator_SIGN,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-284-        tflite::BuiltinOperator_SOFTMAX,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-285-        tflite::BuiltinOperator_SPLIT_V,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-286-        tflite::BuiltinOperator_SQRT,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-287-        tflite::BuiltinOperator_SQUARE,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-288-        tflite::BuiltinOperator_SUB,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-289-        tflite::BuiltinOperator_SUM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-290-        tflite::BuiltinOperator_TOPK_V2,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-291-        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-292-    };
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-293-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-294-    for (const auto op : required_ops) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-295-        if (this->m_opResolver.FindOp(op) == nullptr) {
+===== CMAKE APPLICATION SOURCE LIST =====
+161-
+162-if (CONFIG_USE_APP_MENU)
+163-target_compile_definitions(app PRIVATE USE_APP_MENU)
+164-endif()
+165-
+166:target_sources(app PRIVATE
+167-    src/application/main/Main.cc
+168-    src/use_case/alif_asr/src/MainLoop.cc
+169-    src/use_case/alif_asr/src/reverse_v2.cc
+170-    src/use_case/alif_asr/src/PolyUModel1.cc
+171-    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+172-    src/power/power_mgr.c
+173-    "${POLYU_MODEL_CPP}"
+174-)
+175-
+176-set(SRC_MAIN "src/application/main/Main.cc")
+177-
+178-list(APPEND SRC_MAIN_DEFS
+179-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+180-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+181-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+182-
+183-set_source_files_properties(${SRC_MAIN}
+184-    PROPERTIES COMPILE_DEFINITIONS
+185-    "${SRC_MAIN_DEFS}")
+186-
+187-target_link_libraries(app PRIVATE
+188-    mlek::ml_framework_impl
+===== GATHER PARSER DECLARATION =====
+183-TfLiteStatus ParseFullyConnected(const Operator* op,
+184-                                 ErrorReporter* error_reporter,
+185-                                 BuiltinDataAllocator* allocator,
+186-                                 void** builtin_data);
+187-
+188:TfLiteStatus ParseGather(const Operator* op, ErrorReporter* error_reporter,
+189-                         BuiltinDataAllocator* allocator, void** builtin_data);
+190-
+191-TfLiteStatus ParseGatherNd(const Operator* op, ErrorReporter* error_reporter,
+192-                           BuiltinDataAllocator* allocator,
+193-                           void** builtin_data);
+===== REGISTER OP DECLARATION =====
+33-#endif  // USE_TFLM_COMPRESSION
+34-
+35-namespace tflite {
+36-namespace micro {
+37-
+38:TFLMRegistration RegisterOp(
+39-    void* (*init)(TfLiteContext* context, const char* buffer, size_t length),
+40-    TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node),
+41-    TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node),
+42-    void (*free)(TfLiteContext* context, void* buffer) = nullptr,
+43-    void (*reset)(TfLiteContext* context, void* buffer) = nullptr);
+44-
+45-TFLMInferenceRegistration RegisterOp(
+46-    TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node),
+47-    void (*reset)(TfLiteContext* context, void* buffer) = nullptr);
+48-
+49-// Prints out n bytes in a int8_t buffer as hex
+50-void PrintNBytes(const int8_t* tensor_data, int n_bytes,
+===== END =====
