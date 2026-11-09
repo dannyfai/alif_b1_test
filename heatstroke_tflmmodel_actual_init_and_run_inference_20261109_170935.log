@@ -1,0 +1,995 @@
+============================================================
+TFLMMODEL ACTUAL INIT AND INFERENCE IMPLEMENTATION
+============================================================
+
+1. Complete TflmModel.cc
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021-2026 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#include "mlek/fwk/tflm/TflmModel.hpp"
+    18	#include "mlek/fwk/iface/Model.hpp"
+    19	#include "mlek/fwk/tflm/TflmTensor.hpp"
+    20	#include "mlek/log/log_macros.h"
+    21	
+    22	#include <cinttypes>
+    23	#include <cstring>
+    24	#include <memory>
+    25	#include <string>
+    26	
+    27	namespace arm::app::fwk::tflm {
+    28	namespace {
+    29	/**
+    30	 * @brief   Infer Arm Ethos-U NPU memory mode from Ethos-U operator inputs.
+    31	 * @param[in] model     Pointer the the model object.
+    32	 * @return  Memory mode string if detected, or empty string otherwise.
+    33	 */
+    34	std::string InferNpuMemoryModeFromEthosUOp(const tflite::Model* model)
+    35	{
+    36	    if (!model || !model->subgraphs() || model->subgraphs()->size() == 0 ||
+    37	        !model->operator_codes()) {
+    38	        return {};
+    39	    }
+    40	
+    41	    const tflite::SubGraph* subgraph = model->subgraphs()->Get(0);
+    42	    if (!subgraph || !subgraph->operators()) {
+    43	        return {};
+    44	    }
+    45	
+    46	    int ethos_u_opcode = -1;
+    47	    for (uint32_t i = 0; i < model->operator_codes()->size(); ++i) {
+    48	        const tflite::OperatorCode* opcode = model->operator_codes()->Get(i);
+    49	        if (!opcode || opcode->builtin_code() != tflite::BuiltinOperator_CUSTOM) {
+    50	            continue;
+    51	        }
+    52	        const auto* custom = opcode->custom_code();
+    53	        if (custom && (std::strcmp(custom->c_str(), "ethos-u") == 0)) {
+    54	            ethos_u_opcode = static_cast<int>(i);
+    55	            break;
+    56	        }
+    57	    }
+    58	
+    59	    if (ethos_u_opcode < 0) {
+    60	        return {};
+    61	    }
+    62	
+    63	    for (uint32_t i = 0; i < subgraph->operators()->size(); ++i) {
+    64	        const tflite::Operator* op = subgraph->operators()->Get(i);
+    65	        if (!op || op->opcode_index() != ethos_u_opcode) {
+    66	            continue;
+    67	        }
+    68	        const auto* inputs = op->inputs();
+    69	        if (!inputs || inputs->size() <= 3) {
+    70	            continue;
+    71	        }
+    72	
+    73	        /* Vela places tensor arena at index 2 and fast scratch buffer at index 3. */
+    74	        const int32_t arena_idx = inputs->Get(2);
+    75	        const int32_t scratch_idx = inputs->Get(3);
+    76	        if (arena_idx < 0 || scratch_idx < 0) {
+    77	            continue;
+    78	        }
+    79	
+    80	        const tflite::Tensor* arena = subgraph->tensors()->Get(arena_idx);
+    81	        const tflite::Tensor* scratch = subgraph->tensors()->Get(scratch_idx);
+    82	        if (!arena || !scratch) {
+    83	            continue;
+    84	        }
+    85	
+    86	        const auto arena_shape = arena->shape();
+    87	        const auto scratch_shape = scratch->shape();
+    88	        if (!arena_shape || !scratch_shape || arena_shape->size() < 1 ||
+    89	            scratch_shape->size() < 1 || arena_shape->Get(0) < 1) {
+    90	            continue;
+    91	        }
+    92	
+    93	        if (arena_shape->Get(0) == scratch_shape->Get(0)) {
+    94	            return "Sram_Only/Shared_Sram";
+    95	        }
+    96	        return "Dedicated_Sram";
+    97	    }
+    98	
+    99	    return {};
+   100	}
+   101	} /* anonymous namespace */
+   102	
+   103	TflmModel::TflmModel() {}
+   104	
+   105	/* Initialise the model */
+   106	bool TflmModel::Init(iface::MemoryRegion& computeBuffer,
+   107	                     iface::MemoryRegion& nnModel,
+   108	                     const void* backendData)
+   109	{
+   110	    /* Following tf lite micro example:
+   111	     * Map the model into a usable data structure. This doesn't involve any
+   112	     * copying or parsing, it's a very lightweight operation. */
+   113	    debug("loading model from @ 0x%p\n", nnModel.data);
+   114	    debug("model size: %" PRIu32 " bytes.\n", nnModel.size);
+   115	
+   116	    /* Enable logging before we start interacting with the framework. */
+   117	    EnableTFLMLog();
+   118	
+   119	    this->m_backendData.m_pModel = ::tflite::GetModel(nnModel.data);
+   120	
+   121	    if (this->m_backendData.m_pModel->version() != TFLITE_SCHEMA_VERSION) {
+   122	        printf_err("Model's schema version %" PRIu32 " is not equal "
+   123	                   "to supported version %d.",
+   124	                   this->m_backendData.m_pModel->version(),
+   125	                   TFLITE_SCHEMA_VERSION);
+   126	        return false;
+   127	    }
+   128	
+   129	    this->m_computeBuffer = computeBuffer;
+   130	    this->m_modelBuffer   = nnModel;
+   131	
+   132	    /* Pull in only the operation implementations we need.
+   133	     * This relies on a complete list of all the ops needed by this graph.
+   134	     * An easier approach is to just use the AllOpsResolver, but this will
+   135	     * incur some penalty in code space for op implementations that are not
+   136	     * needed by this graph.
+   137	     * static ::tflite::ops::micro::AllOpsResolver resolver; */
+   138	    /* NOLINTNEXTLINE(runtime-global-variables) */
+   139	    debug("loading op resolver\n");
+   140	
+   141	    this->EnlistOperations();
+   142	
+   143	    /** If backend data has been provided, re-use the allocator */
+   144	    if (backendData) {
+   145	        this->m_backendData.m_pAllocator =
+   146	            reinterpret_cast<const TflmBackendData*>(backendData)->m_pAllocator;
+   147	    }
+   148	
+   149	    /* Create allocator instance, if it doesn't exist */
+   150	    if (!this->m_backendData.m_pAllocator) {
+   151	        /* Create an allocator instance */
+   152	        info("Creating allocator using tensor arena at 0x%p\n", computeBuffer.data);
+   153	
+   154	        this->m_backendData.m_pAllocator =
+   155	            tflite::MicroAllocator::Create(computeBuffer.data, computeBuffer.size);
+   156	
+   157	        if (!this->m_backendData.m_pAllocator) {
+   158	            printf_err("Failed to create allocator\n");
+   159	            return false;
+   160	        }
+   161	        debug("Created new allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   162	    } else {
+   163	        debug("Using existing allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   164	    }
+   165	
+   166	    this->m_backendData.m_pInterpreter = std::make_unique<tflite::MicroInterpreter>(
+   167	        this->m_backendData.m_pModel, this->GetOpResolver(), this->m_backendData.m_pAllocator);
+   168	
+   169	    if (!this->m_backendData.m_pInterpreter) {
+   170	        printf_err("Failed to allocate interpreter\n");
+   171	        return false;
+   172	    }
+   173	
+   174	    /* Allocate memory from the tensor_arena for the model's tensors. */
+   175	    info("Allocating tensors\n");
+   176	    TfLiteStatus allocate_status = this->m_backendData.m_pInterpreter->AllocateTensors();
+   177	
+   178	    if (allocate_status != kTfLiteOk) {
+   179	        printf_err("tensor allocation failed!\n");
+   180	        return false;
+   181	    }
+   182	
+   183	    /* Get information about the memory area to use for the model's input. */
+   184	    this->m_input.resize(this->GetNumInputs());
+   185	    for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   186	        this->m_input[inIndex] =
+   187	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->input(inIndex));
+   188	    }
+   189	
+   190	    this->m_output.resize(this->GetNumOutputs());
+   191	    for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+   192	        this->m_output[outIndex] =
+   193	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->output(outIndex));
+   194	    }
+   195	
+   196	    if (this->m_input.empty() || this->m_output.empty()) {
+   197	        printf_err("failed to get tensors\n");
+   198	        return false;
+   199	    } else {
+   200	        this->m_type = this->m_input[0]->Type(); /* Input 0 should be the main input */
+   201	
+   202	        /* Clear the input & output tensors */
+   203	        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   204	            std::memset(this->m_input[inIndex]->GetData(), 0, this->m_input[inIndex]->Bytes());
+   205	        }
+   206	        for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+   207	            std::memset(this->m_output[outIndex]->GetData(), 0, this->m_output[outIndex]->Bytes());
+   208	        }
+   209	
+   210	        this->LogInterpreterInfo();
+   211	    }
+   212	
+   213	    this->m_inited = true;
+   214	    return true;
+   215	}
+   216	
+   217	std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+   218	{
+   219	    if (index < this->GetNumInputs()) {
+   220	        return this->m_input.at(index);
+   221	    }
+   222	    return {};
+   223	}
+   224	
+   225	std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+   226	{
+   227	    if (index < this->GetNumOutputs()) {
+   228	        return this->m_output.at(index);
+   229	    }
+   230	    return nullptr;
+   231	}
+   232	
+   233	void TflmModel::LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor)
+   234	{
+   235	    if (!tensor) {
+   236	        printf_err("Invalid tensor\n");
+   237	        assert(tensor);
+   238	        return;
+   239	    }
+   240	
+   241	    debug("\ttensor is assigned to 0x%p\n", tensor.get());
+   242	    info("\ttensor type is %s\n", GetTensorDataTypeName(tensor->Type()));
+   243	    info("\ttensor occupies %zu bytes with dimensions\n", tensor->Bytes());
+   244	    const auto shape = tensor->Shape();
+   245	    for (size_t i = 0; i < shape.size(); ++i) {
+   246	        info("\t\t%zu: %3d\n", i, static_cast<int>(shape[i]));
+   247	    }
+   248	
+   249	    const auto quant = tensor->GetQuantParams();
+   250	    info("Scale = %f\n", quant.scale);
+   251	    info("ZeroPoint = %d\n", quant.offset);
+   252	}
+   253	
+   254	void TflmModel::LogInterpreterInfo()
+   255	{
+   256	    if (!this->m_backendData.m_pInterpreter) {
+   257	        printf_err("Invalid interpreter\n");
+   258	        return;
+   259	    }
+   260	
+   261	    info("Model INPUT tensors: \n");
+   262	    for (auto& input : this->m_input) {
+   263	        this->LogTensorInfo(input);
+   264	    }
+   265	
+   266	    info("Model OUTPUT tensors: \n");
+   267	    for (auto& output : this->m_output) {
+   268	        this->LogTensorInfo(output);
+   269	    }
+   270	
+   271	    info("Activation buffer (a.k.a tensor arena) size used: %zu\n",
+   272	         this->m_backendData.m_pInterpreter->arena_used_bytes());
+   273	
+   274	    /* We expect there to be only one subgraph. */
+   275	    const uint32_t nOperators = tflite::NumSubgraphOperators(this->m_backendData.m_pModel, 0);
+   276	    info("Number of operators: %" PRIu32 "\n", nOperators);
+   277	
+   278	    const tflite::SubGraph* subgraph = this->m_backendData.m_pModel->subgraphs()->Get(0);
+   279	
+   280	    auto* opcodes = this->m_backendData.m_pModel->operator_codes();
+   281	
+   282	    /* For each operator, display registration information. */
+   283	    for (size_t i = 0; i < nOperators; ++i) {
+   284	        const tflite::Operator* op         = subgraph->operators()->Get(i);
+   285	        const tflite::OperatorCode* opcode = opcodes->Get(op->opcode_index());
+   286	        const TFLMRegistration* reg        = nullptr;
+   287	
+   288	        tflite::GetRegistrationFromOpCode(opcode, this->GetOpResolver(), &reg);
+   289	        std::string opName;
+   290	
+   291	        if (reg) {
+   292	            if (tflite::BuiltinOperator_CUSTOM == reg->builtin_code) {
+   293	                opName = std::string(reg->custom_name);
+   294	            } else {
+   295	                opName = std::string(
+   296	                    EnumNameBuiltinOperator(tflite::BuiltinOperator(reg->builtin_code)));
+   297	            }
+   298	        }
+   299	        info("\tOperator %zu: %s\n", i, opName.c_str());
+   300	    }
+   301	
+   302	    if (this->ContainsEthosUOperator()) {
+   303	        const std::string mode = InferNpuMemoryModeFromEthosUOp(this->m_backendData.m_pModel);
+   304	        if (!mode.empty()) {
+   305	            info("NPU memory mode likely to be: %s\n", mode.c_str());
+   306	        } else {
+   307	            warn("Unable to infer NPU memory mode.\n");
+   308	        }
+   309	    }
+   310	}
+   311	
+   312	bool TflmModel::IsInited() const
+   313	{
+   314	    return this->m_inited;
+   315	}
+   316	
+   317	bool TflmModel::IsDataSigned() const
+   318	{
+   319	    switch (this->GetType()) {
+   320	    case iface::TensorType::INT8:
+   321	        [[fallthrough]];
+   322	    case iface::TensorType::INT16:
+   323	        [[fallthrough]];
+   324	    case iface::TensorType::INT32:
+   325	        return true;
+   326	    default:
+   327	        return false;
+   328	    }
+   329	}
+   330	
+   331	bool TflmModel::ContainsEthosUOperator() const
+   332	{
+   333	    /* We expect there to be only one subgraph. */
+   334	    const uint32_t nOperators = tflite::NumSubgraphOperators(this->m_backendData.m_pModel, 0);
+   335	    const tflite::SubGraph* subgraph = this->m_backendData.m_pModel->subgraphs()->Get(0);
+   336	    const auto* opcodes              = this->m_backendData.m_pModel->operator_codes();
+   337	
+   338	    /* check for custom operators */
+   339	    for (size_t i = 0; (i < nOperators); ++i) {
+   340	        const tflite::Operator* op         = subgraph->operators()->Get(i);
+   341	        const tflite::OperatorCode* opcode = opcodes->Get(op->opcode_index());
+   342	
+   343	        auto builtin_code = tflite::GetBuiltinCode(opcode);
+   344	        if ((builtin_code == tflite::BuiltinOperator_CUSTOM) &&
+   345	            (nullptr != opcode->custom_code()) &&
+   346	            ("ethos-u" == std::string(opcode->custom_code()->c_str()))) {
+   347	            return true;
+   348	        }
+   349	    }
+   350	    return false;
+   351	}
+   352	
+   353	bool TflmModel::RunInference()
+   354	{
+   355	    bool inference_state = false;
+   356	    if (this->m_backendData.m_pModel && this->m_backendData.m_pInterpreter) {
+   357	        if (kTfLiteOk != this->m_backendData.m_pInterpreter->Invoke()) {
+   358	            printf_err("Invoke failed.\n");
+   359	        } else {
+   360	            inference_state = true;
+   361	        }
+   362	    } else {
+   363	        printf_err("Error: No interpreter!\n");
+   364	    }
+   365	    return inference_state;
+   366	}
+   367	
+   368	size_t TflmModel::GetNumInputs() const
+   369	{
+   370	    if (this->m_backendData.m_pModel && this->m_backendData.m_pInterpreter) {
+   371	        return this->m_backendData.m_pInterpreter->inputs_size();
+   372	    }
+   373	    return 0;
+   374	}
+   375	
+   376	size_t TflmModel::GetNumOutputs() const
+   377	{
+   378	    if (this->m_backendData.m_pModel && this->m_backendData.m_pInterpreter) {
+   379	        return this->m_backendData.m_pInterpreter->outputs_size();
+   380	    }
+   381	    return 0;
+   382	}
+   383	
+   384	iface::TensorType TflmModel::GetType() const
+   385	{
+   386	    return this->m_type;
+   387	}
+   388	
+   389	std::vector<size_t> TflmModel::GetInputShape(size_t index) const
+   390	{
+   391	    if (index < this->GetNumInputs()) {
+   392	        return this->m_input.at(index)->Shape();
+   393	    }
+   394	    return std::vector<size_t>();
+   395	}
+   396	
+   397	std::vector<size_t> TflmModel::GetOutputShape(size_t index) const
+   398	{
+   399	    if (index < this->GetNumOutputs()) {
+   400	        return this->m_output.at(index)->Shape();
+   401	    }
+   402	    return std::vector<size_t>();
+   403	}
+   404	
+   405	/** @brief   Gets a pointer to the backend's compute buffer. */
+   406	const iface::MemoryRegion& TflmModel::GetComputeBuffer() const
+   407	{
+   408	    return std::ref(this->m_computeBuffer);
+   409	}
+   410	
+   411	/** @brief      Gets the pointer to the NN model data array. */
+   412	const iface::MemoryRegion& TflmModel::GetModelBuffer() const
+   413	{
+   414	    return std::ref(this->m_modelBuffer);
+   415	}
+   416	
+   417	const TflmBackendData& TflmModel::GetBackendData() const
+   418	{
+   419	    return std::ref(this->m_backendData);
+   420	}
+   421	
+   422	} /* namespace arm::app::fwk::tflm */
+
+2. TflmModel lifecycle call sites
+
+3. Base Model interface
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2025 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#ifndef MLEK_MODEL_HPP
+    18	#define MLEK_MODEL_HPP
+    19	
+    20	#include "mlek/fwk/iface/Tensor.hpp"
+    21	#include <cstdint>
+    22	#include <memory>
+    23	
+    24	namespace arm::app::fwk::iface {
+    25	
+    26	/**
+    27	 * @brief   Memory region used by underlying framework
+    28	 */
+    29	struct MemoryRegion {
+    30	    uint8_t* data{nullptr};
+    31	    size_t size{0};
+    32	    explicit MemoryRegion(uint8_t* addr, size_t bytes) : data(addr), size(bytes) {}
+    33	    MemoryRegion() = default;
+    34	};
+    35	
+    36	/**
+    37	 * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+    38	 */
+    39	class Model {
+    40	public:
+    41	    /** @brief Constructor. */
+    42	    Model() = default;
+    43	
+    44	    /** @brief Destructor. */
+    45	    virtual ~Model() = 0;
+    46	
+    47	    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+    48	    virtual std::shared_ptr<TensorIface> GetInputTensor(size_t index) const = 0;
+    49	
+    50	    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+    51	    virtual std::shared_ptr<TensorIface> GetOutputTensor(size_t index) const = 0;
+    52	
+    53	    /** @brief  Gets the model's data type. */
+    54	    virtual TensorType GetType() const = 0;
+    55	
+    56	    /** @brief  Gets the pointer to the model's input shape. */
+    57	    virtual std::vector<size_t> GetInputShape(size_t index) const = 0;
+    58	
+    59	    /** @brief  Gets the pointer to the model's output shape at given output index. */
+    60	    virtual std::vector<size_t> GetOutputShape(size_t index) const = 0;
+    61	
+    62	    /** @brief  Gets the number of input tensors the model has. */
+    63	    virtual size_t GetNumInputs() const = 0;
+    64	
+    65	    /** @brief  Gets the number of output tensors the model has. */
+    66	    virtual size_t GetNumOutputs() const = 0;
+    67	
+    68	    /** @brief  Logs the tensor information to stdout. */
+    69	    virtual void LogTensorInfo(std::shared_ptr<TensorIface> tensor) = 0;
+    70	
+    71	    /** @brief  Logs the interpreter information to stdout. */
+    72	    virtual void LogInterpreterInfo() = 0;
+    73	
+    74	    /** @brief      Initialise the model class object.
+    75	     *  @return     true if initialisation succeeds, false otherwise.
+    76	     **/
+    77	    virtual bool
+    78	    Init(MemoryRegion& computeBuffer, MemoryRegion& nnModel, const void* backendData) = 0;
+    79	
+    80	    /** @brief  Checks if this object has been initialised. */
+    81	    virtual bool IsInited() const = 0;
+    82	
+    83	    /** @brief  Checks if the model uses signed data. */
+    84	    virtual bool IsDataSigned() const = 0;
+    85	
+    86	    /** @brief Checks if the model uses Ethos-U operator */
+    87	    virtual bool ContainsEthosUOperator() const = 0;
+    88	
+    89	    /** @brief  Runs the inference (invokes the interpreter). */
+    90	    virtual bool RunInference() = 0;
+    91	
+    92	    /**
+    93	     * @brief   Gets memory region information for the backend's compute buffer.
+    94	     * @return  Const reference to MemoryRegion object.
+    95	     */
+    96	    virtual const MemoryRegion& GetComputeBuffer() const = 0;
+    97	
+    98	    /**
+    99	     * @brief   Gets memory region information for neural network model.
+   100	     * @return  Const reference to MemoryRegion object.
+   101	     */
+   102	    virtual const MemoryRegion& GetModelBuffer() const = 0;
+   103	};
+   104	
+   105	inline Model::~Model() {}
+   106	
+   107	} /* namespace arm::app::fwk::iface */
+   108	
+   109	#endif /* MLEK_MODEL_HPP */
+
+4. TFLM tensor wrapper files
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TensorFlowLiteMicro.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/YoloFastestModel.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroNetKwsModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/AdModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TestModel.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/VisualWakeWordModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TensorFlowLiteMicro.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/YoloFastestModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/VisualWakeWordModel.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/Wav2LetterModel.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TestModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MobileNetModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroNetKwsModel.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MobileNetModel.cc
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/Wav2LetterModel.hpp
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/AdModel.cc
+
+5. Tensor wrapper data access and binding
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-14- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-15- * See the License for the specific language governing permissions and
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-16- * limitations under the License.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-17- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-18-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-19-#include "mlek/fwk/tflm/TflmTensor.hpp"
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-20-#include <cassert>
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-21-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-22-namespace arm::app::fwk::tflm {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-23-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:24:TflmTensor::TflmTensor(TfLiteTensor* tensor) : m_tensor(tensor) {}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-25-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc:26:void* TflmTensor::GetData()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-27-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-28-    assert(this->m_tensor);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-29-    return this->m_tensor->data.data;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-30-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-31-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-32-size_t TflmTensor::Bytes()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-33-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-34-    assert(this->m_tensor);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-35-    return this->m_tensor->bytes;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-36-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-37-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-38-size_t TflmTensor::GetNumElements()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-39-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-40-    assert(this->m_tensor);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-41-    const auto shape = this->Shape();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-42-    size_t nElements = 1;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-43-    for (auto& dim : shape) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-44-        nElements *= dim;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-45-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-46-    return nElements;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-47-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-48-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-49-std::vector<size_t> TflmTensor::Shape()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-50-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-51-    assert(this->m_tensor);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-52-    assert(this->m_tensor->dims);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-53-    return std::vector<size_t>(this->m_tensor->dims->data,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-54-                               this->m_tensor->dims->data + this->m_tensor->dims->size);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-55-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-56-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-57-iface::TensorType TflmTensor::Type()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-58-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-59-    assert(this->m_tensor);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-60-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.cc-61-    switch (this->m_tensor->type) {
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-28- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-29-struct TflmBackendData {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-30-    const tflite::Model* m_pModel{nullptr};        /**< Tflite model pointer. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-31-    tflite::MicroAllocator* m_pAllocator{nullptr}; /**< Tflite micro allocator. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-32-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-33-    /** Tflite interpreter. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-34-    std::unique_ptr<tflite::MicroInterpreter> m_pInterpreter{nullptr};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-35-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-36-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-37-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:38: * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-39- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-40-class TflmModel : public iface::Model {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-41-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-42-    /** @brief Constructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-43-    TflmModel();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-44-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-45-    /** @brief Destructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-46-    virtual ~TflmModel() = default;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-47-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-48-    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:49:    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-50-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-51-    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:52:    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-53-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-54-    /** @brief  Gets the model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-55-    iface::TensorType GetType() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-56-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-57-    /** @brief  Gets the pointer to the model's input shape. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-58-    std::vector<size_t> GetInputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-59-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-60-    /** @brief  Gets the pointer to the model's output shape at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-61-    std::vector<size_t> GetOutputShape(size_t index) const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-62-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-63-    /** @brief  Gets the number of input tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-64-    size_t GetNumInputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-65-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-66-    /** @brief  Gets the number of output tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-67-    size_t GetNumOutputs() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-68-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-69-    /** @brief  Logs the tensor information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:70:    void LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor) override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-71-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-72-    /** @brief  Logs the interpreter information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-73-    void LogInterpreterInfo() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-74-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-75-    /** @brief      Initialise the model class object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-76-     *  @return     true if initialisation succeeds, false otherwise.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-77-     **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-78-    bool Init(iface::MemoryRegion& computeBuffer,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-79-              iface::MemoryRegion& nnModel,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-80-              const void* backendData = nullptr) override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-81-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-82-    /** @brief  Checks if this object has been initialised. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-83-    bool IsInited() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-84-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-85-    /** @brief  Checks if the model uses signed data. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-86-    bool IsDataSigned() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-87-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-88-    /** @brief Checks if the model uses Ethos-U operator */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-89-    bool ContainsEthosUOperator() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-90-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-91-    /** @brief  Runs the inference (invokes the interpreter). */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-92-    bool RunInference() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-93-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-94-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-95-     * @brief   Gets memory region information for the backend's compute buffer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-96-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-97-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-98-    const iface::MemoryRegion& GetComputeBuffer() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-99-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-100-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-101-     * @brief   Gets memory region information for neural network model.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-102-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-103-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-104-    const iface::MemoryRegion& GetModelBuffer() const override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-105-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-122-     * @return      true is ops are successfully added, false otherwise.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-123-     **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-124-    virtual bool EnlistOperations() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-125-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-126-private:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-127-    TflmBackendData m_backendData{};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-128-    bool m_inited{false}; /* Indicates whether this object has been initialised. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-129-    iface::MemoryRegion m_computeBuffer{};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-130-    iface::MemoryRegion m_modelBuffer{};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-131-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:132:    std::vector<std::shared_ptr<iface::TensorIface>> m_input{}; /* Model's input tensor pointers. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:133:    std::vector<std::shared_ptr<iface::TensorIface>>
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-134-        m_output{};                                       /* Model's output tensor pointers. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-135-    iface::TensorType m_type{iface::TensorType::INVALID}; /* Model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-136-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-137-} /* namespace arm::app::fwk::tflm */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-138-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-139-#endif /* MLEK_TFLM_MODEL_HPP */
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-18-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-19-#ifndef MLEK_TFLM_TENSOR_HPP
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-20-#define MLEK_TFLM_TENSOR_HPP
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-21-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-22-#include "mlek/fwk/iface/Tensor.hpp"
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-23-#include "mlek/fwk/tflm/TensorFlowLiteMicro.hpp"
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-24-#include <vector>
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-25-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-26-namespace arm::app::fwk::tflm {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-27-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp:28:class TflmTensor : public iface::TensorIface {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-29-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp:30:    explicit TflmTensor(TfLiteTensor* tensor); /**< Constructor */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-31-    ~TflmTensor() override = default;          /** Destructor */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp:32:    void* GetData() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-33-    size_t Bytes() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-34-    size_t GetNumElements() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-35-    iface::TensorType Type() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-36-    iface::TensorLayout Layout() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-37-    std::vector<size_t> Shape() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-38-    iface::QuantParams GetQuantParams() override;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-39-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-40-private:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp:41:    TfLiteTensor* m_tensor{nullptr};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-42-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-43-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-44-} // namespace arm::app::fwk::tflm
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-45-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmTensor.hpp-46-#endif /* MLEK_TFLM_TENSOR_HPP */
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-194-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-195-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-196-    if (this->m_input.empty() || this->m_output.empty()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-197-        printf_err("failed to get tensors\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-198-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-199-    } else {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-200-        this->m_type = this->m_input[0]->Type(); /* Input 0 should be the main input */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-201-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-202-        /* Clear the input & output tensors */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-203-        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:204:            std::memset(this->m_input[inIndex]->GetData(), 0, this->m_input[inIndex]->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-205-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-206-        for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:207:            std::memset(this->m_output[outIndex]->GetData(), 0, this->m_output[outIndex]->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-208-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-209-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-210-        this->LogInterpreterInfo();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-211-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-212-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-213-    this->m_inited = true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-214-    return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-215-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-216-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:217:std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-218-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-219-    if (index < this->GetNumInputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-220-        return this->m_input.at(index);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-221-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-222-    return {};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-223-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-224-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:225:std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-226-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-227-    if (index < this->GetNumOutputs()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-228-        return this->m_output.at(index);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-229-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-230-    return nullptr;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-231-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-232-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:233:void TflmModel::LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-234-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-235-    if (!tensor) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-236-        printf_err("Invalid tensor\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-237-        assert(tensor);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-238-        return;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-239-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-240-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-241-    debug("\ttensor is assigned to 0x%p\n", tensor.get());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-242-    info("\ttensor type is %s\n", GetTensorDataTypeName(tensor->Type()));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-243-    info("\ttensor occupies %zu bytes with dimensions\n", tensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-244-    const auto shape = tensor->Shape();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-245-    for (size_t i = 0; i < shape.size(); ++i) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-246-        info("\t\t%zu: %3d\n", i, static_cast<int>(shape[i]));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-247-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-248-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-249-    const auto quant = tensor->GetQuantParams();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-250-    info("Scale = %f\n", quant.scale);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-251-    info("ZeroPoint = %d\n", quant.offset);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-252-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-253-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-254-void TflmModel::LogInterpreterInfo()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-255-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-256-    if (!this->m_backendData.m_pInterpreter) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-257-        printf_err("Invalid interpreter\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-258-        return;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-259-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-260-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-261-    info("Model INPUT tensors: \n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-262-    for (auto& input : this->m_input) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-263-        this->LogTensorInfo(input);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-264-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-265-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-266-    info("Model OUTPUT tensors: \n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-267-    for (auto& output : this->m_output) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-268-        this->LogTensorInfo(output);
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-47-        printf_err("Failed to add Arm NPU support to op resolver.");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-48-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-49-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-50-    return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-51-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-52-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-53-void arm::app::fwk::tflm::RNNoiseModel::ResetGruState()
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-54-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-55-    for (auto& stateMapping : this->m_gruStateMap) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-56-        auto inputGruStateTensor = this->GetInputTensor(stateMapping.second);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:57:        auto* inputGruState      = inputGruStateTensor->GetData<int8_t>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-58-        /* Initial value of states is 0, but this is affected by quantization zero point. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-59-        auto quantParams = inputGruStateTensor->GetQuantParams();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-60-        memset(inputGruState, quantParams.offset, inputGruStateTensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-61-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-62-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-63-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-64-bool arm::app::fwk::tflm::RNNoiseModel::CopyGruStates() const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-65-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-66-    std::vector<std::pair<size_t, std::vector<int8_t>>> tempOutGruStates;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-67-    /* Saving output states before copying them to input states to avoid output states modification
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-68-     * in the tensor. tflu shares input and output tensors memory, thus writing to input tensor can
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-69-     * change output tensor values. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-70-    for (auto& stateMapping : this->m_gruStateMap) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-71-        auto outputGruStateTensor = this->GetOutputTensor(stateMapping.first);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-72-        std::vector<int8_t> tempOutGruState(outputGruStateTensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:73:        auto* outGruState = outputGruStateTensor->GetData<int8_t>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-74-        memcpy(tempOutGruState.data(), outGruState, outputGruStateTensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-75-        /* Index of the input tensor and the data to copy. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-76-        tempOutGruStates.emplace_back(stateMapping.second, std::move(tempOutGruState));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-77-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-78-    /* Updating input GRU states with saved GRU output states. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-79-    for (auto& stateMapping : tempOutGruStates) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-80-        auto outputGruStateTensorData = stateMapping.second;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-81-        auto inputGruStateTensor      = this->GetInputTensor(stateMapping.first);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-82-        if (outputGruStateTensorData.size() != inputGruStateTensor->Bytes()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-83-            printf_err(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-84-                "Unexpected number of bytes for GRU state mapping. Input = %zuz, output = %zuz.\n",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-85-                inputGruStateTensor->Bytes(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-86-                outputGruStateTensorData.size());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-87-            return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-88-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:89:        auto* inputGruState = inputGruStateTensor->GetData<int8_t>();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-90-        auto* outGruState   = outputGruStateTensorData.data();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-91-        memcpy(inputGruState, outGruState, inputGruStateTensor->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-92-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-93-    return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc-94-}
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-27- * @brief   Memory region used by underlying framework
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-28- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-29-struct MemoryRegion {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-30-    uint8_t* data{nullptr};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-31-    size_t size{0};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-32-    explicit MemoryRegion(uint8_t* addr, size_t bytes) : data(addr), size(bytes) {}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-33-    MemoryRegion() = default;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-34-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-35-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-36-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:37: * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-38- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-39-class Model {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-40-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-41-    /** @brief Constructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-42-    Model() = default;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-43-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-44-    /** @brief Destructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-45-    virtual ~Model() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-46-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-47-    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:48:    virtual std::shared_ptr<TensorIface> GetInputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-49-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-50-    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:51:    virtual std::shared_ptr<TensorIface> GetOutputTensor(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-52-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-53-    /** @brief  Gets the model's data type. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-54-    virtual TensorType GetType() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-55-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-56-    /** @brief  Gets the pointer to the model's input shape. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-57-    virtual std::vector<size_t> GetInputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-58-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-59-    /** @brief  Gets the pointer to the model's output shape at given output index. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-60-    virtual std::vector<size_t> GetOutputShape(size_t index) const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-61-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-62-    /** @brief  Gets the number of input tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-63-    virtual size_t GetNumInputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-64-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-65-    /** @brief  Gets the number of output tensors the model has. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-66-    virtual size_t GetNumOutputs() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-67-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-68-    /** @brief  Logs the tensor information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp:69:    virtual void LogTensorInfo(std::shared_ptr<TensorIface> tensor) = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-70-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-71-    /** @brief  Logs the interpreter information to stdout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-72-    virtual void LogInterpreterInfo() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-73-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-74-    /** @brief      Initialise the model class object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-75-     *  @return     true if initialisation succeeds, false otherwise.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-76-     **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-77-    virtual bool
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-78-    Init(MemoryRegion& computeBuffer, MemoryRegion& nnModel, const void* backendData) = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-79-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-80-    /** @brief  Checks if this object has been initialised. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-81-    virtual bool IsInited() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-82-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-83-    /** @brief  Checks if the model uses signed data. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-84-    virtual bool IsDataSigned() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-85-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-86-    /** @brief Checks if the model uses Ethos-U operator */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-87-    virtual bool ContainsEthosUOperator() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-88-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-89-    /** @brief  Runs the inference (invokes the interpreter). */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-90-    virtual bool RunInference() = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-91-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-92-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-93-     * @brief   Gets memory region information for the backend's compute buffer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-94-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-95-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-96-    virtual const MemoryRegion& GetComputeBuffer() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-97-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-98-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-99-     * @brief   Gets memory region information for neural network model.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-100-     * @return  Const reference to MemoryRegion object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-101-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-102-    virtual const MemoryRegion& GetModelBuffer() const = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-103-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Model.hpp-104-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-24-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-25-namespace arm::app::fwk::iface {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-26-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-27-/** Struct for quantization parameters. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-28-struct QuantParams {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-29-    float scale{0.0};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-30-    int offset{0};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-31-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-32-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-33-/** Enum representing tensor data types supported. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:34:enum class TensorType { INT8 = 0, UINT8 = 1, INT16 = 2, INT32 = 3, FP16 = 4, FP32 = 5, INVALID = 6 };
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-35-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-36-/** Enum representing tensor layout. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp:37:enum class TensorLayout { NHWC = 0, NCHW = 1, INVALID = 2 };
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-38-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-39-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-40- * @brief       Gets the tensor data type name as character array.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-41- * @param[in]   type Tensor data type object.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-42- * @return      String represented as const char pointer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-43- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-44-const inline char* GetTensorDataTypeName(const TensorType type)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-45-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-46-    switch (type) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-47-    case TensorType::INT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-48-        return "int8";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-49-    case TensorType::UINT8:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-50-        return "uint8";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-51-    case TensorType::INT16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-52-        return "int16";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-53-    case TensorType::INT32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-54-        return "int32";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-55-    case TensorType::FP16:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-56-        return "fp16";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-57-    case TensorType::FP32:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-58-        return "fp32";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-59-    default:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-60-        return "unknown";
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-61-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/iface/Tensor.hpp-62-}
+
+6. Application model initialization
+
+7. Current model selection
+POLYU_MODEL_PATH:FILEPATH=/home/user/sdk-alif/beeinventor/test_heatstroke/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
