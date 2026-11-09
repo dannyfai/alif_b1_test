@@ -1,0 +1,246 @@
+===== LAYERNORM STAGING SEMANTICS AND GRAPH MAPPING =====
+Mon Nov  9 01:57:56 PM HKT 2026
+db0cdb5443b63adb22e6253da1c5e11fba36cc142dce57e2e609a225ed949290  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+
+===== 1. VELA STAGING USAGE IMPLEMENTATION =====
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:708:        "Staging Usage": find_in_header("staging_usage", perf_header),
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:724:        "Staging Usage",
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:725:        "Peak% (Staging)",
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:768:                elif col == "Peak% (Staging)":
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:769:                    staging_idx = col_map["Staging Usage"]
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:771:                        staging_usage = int(row[staging_idx])
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:775:                        staging_percent = _percentage(staging_usage, staging_network)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:863:        "Staging Usage": (">", 13, 0.0),
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py:864:        "Peak% (Staging)": (">", 16, 0.2),
+
+===== 2. VELA STAGING SOURCE CONTEXT =====
+
+===== /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/stats_writer.py =====
+  694:         source_rows = source_table.data
+  695:         op_name_idx = find_in_header("operator", source_header)
+  696:         op_id_idx = find_in_header("id", source_header)
+  697:         if op_name_idx != -1 and op_id_idx != -1:
+  698:             for row in source_rows:
+  699:                 op_id = row[op_id_idx]
+  700:                 op_name = row[op_name_idx]
+  701:                 source_names[op_id] = op_name
+  702: 
+  703:     # maps vela-columns to columns in the regor performance-database
+  704:     col_map = {
+  705:         "SourceId": find_in_header("source_id", perf_header),
+  706:         "OptId": find_in_header("optimised_id", perf_header),
+  707:         "NNG Operator": find_in_header("operator", perf_header),
+  708:         "Staging Usage": find_in_header("staging_usage", perf_header),
+  709:         "Op Cycles": find_in_header("op_cycles", perf_header),
+  710:         "NPU": find_in_header("npu_cycles", perf_header),
+  711:         "MAC Count": find_in_header("mac_count", perf_header),
+  712:         "SRAM AC": find_in_header("Sram_ac", perf_header),
+  713:         "DRAM AC": find_in_header("Dram_ac", perf_header),
+  714:         "OnFlash AC": find_in_header("OnChipFlash_ac", perf_header),
+  715:         "OffFlash AC": find_in_header("OffChipFlash_ac", perf_header),
+  716:         "Name": find_in_header("name", perf_header),
+  717:     }
+  718: 
+  719:     # generate new header and data that aligns with vela format
+  720:     new_header = [
+  721:         "Original Operator",
+  722:         "NNG Operator",
+  723:         "Target",
+  724:         "Staging Usage",
+  725:         "Peak% (Staging)",
+  726:         "Op Cycles",
+  727:         "Network% (cycles)",
+  728:         "NPU",
+  729:         "SRAM AC",
+---
+  730:         "DRAM AC",
+  731:         "OnFlash AC",
+  732:         "OffFlash AC",
+  733:         "MAC Count",
+  734:         "Network% (MAC)",
+  735:         "Util% (MAC)",
+  736:         "Name",
+  737:     ]
+  738:     new_data = []
+  739:     for row in perf_rows:
+  740:         new_row = []
+  741:         for col in new_header:
+  742:             if col in col_map:
+  743:                 idx = col_map[col]
+  744:                 if idx == -1:
+  745:                     new_row.append("0")
+---
+  746:                 else:
+---
+  754:                         if nng_op != "Passthrough":
+  755:                             new_row.append("NPU")
+  756:                         else:
+  757:                             new_row.append("CPU")
+  758:                     else:
+  759:                         new_row.append("CPU")
+  760:                 elif col == "Original Operator":
+  761:                     source_id_idx = col_map["SourceId"]
+  762:                     if source_id_idx != -1:
+  763:                         source_op_id = row[source_id_idx]
+  764:                         source_name = source_names.get(source_op_id, "N/A")
+  765:                         new_row.append(source_name)
+  766:                     else:
+  767:                         new_row.append("N/A")
+  768:                 elif col == "Peak% (Staging)":
+  769:                     staging_idx = col_map["Staging Usage"]
+  770:                     if staging_idx != -1 and performance_report.stagingMemoryArea in performance_report.memories:
+  771:                         staging_usage = int(row[staging_idx])
+  772:                         staging_network = int(
+  773:                             performance_report.memories[performance_report.stagingMemoryArea].peakUsage
+  774:                         )
+  775:                         staging_percent = _percentage(staging_usage, staging_network)
+  776:                         new_row.append(str(staging_percent))
+  777:                     else:
+  778:                         new_row.append("NaN")
+  779:                 elif col == "Network% (cycles)":
+  780:                     cycles_idx = col_map["Op Cycles"]
+  781:                     if cycles_idx != -1:
+  782:                         cycles = int(row[cycles_idx])
+  783:                         cycles_network = int(performance_report.totalCycles)
+  784:                         cycles_percent = _percentage(cycles, cycles_network)
+  785:                         new_row.append(str(cycles_percent))
+  786:                     else:
+  787:                         new_row.append("NaN")
+  788:                 elif col == "Network% (MAC)":
+  789:                     mac_idx = col_map["MAC Count"]
+---
+  790:                     if mac_idx != -1:
+---
+  791:                         macs = int(row[mac_idx])
+  792:                         macs_network = int(performance_report.macCount)
+---
+  793:                         macs_percent = _percentage(macs, macs_network)
+  794:                         new_row.append(str(macs_percent))
+  795:                     else:
+  796:                         new_row.append("100")
+---
+  849:             csv_file.write("\n")
+  850: 
+  851: 
+  852: def print_regor_perlayer_performance(arch, opt_database, performance_report, output_basename):
+  853:     if "perf" not in opt_database.tables:
+  854:         return
+  855: 
+  856:     perf_header, perf_rows = postprocess_regor_performance_database(arch, opt_database, performance_report)
+  857: 
+  858:     # header -> (align, width, precision)
+  859:     header = {
+  860:         "Original Operator": ("<", 20, -1),
+  861:         "NNG Operator": ("<", 20, -1),
+  862:         "Target": ("<", 6, -1),
+  863:         "Staging Usage": (">", 13, 0.0),
+  864:         "Peak% (Staging)": (">", 16, 0.2),
+  865:         "Op Cycles": (">", 10, 0.0),
+  866:         "Network% (cycles)": (">", 17, 0.2),
+  867:         "NPU": (">", 10, 0.0),
+  868:         "SRAM AC": (">", 10, 0.0),
+  869:         "DRAM AC": (">", 10, 0.0),
+  870:         "OnFlash AC": (">", 10, 0.0),
+  871:         "OffFlash AC": (">", 11, 0.0),
+  872:         "MAC Count": (">", 10, 0.0),
+  873:         "Network% (MAC)": (">", 14, 0.2),
+  874:         "Util% (MAC)": (">", 12, 0.2),
+  875:         "Name": ("<", 20, -1),
+  876:     }
+  877: 
+  878:     print(f"\n{str('#') * 80}\nPerformance for NPU Grap {output_basename}")
+  879: 
+  880:     line = ""
+  881:     line2 = ""
+  882:     for col_name in header:
+  883:         align, width, _ = header[col_name]
+  884:         line_data = f"{col_name:{align}{width}}"
+---
+  885:         line += line_data + " "
+---
+
+===== 3. TFLITE LAYERNORM TENSOR GRAPH MAPPING =====
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794203876.588639  128084 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794203876.588828  128084 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794203876.617889  128084 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794203877.381551  128084 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794203877.381758  128084 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+MATCHED TENSORS:
+  tensor[403] name='node_layer_norm_1_squared_DequantizeLinear_Output' type=INT8 shape=[1, 900, 128] buffer=0
+  tensor[404] name='node_layer_norm_1_variance_QuantizeLinear_Output' type=INT8 shape=[1, 1, 128] buffer=0
+  tensor[690] name='node_layer_norm_1_squared_DequantizeLinear_Output_transposed_' type=INT8 shape=[1, 128, 900] buffer=0
+  tensor[692] name='node_layer_norm_1_variance_QuantizeLinear_Output0' type=INT8 shape=[1, 128, 1] buffer=0
+
+PRODUCER / CONSUMER OPERATORS:
+
+========================================================================================
+tensor[403] name='node_layer_norm_1_squared_DequantizeLinear_Output' type=INT8 shape=[1, 900, 128] buffer=0
+
+OPERATOR 250: MUL, custom='', version=1, role=PRODUCER
+  INPUTS:
+    [0] tensor[402] name='node_layer_norm_1_centered_DequantizeLinear_Output_1' type=INT8 shape=[1, 900, 128] buffer=0
+    [1] tensor[402] name='node_layer_norm_1_centered_DequantizeLinear_Output_1' type=INT8 shape=[1, 900, 128] buffer=0
+  OUTPUTS:
+    [0] tensor[403] name='node_layer_norm_1_squared_DequantizeLinear_Output' type=INT8 shape=[1, 900, 128] buffer=0
+
+OPERATOR 251: TRANSPOSE, custom='', version=1, role=CONSUMER
+  INPUTS:
+    [0] tensor[403] name='node_layer_norm_1_squared_DequantizeLinear_Output' type=INT8 shape=[1, 900, 128] buffer=0
+    [1] tensor[691] name='perm8' type=INT32 shape=[3] buffer=185
+  OUTPUTS:
+    [0] tensor[690] name='node_layer_norm_1_squared_DequantizeLinear_Output_transposed_' type=INT8 shape=[1, 128, 900] buffer=0
+
+========================================================================================
+tensor[404] name='node_layer_norm_1_variance_QuantizeLinear_Output' type=INT8 shape=[1, 1, 128] buffer=0
+
+OPERATOR 253: RESHAPE, custom='', version=1, role=PRODUCER
+  INPUTS:
+    [0] tensor[692] name='node_layer_norm_1_variance_QuantizeLinear_Output0' type=INT8 shape=[1, 128, 1] buffer=0
+  OUTPUTS:
+    [0] tensor[404] name='node_layer_norm_1_variance_QuantizeLinear_Output' type=INT8 shape=[1, 1, 128] buffer=0
+
+OPERATOR 254: DEQUANTIZE, custom='', version=1, role=CONSUMER
+  INPUTS:
+    [0] tensor[404] name='node_layer_norm_1_variance_QuantizeLinear_Output' type=INT8 shape=[1, 1, 128] buffer=0
+  OUTPUTS:
+    [0] tensor[405] name='node_layer_norm_1_variance_DequantizeLinear_Output' type=FLOAT32 shape=[1, 1, 128] buffer=0
+
+========================================================================================
+tensor[690] name='node_layer_norm_1_squared_DequantizeLinear_Output_transposed_' type=INT8 shape=[1, 128, 900] buffer=0
+
+OPERATOR 251: TRANSPOSE, custom='', version=1, role=PRODUCER
+  INPUTS:
+    [0] tensor[403] name='node_layer_norm_1_squared_DequantizeLinear_Output' type=INT8 shape=[1, 900, 128] buffer=0
+    [1] tensor[691] name='perm8' type=INT32 shape=[3] buffer=185
+  OUTPUTS:
+    [0] tensor[690] name='node_layer_norm_1_squared_DequantizeLinear_Output_transposed_' type=INT8 shape=[1, 128, 900] buffer=0
+
+OPERATOR 252: MEAN, custom='', version=1, role=CONSUMER
+  INPUTS:
+    [0] tensor[690] name='node_layer_norm_1_squared_DequantizeLinear_Output_transposed_' type=INT8 shape=[1, 128, 900] buffer=0
+    [1] tensor[689] name='axes5' type=INT32 shape=[1] buffer=184
+  OUTPUTS:
+    [0] tensor[692] name='node_layer_norm_1_variance_QuantizeLinear_Output0' type=INT8 shape=[1, 128, 1] buffer=0
+
+========================================================================================
+tensor[692] name='node_layer_norm_1_variance_QuantizeLinear_Output0' type=INT8 shape=[1, 128, 1] buffer=0
+
+OPERATOR 252: MEAN, custom='', version=1, role=PRODUCER
+  INPUTS:
+    [0] tensor[690] name='node_layer_norm_1_squared_DequantizeLinear_Output_transposed_' type=INT8 shape=[1, 128, 900] buffer=0
+    [1] tensor[689] name='axes5' type=INT32 shape=[1] buffer=184
+  OUTPUTS:
+    [0] tensor[692] name='node_layer_norm_1_variance_QuantizeLinear_Output0' type=INT8 shape=[1, 128, 1] buffer=0
+
+OPERATOR 253: RESHAPE, custom='', version=1, role=CONSUMER
+  INPUTS:
+    [0] tensor[692] name='node_layer_norm_1_variance_QuantizeLinear_Output0' type=INT8 shape=[1, 128, 1] buffer=0
+  OUTPUTS:
+    [0] tensor[404] name='node_layer_norm_1_variance_QuantizeLinear_Output' type=INT8 shape=[1, 1, 128] buffer=0
+
+GRAPH_MAPPING_COMPLETE
+
+===== END =====
