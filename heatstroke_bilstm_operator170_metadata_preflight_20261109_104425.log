@@ -1,0 +1,233 @@
+===== BILSTM OPERATOR 170 METADATA PREFLIGHT =====
+Mon Nov  9 10:44:25 AM HKT 2026
+
+===== TENSOR TYPE HELPER AND VALIDATION HELPERS =====
+47-    if (tensor->dims->data[i] < 0) {
+48-      return 0;
+49-    }
+50-    count *= static_cast<size_t>(tensor->dims->data[i]);
+51-  }
+52-  return count;
+53-}
+54-
+55:bool IsFloatTensor(const TfLiteEvalTensor* tensor) {
+56-  return tensor != nullptr && tensor->type == kTfLiteFloat32 &&
+57-         tensor->data.f != nullptr;
+58-}
+59-
+60-bool IsMatrix(const TfLiteEvalTensor* tensor, int rows, int columns) {
+61:  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+62-         tensor->dims->size == 2 &&
+63-         tensor->dims->data[0] == rows &&
+64-         tensor->dims->data[1] == columns;
+65-}
+66-
+67-bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+68:  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+69-         tensor->dims->size == 1 &&
+70-         tensor->dims->data[0] == length;
+71-}
+72-
+73:bool ValidateDirection(TfLiteContext* context,
+74-                       TfLiteNode* node,
+75-                       int input_weight_base,
+76-                       int recurrent_weight_base,
+77-                       int bias_base,
+78-                       int hidden_state_position,
+79-                       int cell_state_position,
+80-                       int input_dimension,
+81-                       int batch_size,
+82-                       int* hidden_dimension) {
+83-  TfLiteEvalTensor* first_weight =
+84-      GetInputEvalTensor(context, node, input_weight_base);
+85-
+86-  if (first_weight == nullptr || first_weight->dims == nullptr ||
+87-      first_weight->dims->size != 2) {
+88-    return false;
+89-  }
+90-
+91-  const int hidden = first_weight->dims->data[0];
+92-
+93-  if (hidden <= 0 || first_weight->dims->data[1] != input_dimension) {
+94-    return false;
+95-  }
+96-
+97-  for (int gate = 0; gate < 4; ++gate) {
+98-    TfLiteEvalTensor* input_weight =
+99-        GetInputEvalTensor(context, node, input_weight_base + gate);
+100-
+101-    TfLiteEvalTensor* recurrent_weight =
+102-        GetInputEvalTensor(context, node, recurrent_weight_base + gate);
+103-
+--
+112-  }
+113-
+114-  TfLiteEvalTensor* hidden_state =
+115-      GetInputEvalTensor(context, node, hidden_state_position);
+116-
+117-  TfLiteEvalTensor* cell_state =
+118-      GetInputEvalTensor(context, node, cell_state_position);
+119-
+120:  if (!IsFloatTensor(hidden_state) || !IsFloatTensor(cell_state) ||
+121-      TensorElementCount(hidden_state) !=
+122-          static_cast<size_t>(batch_size * hidden) ||
+123-      TensorElementCount(cell_state) !=
+124-          static_cast<size_t>(batch_size * hidden)) {
+125-    return false;
+126-  }
+127-
+128-  *hidden_dimension = hidden;
+129-  return true;
+130-}
+131-
+132-void InitializeFloatLstmParameters(
+133-    OpDataLSTM* op_data,
+134-    bool time_major,
+135-    int batch_size,
+136-    int time_steps,
+137-    int input_dimension,
+138-    int hidden_dimension,
+139-    TfLiteFusedActivation activation,
+140-    float cell_clip) {
+141-  op_data->size_info.time_major = time_major;
+142-  op_data->size_info.batch_size = batch_size;
+143-  op_data->size_info.time_steps = time_steps;
+144-  op_data->size_info.input_dimension = input_dimension;
+145-  op_data->size_info.state_dimension = hidden_dimension;
+146-
+147-  op_data->cell_gate_nonlinear_type = activation;
+148-  op_data->cell_state_info = CreateLstmCellStateInfoFloat(cell_clip);
+149-
+150-  op_data->forget_gate_parameters = CreateGateParamsFloat();
+--
+198-    MicroPrintf("Heatstroke BiLSTM: unsupported LSTM options");
+199-    return kTfLiteError;
+200-  }
+201-
+202-  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+203-  TfLiteEvalTensor* output =
+204-      context->GetEvalTensor(context, node->outputs->data[0]);
+205-
+206:  if (!IsFloatTensor(input) || !IsFloatTensor(output) ||
+207-      input->dims == nullptr || output->dims == nullptr ||
+208-      input->dims->size != 3 || output->dims->size != 3) {
+209-    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+210-    return kTfLiteError;
+211-  }
+212-
+213-  const int time_steps = input->dims->data[0];
+214-  const int batch_size = input->dims->data[1];
+215-  const int input_dimension = input->dims->data[2];
+216-
+217-  // The supplied heat-stress model uses time-major, single-batch sequences.
+218-  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+219-    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+220-    return kTfLiteError;
+221-  }
+222-
+223-  int forward_hidden = 0;
+224-  int backward_hidden = 0;
+225-
+226:  if (!ValidateDirection(context, node, 1, 5, 9, 25, 26, input_dimension, batch_size, &forward_hidden) ||
+227:      !ValidateDirection(context, node, 13, 17, 21, 27, 28, input_dimension, batch_size, &backward_hidden) ||
+228-      forward_hidden != backward_hidden) {
+229-    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+230-    return kTfLiteError;
+231-  }
+232-
+233-  const int hidden = forward_hidden;
+234-
+235-  if (output->dims->data[0] != time_steps ||
+236-      output->dims->data[1] != batch_size ||
+237-      output->dims->data[2] != 2 * hidden) {
+238-    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+239-    return kTfLiteError;
+240-  }
+241-
+242-  // The directional evaluator must see [time_steps, batch_size, hidden],
+243-  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+244-  const size_t staged_dims_bytes =
+245-      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+246-  op_data->staged_output_dims =
+247-      static_cast<TfLiteIntArray*>(
+248-          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+249-
+250-  if (op_data->staged_output_dims == nullptr) {
+251-    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+252-    return kTfLiteError;
+253-  }
+254-
+255-  op_data->staged_output_dims->size = 3;
+256-  op_data->staged_output_dims->data[0] = time_steps;
+257-  op_data->staged_output_dims->data[1] = batch_size;
+--
+357-      static_cast<const HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+358-
+359-  const TfLiteEvalTensor* input =
+360-      GetInputEvalTensor(context, node, 0);
+361-
+362-  TfLiteEvalTensor* output =
+363-      context->GetEvalTensor(context, node->outputs->data[0]);
+364-
+365:  if (!IsFloatTensor(input) || !IsFloatTensor(output)) {
+366-    return kTfLiteError;
+367-  }
+368-
+369-  const int time_steps = op_data->forward.size_info.time_steps;
+370-  const int input_dimension = op_data->forward.size_info.input_dimension;
+371-  const int hidden = op_data->forward.size_info.state_dimension;
+372-
+373-  auto* reversed_input = static_cast<float*>(
+374-      context->GetScratchBuffer(
+375-          context, op_data->reverse_input_buffer));
+376-
+377-  auto* staged_output = static_cast<float*>(
+378-      context->GetScratchBuffer(
+379-          context, op_data->stage_output_buffer));
+380-
+381-  if (reversed_input == nullptr || staged_output == nullptr) {
+382-    MicroPrintf("Heatstroke BiLSTM: scratch buffer unavailable");
+383-    return kTfLiteError;
+384-  }
+385-
+386-  const float* input_data = input->data.f;
+387-  float* output_data = output->data.f;
+388-
+389-  // Reverse the time dimension for the backward direction.
+390-  for (int t = 0; t < time_steps; ++t) {
+391-    std::memcpy(
+392-        reversed_input + t * input_dimension,
+393-        input_data + (time_steps - 1 - t) * input_dimension,
+394-        input_dimension * sizeof(float));
+395-  }
+
+===== MODEL PATH SELECTED BY CMAKE =====
+122:set(POLYU_MODEL_PATH
+123:    "${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite"
+126:if (NOT EXISTS "${POLYU_MODEL_PATH}")
+127:    message(FATAL_ERROR "Combined PolyU model not found: ${POLYU_MODEL_PATH}")
+130:set(POLYU_MODEL_SHA256_EXPECTED "b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3")
+131:file(SHA256 "${POLYU_MODEL_PATH}" POLYU_MODEL_SHA256_ACTUAL)
+132:if (NOT "${POLYU_MODEL_SHA256_ACTUAL}" STREQUAL "${POLYU_MODEL_SHA256_EXPECTED}")
+134:        "Combined PolyU model SHA256 mismatch. "
+135:        "Expected ${POLYU_MODEL_SHA256_EXPECTED}, got ${POLYU_MODEL_SHA256_ACTUAL}")
+138:message(STATUS "Using combined heat-stress model: ${POLYU_MODEL_PATH}")
+139:message(STATUS "Combined model SHA256: ${POLYU_MODEL_SHA256_ACTUAL}")
+143:    MODEL_PATH "${POLYU_MODEL_PATH}"
+147:get_filename_component(POLYU_MODEL_FILENAME "${POLYU_MODEL_PATH}" NAME)
+148:set(POLYU_MODEL_CPP "${SRC_GEN_DIR}/${POLYU_MODEL_FILENAME}.cc")
+149:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+173:    "${POLYU_MODEL_CPP}"
+
+===== DEPLOYED MODEL FILE =====
+-rw-rw-r-- 1 user user 11M Nov  8 22:00 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+===== PYTHON FLATBUFFER MODULE AVAILABILITY =====
+--- /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/bin/python3 ---
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+ModuleNotFoundError: No module named 'tflite'
+--- /home/user/zephyrproject/.py3.12_venv/bin/python3 ---
+tflite module: /home/user/zephyrproject/.py3.12_venv/lib/python3.12/site-packages/tflite/__init__.py
+flatbuffers: /home/user/zephyrproject/.py3.12_venv/lib/python3.12/site-packages/flatbuffers/__init__.py
