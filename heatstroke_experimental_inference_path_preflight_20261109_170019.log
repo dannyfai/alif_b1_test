@@ -1,0 +1,597 @@
+============================================================
+EXPERIMENTAL INFERENCE PATH PREFLIGHT
+============================================================
+
+1. MainLoop implementation
+     1	/* This file was ported to work on Alif Semiconductor devices. */
+     2	
+     3	/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+     4	 * Use, distribution and modification of this code is permitted under the
+     5	 * terms stated in the Alif Semiconductor Software License Agreement
+     6	 *
+     7	 * You should have received a copy of the Alif Semiconductor Software
+     8	 * License Agreement with this file. If not, please write to:
+     9	 * contact@alifsemi.com, or visit: https://alifsemi.com/license
+    10	 *
+    11	 */
+    12	
+    13	/*
+    14	 * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+    15	 * affiliates <open-source-office@arm.com>
+    16	 * SPDX-License-Identifier: Apache-2.0
+    17	 *
+    18	 * Licensed under the Apache License, Version 2.0 (the "License");
+    19	 * you may not use this file except in compliance with the License.
+    20	 * You may obtain a copy of the License at
+    21	 *
+    22	 *     http://www.apache.org/licenses/LICENSE-2.0
+    23	 *
+    24	 * Unless required by applicable law or agreed to in writing, software
+    25	 * distributed under the License is distributed on an "AS IS" BASIS,
+    26	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    27	 * See the License for the specific language governing permissions and
+    28	 * limitations under the License.
+    29	 */
+    30	#include "BufAttributes.hpp"
+    31	#include "PolyUModel1.hpp"
+    32	#include "mlek/fwk/iface/Tensor.hpp"
+    33	
+    34	#include <cstddef>
+    35	#include <cstdint>
+    36	#include <memory>
+    37	#include <vector>
+    38	
+    39	using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+    40	
+    41	#include "power_mgr.h"             /* power management APIs */
+    42	#include <zephyr/logging/log.h>
+    43	#include <zephyr/kernel.h>
+    44	#include <zephyr/drivers/gpio.h>
+    45	
+    46	LOG_MODULE_REGISTER(MainLoop);
+    47	
+    48	#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+    49	#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+    50	
+    51	#if LPGPIO_WAKEUP_ENABLED
+    52	/* LPGPIO wake up source is used */
+    53	#define LPGPIO_EWIC_CFG EWIC_VBAT_GPIO
+    54	
+    55	#if CONFIG_LPGPIO_WAKEUP_SOURCE == 4
+    56	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO4
+    57	#elif CONFIG_LPGPIO_WAKEUP_SOURCE == 1
+    58	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO1
+    59	#else
+    60	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+    61	#endif
+    62	#else
+    63	#define LPGPIO_EWIC_CFG 0
+    64	#define LPGPIO_WAKEUP_EVENT 0
+    65	#endif
+    66	
+    67	namespace arm {
+    68	namespace app {
+    69	    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+    70	
+    71	    namespace polyu_heatstroke {
+    72	extern const uint8_t* GetModelPointer();
+    73	extern size_t GetModelLen();
+    74	} /* namespace polyu_heatstroke */
+    75	
+    76	} /* namespace app */
+    77	} /* namespace arm */
+    78	
+    79	
+    80	#if LPGPIO_WAKEUP_ENABLED
+    81	static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+    82		DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+    83	#endif
+    84	
+    85	
+    86	volatile uint8_t button_pressed = 0U;
+    87	static struct gpio_callback button_cb_data;
+    88	static bool por_boot;
+    89	static struct k_sem button_wait_sem;
+    90	
+    91	static void button_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+    92	{
+    93		ARG_UNUSED(dev);
+    94		ARG_UNUSED(cb);
+    95		ARG_UNUSED(pins);
+    96	
+    97		if (por_boot) {
+    98			/* Ignore button press event if it's from POR boot, as the button state may be unstable during POR. */
+    99			return;
+   100		}
+   101	
+   102		int val = gpio_pin_get_dt(&lpgpio_config);  // 1 = pressed, 0 = released
+   103	    if (val < 0) {
+   104	        LOG_ERR("Failed to read pin: %d", val);
+   105	        return;
+   106	    }
+   107	
+   108	    button_pressed = (val == 1);
+   109	    LOG_INF("Button %s", button_pressed ? "pressed" : "released");
+   110	
+   111		if (!k_sem_count_get(&button_wait_sem) && button_pressed) {
+   112			k_sem_give(&button_wait_sem);
+   113		}
+   114	}
+   115	
+   116	/**
+   117	 * Configure LPGPIO0 and LPGPIO1 as inputs with interrupts
+   118	 * With B1/E1C need to connect wire between SW5 (P5_7) and P15_0 to use button as Push-to-talk button.
+   119	 * With B1/E1C devkit you need to also remove resistor R64. */
+   120	static int configure_lpgpio(void)
+   121	{
+   122		int ret;
+   123		const struct gpio_dt_spec *spec = &lpgpio_config;
+   124	
+   125		if (!spec || !spec->port) {
+   126			/* Just ignore */
+   127			LOG_ERR("lpgpio invalid");
+   128			return -ENODEV;
+   129		}
+   130	
+   131		/* Configure LPGPIO0 for wakeup */
+   132		if (!gpio_is_ready_dt(spec)) {
+   133			LOG_ERR("LPGPIO0 device is not ready");
+   134			return -ENODEV;
+   135		}
+   136	
+   137		ret = gpio_pin_configure_dt(spec, GPIO_INPUT | spec->dt_flags);
+   138		if (ret != 0) {
+   139			LOG_ERR("Failed to configure LPGPIO as input: %d", ret);
+   140			return ret;
+   141		}
+   142	
+   143		ret = gpio_pin_interrupt_configure_dt(spec,
+   144						      GPIO_INT_EDGE_BOTH);
+   145		if (ret != 0) {
+   146			LOG_ERR("Failed to configure LPGPIO interrupt: %d", ret);
+   147			return ret;
+   148		}
+   149	
+   150		gpio_init_callback(&button_cb_data, button_callback, BIT(spec->pin));
+   151		ret = gpio_add_callback(spec->port, &button_cb_data);
+   152		if (ret != 0) {
+   153			LOG_ERR("Failed to add button callback: %d", ret);
+   154			return ret;
+   155		}
+   156	
+   157		LOG_INF("LPGPIO%d configured", spec->pin);
+   158	
+   159		return 0;
+   160	}
+   161	
+   162	/** @brief   Verify input and output tensor are of certain min dimensions. */
+   163	
+   164	static bool VerifyOneTensor(
+   165	    const char* label,
+   166	    size_t index,
+   167	    const std::shared_ptr<arm::app::fwk::iface::TensorIface>& tensor,
+   168	    const std::vector<size_t>& expectedShape)
+   169	{
+   170	    using arm::app::fwk::iface::TensorType;
+   171	
+   172	    if (!tensor) {
+   173	        LOG_ERR("%s[%u] tensor handle is null",
+   174	                label, static_cast<unsigned int>(index));
+   175	        return false;
+   176	    }
+   177	
+   178	    const std::vector<size_t> actualShape = tensor->Shape();
+   179	    if (actualShape != expectedShape) {
+   180	        LOG_ERR("%s[%u] shape mismatch",
+   181	                label, static_cast<unsigned int>(index));
+   182	        return false;
+   183	    }
+   184	
+   185	    if (tensor->Type() != TensorType::FP32) {
+   186	        LOG_ERR("%s[%u] must be FP32; got %s",
+   187	                label,
+   188	                static_cast<unsigned int>(index),
+   189	                arm::app::fwk::iface::GetTensorDataTypeName(tensor->Type()));
+   190	        return false;
+   191	    }
+   192	
+   193	    size_t expectedElements = 1U;
+   194	    for (const size_t dimension : expectedShape) {
+   195	        expectedElements *= dimension;
+   196	    }
+   197	
+   198	    if (tensor->GetNumElements() != expectedElements ||
+   199	        tensor->Bytes() != expectedElements * sizeof(float) ||
+   200	        tensor->GetData() == nullptr) {
+   201	        LOG_ERR("%s[%u] element count, byte size, or data pointer is invalid",
+   202	                label, static_cast<unsigned int>(index));
+   203	        return false;
+   204	    }
+   205	
+   206	    LOG_INF("%s[%u]: FP32, elements=%u, bytes=%u",
+   207	            label,
+   208	            static_cast<unsigned int>(index),
+   209	            static_cast<unsigned int>(tensor->GetNumElements()),
+   210	            static_cast<unsigned int>(tensor->Bytes()));
+   211	
+   212	    return true;
+   213	}
+   214	
+   215	static bool VerifyTensorInterface(const arm::app::fwk::iface::Model& model)
+   216	{
+   217	    if (model.GetNumInputs() != 4U || model.GetNumOutputs() != 2U) {
+   218	        LOG_ERR("Model I/O count mismatch: inputs=%u outputs=%u; expected 4/2",
+   219	                static_cast<unsigned int>(model.GetNumInputs()),
+   220	                static_cast<unsigned int>(model.GetNumOutputs()));
+   221	        return false;
+   222	    }
+   223	
+   224	    const std::vector<std::vector<size_t>> expectedInputs = {
+   225	        {1U, 900U, 6U},  /* x_values */
+   226	        {1U, 900U, 6U},  /* missing_mask */
+   227	        {1U, 900U, 3U},  /* x_mark */
+   228	        {1U, 30U}        /* worker_features */
+   229	    };
+   230	
+   231	    const char* inputNames[] = {
+   232	        "x_values", "missing_mask", "x_mark", "worker_features"
+   233	    };
+   234	
+   235	    for (size_t i = 0; i < expectedInputs.size(); ++i) {
+   236	        if (!VerifyOneTensor(
+   237	                "Input", i, model.GetInputTensor(i), expectedInputs[i])) {
+   238	            LOG_ERR("Input contract failed for %s", inputNames[i]);
+   239	            return false;
+   240	        }
+   241	    }
+   242	
+   243	    const std::vector<std::vector<size_t>> expectedOutputs = {
+   244	        {1U, 4U},  /* rpe_logits */
+   245	        {1U, 4U}   /* psi_logits */
+   246	    };
+   247	
+   248	    const char* outputNames[] = {"rpe_logits", "psi_logits"};
+   249	
+   250	    for (size_t i = 0; i < expectedOutputs.size(); ++i) {
+   251	        if (!VerifyOneTensor(
+   252	                "Output", i, model.GetOutputTensor(i), expectedOutputs[i])) {
+   253	            LOG_ERR("Output contract failed for %s", outputNames[i]);
+   254	            return false;
+   255	        }
+   256	    }
+   257	
+   258	    return true;
+   259	}
+   260	
+   261	void MainLoop()
+   262	{
+   263	    por_boot = true;
+   264	    k_sem_init(&button_wait_sem, 0, 1);
+   265	
+   266	    if (configure_lpgpio()) {
+   267	        LOG_ERR("Failed to configure LPGPIO for button input");
+   268	        return;
+   269	    }
+   270	
+   271	    const uint8_t* modelPointer =
+   272	        arm::app::polyu_heatstroke::GetModelPointer();
+   273	    const size_t modelLength =
+   274	        arm::app::polyu_heatstroke::GetModelLen();
+   275	
+   276	    if (modelPointer == nullptr || modelLength == 0U) {
+   277	        LOG_ERR("Combined heat-stress model pointer or length is invalid");
+   278	        return;
+   279	    }
+   280	
+   281	    LOG_INF("=====================");
+   282	    LOG_INF("Combined model pointer: %p",
+   283	            static_cast<const void*>(modelPointer));
+   284	    LOG_INF("Combined model size: %u bytes",
+   285	            static_cast<unsigned int>(modelLength));
+   286	
+   287	    /* MLEK MemoryRegion is mutable; the generated model itself is const. */
+   288	    arm::app::fwk::iface::MemoryRegion modelMem{
+   289	        const_cast<uint8_t*>(modelPointer), modelLength};
+   290	
+   291	    arm::app::fwk::iface::MemoryRegion computeMem{
+   292	        arm::app::activationBuf, sizeof(arm::app::activationBuf)};
+   293	
+   294	    PolyUModel1 model;
+   295	
+   296	    if (!model.Init(computeMem, modelMem)) {
+   297	        LOG_ERR("Failed to initialise combined heat-stress model");
+   298	        return;
+   299	    }
+   300	
+   301	    LOG_INF("Combined heat-stress model initialisation: OK");
+   302	    LOG_INF("Contains Ethos-U operators: %s",
+   303	            model.ContainsEthosUOperator() ? "yes" : "no");
+   304	
+   305	    if (!VerifyTensorInterface(model)) {
+   306	        LOG_ERR("Combined heat-stress model I/O contract verification failed");
+   307	        return;
+   308	    }
+   309	
+   310	    LOG_INF("Combined heat-stress model I/O contract verified.");
+   311	    LOG_INF("Inference not started: real input preprocessing/data binding "
+   312	            "will be validated separately.");
+   313	}
+
+2. PolyU model wrapper declarations
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp.bak_20261108_193718
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp.bak_before_heatstroke_bilstm
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_20261105_174212
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_int64_gather_20261109_095629
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_before_heatstroke_bilstm
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_20261108_193718
+
+3. Model wrapper and interpreter construction
+
+4. Application startup and loop
+
+----- /home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/Main.cc -----
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021-2026 Arm Limited and/or its
+     3	 * affiliates <open-source-office@arm.com>
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 *
+     6	 * Licensed under the Apache License, Version 2.0 (the "License");
+     7	 * you may not use this file except in compliance with the License.
+     8	 * You may obtain a copy of the License at
+     9	 *
+    10	 *     http://www.apache.org/licenses/LICENSE-2.0
+    11	 *
+    12	 * Unless required by applicable law or agreed to in writing, software
+    13	 * distributed under the License is distributed on an "AS IS" BASIS,
+    14	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15	 * See the License for the specific language governing permissions and
+    16	 * limitations under the License.
+    17	 */
+    18	
+    19	/****************************************************************************\
+    20	 *               Main application file for ARM NPU on MPS3 board             *
+    21	\****************************************************************************/
+    22	
+    23	#include "mlek/fwk/tflm/TensorFlowLiteMicro.hpp" /* our inference logic api */
+    24	#include "power_mgr.h"             /* power management APIs */
+    25	#include <cstdio>
+    26	#include <cstdint>
+    27	#include <new>
+    28	#include <exception>
+    29	
+    30	#include <zephyr/console/console.h>
+    31	#include <zephyr/logging/log.h>
+    32	
+    33	LOG_MODULE_REGISTER(Main);
+    34	
+    35	extern void MainLoop();
+    36	
+    37	#if defined(__ARMCC_VERSION) && (__ARMCC_VERSION >= 6010050)
+    38	__ASM(" .global __ARM_use_no_argv\n");
+    39	#endif
+    40	
+    41	/* Print application information. */
+    42	static void PrintApplicationIntro()
+    43	{
+    44	    #define PRJ_DES_STR     "BeeInventor - PolyU Model1 Test"
+    45	    LOG_INF("%s\n", PRJ_DES_STR);
+    46	    LOG_INF("Version %s Build date: " __DATE__ " @ " __TIME__ "\n", PRJ_VER_STR);
+    47	    //LOG_INF("Compiler: %s\n", PRJ_COMPILER);
+    48	    // LOG_INF("Copyright 2021-2026 Arm Limited and/or "
+    49	    //      "its affiliates <open-source-office@arm.com>\n\n");
+    50	}
+    51	
+    52	static void out_of_heap()
+    53	{
+    54	    LOG_WRN("Out of heap\n");
+    55	    std::terminate();
+    56	}
+    57	
+    58	/* ITGU READ-ONLY DIAGNOSTIC
+    59	 * Reads ITGU registers only. No security configuration is modified.
+    60	 */
+    61	static void PrintItguRegisters()
+    62	{
+    63	    constexpr std::uintptr_t ITGU_BASE = 0xE001E500UL;
+    64	    constexpr std::uintptr_t ITGU_CTRL = ITGU_BASE + 0x00UL;
+    65	    constexpr std::uintptr_t ITGU_CFG  = ITGU_BASE + 0x04UL;
+    66	    constexpr std::uintptr_t ITGU_LUT  = ITGU_BASE + 0x10UL;
+    67	
+    68	    LOG_INF("ITGU READ-ONLY DIAGNOSTIC START");
+    69	    LOG_INF("No ITGU/DTGU/SAU registers will be written.");
+    70	
+    71	    LOG_INF("About to read ITGU_CTRL at 0x%08x",
+    72	            static_cast<unsigned int>(ITGU_CTRL));
+    73	    const auto ctrl = *reinterpret_cast<volatile const std::uint32_t *>(ITGU_CTRL);
+    74	    LOG_INF("ITGU_CTRL = 0x%08x", static_cast<unsigned int>(ctrl));
+    75	
+    76	    LOG_INF("About to read ITGU_CFG at 0x%08x",
+    77	            static_cast<unsigned int>(ITGU_CFG));
+    78	    const auto cfg = *reinterpret_cast<volatile const std::uint32_t *>(ITGU_CFG);
+    79	    LOG_INF("ITGU_CFG = 0x%08x", static_cast<unsigned int>(cfg));
+    80	
+    81	    for (unsigned int i = 0; i < 16; ++i) {
+    82	        const std::uintptr_t address = ITGU_LUT + (i * 4U);
+    83	        LOG_INF("About to read ITGU_LUT[%u] at 0x%08x",
+    84	                i, static_cast<unsigned int>(address));
+    85	        const auto value = *reinterpret_cast<volatile const std::uint32_t *>(address);
+    86	        LOG_INF("ITGU_LUT[%u] = 0x%08x",
+    87	                i, static_cast<unsigned int>(value));
+    88	    }
+    89	
+    90	    LOG_INF("ITGU READ-ONLY DIAGNOSTIC COMPLETE");
+    91	}
+    92	int main ()
+    93	{
+    94		console_getline_init();
+    95	
+    96		/* Application information, UART should have been initialised. */
+    97		PrintApplicationIntro();
+    98		PrintItguRegisters();
+    99	
+   100		std::set_new_handler(out_of_heap);
+   101	
+   102		/* Run the application. */
+   103		MainLoop();
+   104	
+   105	    /* This is unreachable without errors. */
+   106	    LOG_INF("program terminating...\n");
+   107	
+   108	    return 0;
+   109	}
+
+5. Model generation and CMake model-selection block
+   100	set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+   101	set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+   102	file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+   103	
+   104	message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+   105	message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+   106	
+   107	# Determine NPU config ID based on Zephyr Kconfig.
+   108	# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+   109	# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+   110	if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+   111	    if (CONFIG_ARM_ETHOS_U85_256)
+   112	        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+   113	    elseif (CONFIG_ARM_ETHOS_U55_256)
+   114	        set(ETHOS_U_NPU_CONFIG_ID "H256")
+   115	    else()
+   116	        set(ETHOS_U_NPU_CONFIG_ID "H128")
+   117	    endif()
+   118	endif()
+   119	
+   120	# Combined PolyU heat-stress model (Vela Ethos-U55-128).
+   121	# FORCE prevents a previous ASR model path in CMakeCache.txt from winning.
+   122	set(POLYU_MODEL_PATH
+   123	    "${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite"
+   124	    CACHE FILEPATH "Combined PolyU heat-stress model" FORCE)
+   125	
+   126	if (NOT EXISTS "${POLYU_MODEL_PATH}")
+   127	    message(FATAL_ERROR "Combined PolyU model not found: ${POLYU_MODEL_PATH}")
+   128	endif()
+   129	
+   130	set(POLYU_MODEL_SHA256_EXPECTED "b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3")
+   131	file(SHA256 "${POLYU_MODEL_PATH}" POLYU_MODEL_SHA256_ACTUAL)
+   132	if (NOT "${POLYU_MODEL_SHA256_ACTUAL}" STREQUAL "${POLYU_MODEL_SHA256_EXPECTED}")
+   133	    message(FATAL_ERROR
+   134	        "Combined PolyU model SHA256 mismatch. "
+   135	        "Expected ${POLYU_MODEL_SHA256_EXPECTED}, got ${POLYU_MODEL_SHA256_ACTUAL}")
+   136	endif()
+   137	
+   138	message(STATUS "Using combined heat-stress model: ${POLYU_MODEL_PATH}")
+   139	message(STATUS "Combined model SHA256: ${POLYU_MODEL_SHA256_ACTUAL}")
+   140	
+   141	# The generator output filename is the complete model filename plus .cc.
+   142	generate_model_code(
+   143	    MODEL_PATH "${POLYU_MODEL_PATH}"
+   144	    DESTINATION "${SRC_GEN_DIR}"
+   145	    NAMESPACE "arm" "app" "polyu_heatstroke")
+   146	
+   147	get_filename_component(POLYU_MODEL_FILENAME "${POLYU_MODEL_PATH}" NAME)
+   148	set(POLYU_MODEL_CPP "${SRC_GEN_DIR}/${POLYU_MODEL_FILENAME}.cc")
+   149	set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+   150	
+   151	# Application-local includes for the heat-stress TFLM model.
+   152	target_include_directories(app PRIVATE
+   153	    src/application/main/include
+   154	    src/use_case/alif_asr/include
+   155	    src/power
+   156	    "${INC_GEN_DIR}"
+   157	)
+   158	
+   159	target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+   160	
+   161	
+   162	if (CONFIG_USE_APP_MENU)
+   163	target_compile_definitions(app PRIVATE USE_APP_MENU)
+   164	endif()
+   165	
+   166	target_sources(app PRIVATE
+   167	    src/application/main/Main.cc
+   168	    src/use_case/alif_asr/src/MainLoop.cc
+   169	    src/use_case/alif_asr/src/reverse_v2.cc
+   170	    src/use_case/alif_asr/src/PolyUModel1.cc
+   171	    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+   172	    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+   173	    src/power/power_mgr.c
+   174	    "${POLYU_MODEL_CPP}"
+   175	)
+   176	
+   177	set(SRC_MAIN "src/application/main/Main.cc")
+   178	
+   179	list(APPEND SRC_MAIN_DEFS
+   180	    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+   181	    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+   182	    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+   183	
+   184	set_source_files_properties(${SRC_MAIN}
+   185	    PROPERTIES COMPILE_DEFINITIONS
+
+6. Generated model files in current build
+/home/user/sdk-alif/build/generated/src/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite.cc (66502616 bytes)
+
+7. Experimental and production kernel registration symbols
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-7-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-8-#include "tensorflow/lite/micro/micro_op_resolver.h"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-9-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-10-namespace tflite {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-11-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h:12:TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstm();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-13-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-14-}  // namespace tflite
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-15-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/heatstroke_bidirectional_lstm.h-16-#endif  // HEATSTROKE_BIDIRECTIONAL_LSTM_H_
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-670-    /*
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-671-     * Custom compact bidirectional LSTM registration.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-672-     */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-673-    {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-674-        const TFLMRegistration registration =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:675:            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-676-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-677-        if (this->m_opResolver.AddBuiltin(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-678-                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-679-                registration,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-680-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-681-            printf_err(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-682-                "Failed to register heat-stress bidirectional LSTM.\n");
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc-683-            return false;
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-447-  return kTfLiteOk;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-448-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-449-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-450-}  // namespace
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-451-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc:452:TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstm() {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-453-  return micro::RegisterOp(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-454-      HeatstrokeBidirectionalLstmInit,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-455-      HeatstrokeBidirectionalLstmPrepare,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-456-      HeatstrokeBidirectionalLstmEval);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-457-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-458-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc-459-}  // namespace tflite
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-415-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-416-  return kTfLiteOk;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-417-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-418-}  // namespace
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-419-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc:420:TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental() {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-421-  return micro::RegisterOp(
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-422-      HeatstrokeBidirectionalLstmInit,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-423-      HeatstrokeBidirectionalLstmPrepare,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-424-      HeatstrokeBidirectionalLstmEval);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-425-}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-426-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc-427-}  // namespace tflite
+
+8. Current firmware build model and source metadata
+POLYU_MODEL_PATH:FILEPATH=/home/user/sdk-alif/beeinventor/test_heatstroke/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+============================================================
+PREFLIGHT COMPLETE - NO FILES MODIFIED
+NO FLASH OPERATION
+============================================================
