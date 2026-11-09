@@ -1,0 +1,1870 @@
+===== QUANTIZE FLATBUFFER SHAPE SEMANTICS =====
+Mon Nov  9 02:32:54 PM HKT 2026
+db0cdb5443b63adb22e6253da1c5e11fba36cc142dce57e2e609a225ed949290  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+===== 1. QUANTIZE KERNEL SOURCE LOCATIONS =====
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_common.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/dequantize_common.cc
+
+===== 2. QUANTIZE PREPARE/EVAL AND AFFINEQUANTIZE IMPLEMENTATION =====
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h =====
+  488:     return AddBuiltin(BuiltinOperator_PAD, registration, ParsePad);
+  489:   }
+  490: 
+  491:   TfLiteStatus AddPadV2() {
+  492:     return AddBuiltin(BuiltinOperator_PADV2, Register_PADV2(), ParsePadV2);
+  493:   }
+  494: 
+  495:   TfLiteStatus AddPCAN() {
+  496:     // TODO(b/286250473): change back name to "PCAN" and remove namespace
+  497:     return AddCustom("SignalPCAN", tflite::tflm_signal::Register_PCAN());
+  498:   }
+  499: 
+  500:   TfLiteStatus AddPrelu() {
+  501:     return AddBuiltin(BuiltinOperator_PRELU, tflite::Register_PRELU(),
+  502:                       ParsePrelu);
+  503:   }
+  504: 
+  505:   TfLiteStatus AddQuantize() {
+  506:     return AddBuiltin(BuiltinOperator_QUANTIZE, Register_QUANTIZE(),
+  507:                       ParseQuantize);
+  508:   }
+  509: 
+  510:   TfLiteStatus AddReadVariable() {
+  511:     return AddBuiltin(BuiltinOperator_READ_VARIABLE,
+  512:                       tflite::Register_READ_VARIABLE(), ParseReadVariable);
+  513:   }
+  514: 
+  515:   TfLiteStatus AddReduceMax() {
+  516:     return AddBuiltin(BuiltinOperator_REDUCE_MAX, Register_REDUCE_MAX(),
+  517:                       ParseReducer);
+  518:   }
+  519: 
+  520:   TfLiteStatus AddRelu() {
+  521:     return AddBuiltin(BuiltinOperator_RELU, tflite::Register_RELU(), ParseRelu);
+  522:   }
+  523: 
+  524:   TfLiteStatus AddRelu6() {
+  525:     return AddBuiltin(BuiltinOperator_RELU6, tflite::Register_RELU6(),
+  526:                       ParseRelu6);
+  527:   }
+  528: 
+  529:   TfLiteStatus AddReshape() {
+  530:     return AddBuiltin(BuiltinOperator_RESHAPE, Register_RESHAPE(),
+  531:                       ParseReshape);
+  532:   }
+  533: 
+  534:   TfLiteStatus AddResizeBilinear() {
+  535:     return AddBuiltin(BuiltinOperator_RESIZE_BILINEAR,
+  536:                       Register_RESIZE_BILINEAR(), ParseResizeBilinear);
+  537:   }
+  538: 
+  539:   TfLiteStatus AddResizeNearestNeighbor() {
+  540:     return AddBuiltin(BuiltinOperator_RESIZE_NEAREST_NEIGHBOR,
+  541:                       Register_RESIZE_NEAREST_NEIGHBOR(),
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/activations.h =====
+   39: void ReluQuantized(const ReluOpData& data, const RuntimeShape& input_shape,
+   40:                    const RuntimeShape& output_shape, const int8_t* input_data,
+   41:                    int8_t* output_data);
+   42: 
+   43: template <typename T>
+   44: void CalculateReluOpData(const TfLiteTensor* input, TfLiteTensor* output,
+   45:                          ReluOpData* data);
+   46: 
+   47: void ReluFloat(const RuntimeShape& input_shape, const float* input_data,
+   48:                const RuntimeShape& output_shape, float* output_data);
+   49: 
+   50: void Relu6Float(const RuntimeShape& input_shape, const float* input_data,
+   51:                 const RuntimeShape& output_shape, float* output_data);
+   52: 
+   53: template <typename T>
+   54: void Relu6Quantized(T lower, T upper, const RuntimeShape& input_shape,
+   55:                     const T* input_data, const RuntimeShape& output_shape,
+   56:                     T* output_data) {
+   57:   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+   58:   for (int i = 0; i < flat_size; ++i) {
+   59:     const T val = input_data[i];
+   60:     const T clamped = val > upper ? upper : val < lower ? lower : val;
+   61:     output_data[i] = clamped;
+   62:   }
+   63: }
+   64: 
+   65: TfLiteStatus ReluPrepare(TfLiteContext* context, TfLiteNode* node);
+   66: 
+   67: TfLiteStatus Relu6Prepare(TfLiteContext* context, TfLiteNode* node);
+   68: 
+   69: }  // namespace tflite
+   70: 
+   71: #endif  // TENSORFLOW_LITE_MICRO_KERNELS_ACTIVATIONS_H_
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.h =====
+   15: #ifndef TENSORFLOW_LITE_MICRO_KERNELS_QUANTIZE_H_
+   16: #define TENSORFLOW_LITE_MICRO_KERNELS_QUANTIZE_H_
+   17: 
+   18: #include "tensorflow/lite/c/common.h"
+   19: #include "tensorflow/lite/kernels/internal/types.h"
+   20: 
+   21: namespace tflite {
+   22: 
+   23: struct OpDataQuantizeReference {
+   24:   tflite::QuantizationParams quantization_params;
+   25:   // The scaling factor from input to output (aka the 'real multiplier') can
+   26:   // be represented as a fixed point multiplier plus a left shift.
+   27:   int32_t requantize_output_multiplier;
+   28:   int requantize_output_shift;
+   29: 
+   30:   int32_t input_zero_point;
+   31: };
+   32: 
+   33: TfLiteStatus EvalQuantizeReference(TfLiteContext* context, TfLiteNode* node);
+   34: TfLiteStatus PrepareQuantizeReference(TfLiteContext* context, TfLiteNode* node);
+   35: }  // namespace tflite
+   36: 
+   37: #endif  // TENSORFLOW_LITE_MICRO_KERNELS_QUANTIZE_H_
+---
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_common.cc =====
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include <limits>
+   17: 
+   18: #include "tensorflow/lite/c/common.h"
+   19: #include "tensorflow/lite/kernels/internal/quantization_util.h"
+   20: #include "tensorflow/lite/kernels/internal/reference/quantize.h"
+   21: #include "tensorflow/lite/kernels/internal/reference/requantize.h"
+   22: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   23: #include "tensorflow/lite/kernels/kernel_util.h"
+   24: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   25: #include "tensorflow/lite/micro/kernels/quantize.h"
+   26: #include "tensorflow/lite/micro/micro_log.h"
+   27: #include "tensorflow/lite/micro/micro_utils.h"
+   28: 
+   29: namespace tflite {
+   30: 
+   31: TfLiteStatus PrepareQuantizeReference(TfLiteContext* context,
+   32:                                       TfLiteNode* node) {
+   33:   TFLITE_DCHECK(node->user_data != nullptr);
+   34:   auto* data = static_cast<OpDataQuantizeReference*>(node->user_data);
+   35: 
+   36:   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
+   37:   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+   38: 
+   39:   MicroContext* micro_context = GetMicroContext(context);
+   40: 
+   41:   TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+   42:   TF_LITE_ENSURE(context, input != nullptr);
+   43:   TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+   44:   TF_LITE_ENSURE(context, output != nullptr);
+   45: 
+   46:   // TODO(b/128934713): Add support for fixed-point per-channel quantization.
+   47:   // Currently this only support affine per-layer quantization.
+   48:   TF_LITE_ENSURE_EQ(context, output->quantization.type,
+   49:                     kTfLiteAffineQuantization);
+   50:   const auto* affine_quantization =
+   51:       reinterpret_cast<TfLiteAffineQuantization*>(output->quantization.params);
+   52:   TF_LITE_ENSURE(context, affine_quantization);
+   53:   TF_LITE_ENSURE(context, affine_quantization->scale);
+   54:   TF_LITE_ENSURE(context, affine_quantization->scale->size == 1);
+   55: 
+   56:   TF_LITE_ENSURE(
+   57:       context, input->type == kTfLiteFloat32 || input->type == kTfLiteInt32 ||
+   58:                    input->type == kTfLiteInt16 || input->type == kTfLiteInt8 ||
+   59:                    input->type == kTfLiteUInt8);
+   60:   TF_LITE_ENSURE(context, output->type == kTfLiteInt8 ||
+   61:                               output->type == kTfLiteInt16 ||
+   62:                               output->type == kTfLiteInt32 ||
+   63:                               output->type == kTfLiteUInt8);
+   64: 
+   65:   if ((input->type == kTfLiteInt16 && output->type == kTfLiteInt8) ||
+   66:       (input->type == kTfLiteInt8 && output->type == kTfLiteInt8) ||
+---
+   74:       (input->type == kTfLiteInt32 && output->type == kTfLiteInt16)) {
+   75:     double effective_scale = static_cast<double>(input->params.scale) /
+   76:                              static_cast<double>(output->params.scale);
+   77: 
+   78:     QuantizeMultiplier(effective_scale, &data->requantize_output_multiplier,
+   79:                        &data->requantize_output_shift);
+   80:   }
+   81: 
+   82:   data->quantization_params.zero_point = output->params.zero_point;
+   83:   data->quantization_params.scale = static_cast<double>(output->params.scale);
+   84: 
+   85:   data->input_zero_point = input->params.zero_point;
+   86: 
+   87:   micro_context->DeallocateTempTfLiteTensor(input);
+   88:   micro_context->DeallocateTempTfLiteTensor(output);
+   89:   return kTfLiteOk;
+   90: }
+   91: 
+   92: TfLiteStatus EvalQuantizeReference(TfLiteContext* context, TfLiteNode* node) {
+   93:   TFLITE_DCHECK(node->user_data != nullptr);
+   94:   auto* data = static_cast<OpDataQuantizeReference*>(node->user_data);
+   95: 
+   96:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+   97:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+   98: 
+   99:   if (input->type == kTfLiteFloat32) {
+  100:     switch (output->type) {
+  101:       case kTfLiteInt8:
+  102:         reference_ops::AffineQuantize(
+  103:             data->quantization_params, tflite::micro::GetTensorShape(input),
+  104:             tflite::micro::GetTensorData<float>(input),
+  105:             tflite::micro::GetTensorShape(output),
+  106:             tflite::micro::GetTensorData<int8_t>(output));
+  107:         break;
+  108:       case kTfLiteInt16:
+  109:         reference_ops::AffineQuantize(
+  110:             data->quantization_params, tflite::micro::GetTensorShape(input),
+  111:             tflite::micro::GetTensorData<float>(input),
+  112:             tflite::micro::GetTensorShape(output),
+  113:             tflite::micro::GetTensorData<int16_t>(output));
+  114:         return kTfLiteOk;
+  115:       default:
+  116:         MicroPrintf("Input %s, output %s not supported.",
+  117:                     TfLiteTypeGetName(input->type),
+  118:                     TfLiteTypeGetName(output->type));
+  119:         return kTfLiteError;
+  120:     }
+  121:   } else if (input->type == kTfLiteInt32) {
+  122:     size_t size = ElementCount(*input->dims);
+  123:     switch (output->type) {
+  124:       case kTfLiteInt8:
+  125:         reference_ops::Requantize(
+  126:             tflite::micro::GetTensorData<int32_t>(input), size,
+  127:             data->requantize_output_multiplier, data->requantize_output_shift,
+---
+  128:             data->input_zero_point, data->quantization_params.zero_point,
+  129:             tflite::micro::GetTensorData<int8_t>(output));
+  130:         break;
+  131:       case kTfLiteInt16:
+  132:         reference_ops::Requantize(
+  133:             tflite::micro::GetTensorData<int32_t>(input), size,
+  134:             data->requantize_output_multiplier, data->requantize_output_shift,
+  135:             data->input_zero_point, data->quantization_params.zero_point,
+  136:             tflite::micro::GetTensorData<int16_t>(output));
+  137:         break;
+---
+  138:       default:
+  139:         MicroPrintf("Input %s, output %s not supported.",
+  140:                     TfLiteTypeGetName(input->type),
+  141:                     TfLiteTypeGetName(output->type));
+  142:         return kTfLiteError;
+  143:     }
+  144:   } else if (input->type == kTfLiteInt16) {
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc =====
+   67:       copyCast(in, out->data.u32, num_elements);
+   68:       break;
+   69:     case kTfLiteFloat32:
+   70:       copyCast(in, tflite::micro::GetTensorData<float>(out), num_elements);
+   71:       break;
+   72:     default:
+   73:       // Unsupported type.
+   74:       MicroPrintf("Output type %s (%d) not supported.",
+   75:                   TfLiteTypeGetName(out->type), out->type);
+   76:   }
+   77:   return kTfLiteOk;
+   78: }
+   79: 
+   80: TfLiteStatus CastEval(TfLiteContext* context, TfLiteNode* node) {
+   81:   const TfLiteEvalTensor* input =
+   82:       tflite::micro::GetEvalInput(context, node, kInputTensor);
+   83:   TfLiteEvalTensor* output =
+   84:       tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+   85:   int num_elements = MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   86:                                       tflite::micro::GetTensorShape(output));
+   87: 
+   88:   switch (input->type) {
+   89:     case kTfLiteInt8:
+   90:       return copyToTensor(context, input->data.int8, output, num_elements);
+   91:     case kTfLiteInt16:
+   92:       return copyToTensor(context, tflite::micro::GetTensorData<int16_t>(input),
+   93:                           output, num_elements);
+   94:     case kTfLiteInt32:
+   95:       return copyToTensor(context, tflite::micro::GetTensorData<int32_t>(input),
+   96:                           output, num_elements);
+   97:     case kTfLiteUInt32:
+   98:       return copyToTensor(context,
+   99:                           tflite::micro::GetTensorData<uint32_t>(input), output,
+  100:                           num_elements);
+  101:     case kTfLiteFloat32:
+  102:       return copyToTensor(context, tflite::micro::GetTensorData<float>(input),
+  103:                           output, num_elements);
+  104:     case kTfLiteBool:
+  105:       return copyToTensor(context, tflite::micro::GetTensorData<bool>(input),
+  106:                           output, num_elements);
+  107:     default:
+  108:       // Unsupported type.
+  109:       MicroPrintf("Input type %s (%d) not supported.",
+  110:                   TfLiteTypeGetName(input->type), input->type);
+  111:   }
+  112:   return kTfLiteOk;
+  113: }
+  114: }  // namespace
+  115: 
+  116: TFLMRegistration Register_CAST() {
+  117:   return tflite::micro::RegisterOp(nullptr, CastPrepare, CastEval);
+  118: }
+  119: 
+  120: }  // namespace tflite
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/activations_common.cc =====
+   21: #include "tensorflow/lite/kernels/internal/common.h"
+   22: #include "tensorflow/lite/kernels/internal/quantization_util.h"
+   23: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   24: #include "tensorflow/lite/kernels/internal/types.h"
+   25: #include "tensorflow/lite/kernels/kernel_util.h"
+   26: #include "tensorflow/lite/kernels/op_macros.h"
+   27: #include "tensorflow/lite/micro/kernels/activations.h"
+   28: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   29: #include "tensorflow/lite/micro/micro_utils.h"
+   30: 
+   31: namespace tflite {
+   32: 
+   33: const int kActivationsInputTensor = 0;
+   34: const int kActivationsOutputTensor = 0;
+   35: 
+   36: void ReluQuantized(const ReluOpData& data, const RuntimeShape& input_shape,
+   37:                    const RuntimeShape& output_shape, const int8_t* input_data,
+   38:                    int8_t* output_data) {
+   39:   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+   40:   for (int i = 0; i < flat_size; ++i) {
+   41:     const int32_t val = static_cast<int32_t>(input_data[i]);
+   42:     int32_t clamped =
+   43:         data.params.output_offset +
+   44:         MultiplyByQuantizedMultiplier(val - data.params.input_offset,
+   45:                                       data.params.output_multiplier,
+   46:                                       data.params.output_shift);
+   47:     clamped = std::max(data.params.quantized_activation_min, clamped);
+   48:     clamped = std::min(data.params.quantized_activation_max, clamped);
+   49:     output_data[i] = static_cast<int8_t>(clamped);
+   50:   }
+   51: }
+   52: 
+   53: template <typename T>
+   54: void CalculateReluOpData(const TfLiteTensor* input, TfLiteTensor* output,
+   55:                          ReluOpData* data) {
+   56:   float act_min = 0.0;
+   57:   float act_max = std::numeric_limits<float>::infinity();
+   58:   double real_multiplier =
+   59:       static_cast<double>(input->params.scale / output->params.scale);
+   60: 
+   61:   const RuntimeShape input_shape = GetTensorShape(input);
+   62:   const RuntimeShape output_shape = GetTensorShape(output);
+   63: 
+   64:   QuantizeMultiplier(real_multiplier, &data->params.output_multiplier,
+   65:                      &data->params.output_shift);
+   66: 
+   67:   data->params.quantized_activation_min = std::max(
+   68:       static_cast<int32_t>(std::numeric_limits<T>::min()),
+   69:       output->params.zero_point +
+   70:           static_cast<int32_t>(roundf(act_min / output->params.scale)));
+   71:   data->params.quantized_activation_max =
+   72:       act_max == std::numeric_limits<float>::infinity()
+   73:           ? static_cast<int32_t>(std::numeric_limits<T>::max())
+   74:           : std::min(static_cast<int32_t>(std::numeric_limits<T>::max()),
+---
+   75:                      output->params.zero_point +
+   76:                          static_cast<int32_t>(
+   77:                              roundf(act_max / output->params.scale)));
+   78:   data->params.input_offset = input->params.zero_point;
+   79:   data->params.output_offset = output->params.zero_point;
+   80: }
+   81: 
+   82: void ReluFloat(const RuntimeShape& input_shape, const float* input_data,
+   83:                const RuntimeShape& output_shape, float* output_data) {
+   84:   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+   85:   for (int i = 0; i < flat_size; ++i) {
+   86:     const float val = input_data[i];
+   87:     const float lower = 0.0f;
+   88:     const float clamped = val < lower ? lower : val;
+   89:     output_data[i] = clamped;
+   90:   }
+   91: }
+   92: 
+   93: void Relu6Float(const RuntimeShape& input_shape, const float* input_data,
+   94:                 const RuntimeShape& output_shape, float* output_data) {
+   95:   const int flat_size = MatchingFlatSize(input_shape, output_shape);
+   96:   for (int i = 0; i < flat_size; ++i) {
+   97:     const float val = input_data[i];
+   98:     const float upper = 6.0f;
+   99:     const float lower = 0.0f;
+  100:     const float clamped = val > upper ? upper : val < lower ? lower : val;
+  101:     output_data[i] = clamped;
+  102:   }
+  103: }
+  104: 
+  105: TfLiteStatus ReluPrepare(TfLiteContext* context, TfLiteNode* node) {
+  106:   TFLITE_DCHECK(node->user_data != nullptr);
+  107:   ReluOpData* data = static_cast<ReluOpData*>(node->user_data);
+  108: 
+  109:   MicroContext* micro_context = GetMicroContext(context);
+  110:   TfLiteTensor* input =
+  111:       micro_context->AllocateTempInputTensor(node, kActivationsInputTensor);
+  112:   TF_LITE_ENSURE(context, input != nullptr);
+  113:   TfLiteTensor* output =
+  114:       micro_context->AllocateTempOutputTensor(node, kActivationsOutputTensor);
+  115:   TF_LITE_ENSURE(context, output != nullptr);
+  116: 
+  117:   if (input->type == kTfLiteInt8) {
+  118:     CalculateReluOpData<int8_t>(input, output, data);
+  119:   }
+---
+  120: 
+  121:   micro_context->DeallocateTempTfLiteTensor(input);
+  122:   micro_context->DeallocateTempTfLiteTensor(output);
+  123: 
+  124:   return kTfLiteOk;
+  125: }
+  126: 
+  127: TfLiteStatus Relu6Prepare(TfLiteContext* context, TfLiteNode* node) {
+  128:   TFLITE_DCHECK(node->user_data != nullptr);
+  129: 
+  130:   Relu6OpData* data = static_cast<Relu6OpData*>(node->user_data);
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/l2norm.cc =====
+  100:   // is just dominated by the zero point.
+  101:   // Also, GetInvSqrtQuantizedMultiplierExp handles the scenario where the sum
+  102:   // of input value squared is zero case well.
+  103:   // So we don't even need to do handle the epsilon for quantized kernel case.
+  104:   const float epsilon = 1e-6f;
+  105:   if (output->type == kTfLiteFloat32) {
+  106:     reference_ops::L2Normalization(data, tflite::micro::GetTensorShape(input),
+  107:                                    tflite::micro::GetTensorData<float>(input),
+  108:                                    tflite::micro::GetTensorShape(output),
+  109:                                    tflite::micro::GetTensorData<float>(output),
+  110:                                    epsilon);
+  111:   } else if (output->type == kTfLiteInt8) {
+  112:     const auto input_shape = tflite::micro::GetTensorShape(input);
+  113:     const auto output_shape = tflite::micro::GetTensorShape(output);
+  114:     const int trailing_dim = input_shape.DimensionsCount() - 1;
+  115:     const int depth =
+  116:         MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
+  117:     const int outer_size =
+  118:         MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
+  119:     reference_integer_ops::L2Normalization(
+  120:         data.input_zero_point, outer_size, depth,
+  121:         tflite::micro::GetTensorData<int8_t>(input),
+  122:         tflite::micro::GetTensorData<int8_t>(output));
+  123:   } else {
+  124:     MicroPrintf("Output type is %s, requires float.",
+  125:                 TfLiteTypeGetName(output->type));
+  126:     return kTfLiteError;
+  127:   }
+  128: 
+  129:   return kTfLiteOk;
+  130: }
+  131: 
+  132: }  // namespace
+  133: 
+  134: TFLMRegistration Register_L2NORM_REF() {
+  135:   return tflite::micro::RegisterOp(L2NormInit, L2NormPrepare, L2NormEval);
+  136: }
+  137: 
+  138: TFLMRegistration Register_L2_NORMALIZATION() { return Register_L2NORM_REF(); }
+  139: 
+  140: }  // namespace tflite
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize.cc =====
+   19: #include "tensorflow/lite/kernels/internal/quantization_util.h"
+   20: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   21: #include "tensorflow/lite/kernels/kernel_util.h"
+   22: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   23: #include "tensorflow/lite/micro/micro_utils.h"
+   24: 
+   25: namespace tflite {
+   26: namespace {
+   27: 
+   28: void* InitQuantizeReference(TfLiteContext* context, const char* buffer,
+   29:                             size_t length) {
+   30:   TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+   31:   return context->AllocatePersistentBuffer(context,
+   32:                                            sizeof(OpDataQuantizeReference));
+   33: }
+   34: 
+   35: }  // namespace
+   36: 
+   37: TFLMRegistration Register_QUANTIZE() {
+   38:   return tflite::micro::RegisterOp(
+   39:       InitQuantizeReference, PrepareQuantizeReference, EvalQuantizeReference);
+   40: }
+   41: 
+   42: }  // namespace tflite
+---
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elu.cc =====
+   54:   const float inverse_scale = 1 / output->params.scale;
+   55:   int32_t maxval = std::numeric_limits<T>::max();
+   56:   int32_t minval = std::numeric_limits<T>::min();
+   57:   for (int32_t val = minval; val <= maxval; ++val) {
+   58:     const float dequantized =
+   59:         input->params.scale * (val - input->params.zero_point);
+   60:     const float transformed = transform(dequantized);
+   61:     const float rescaled = TfLiteRound(transformed * inverse_scale);
+   62:     const int32_t quantized =
+   63:         static_cast<int32_t>(rescaled + output->params.zero_point);
+   64:     data->table[static_cast<uint8_t>(static_cast<T>(val))] =
+   65:         static_cast<T>(std::max(std::min(maxval, quantized), minval));
+   66:   }
+   67: }
+   68: 
+   69: // OLD-TODO(b/143696793): move this to optimized_ops.
+   70: void EvalUsingLookupTable(const OpData* data, const TfLiteEvalTensor* input,
+   71:                           TfLiteEvalTensor* output) {
+   72:   const int size = MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   73:                                     tflite::micro::GetTensorShape(output));
+   74:   int8_t* output_data = tflite::micro::GetTensorData<int8_t>(output);
+   75:   const int8_t* input_data = tflite::micro::GetTensorData<int8_t>(input);
+   76: 
+   77:   for (int i = 0; i < size; ++i) {
+   78:     output_data[i] = data->table[static_cast<uint8_t>(input_data[i])];
+   79:   }
+   80: }
+   81: 
+   82: TfLiteStatus CalculateOpData(TfLiteContext* context, TfLiteNode* node) {
+   83:   MicroContext* micro_context = GetMicroContext(context);
+   84: 
+   85:   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
+   86:   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+   87:   TfLiteTensor* input =
+   88:       micro_context->AllocateTempInputTensor(node, kInputTensor);
+   89:   TF_LITE_ENSURE(context, input != nullptr);
+   90:   TfLiteTensor* output =
+   91:       micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+   92:   TF_LITE_ENSURE(context, output != nullptr);
+   93:   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
+   94: 
+   95:   // Use LUT to handle quantized elu path.
+   96:   if (input->type == kTfLiteInt8) {
+   97:     OpData* data = static_cast<OpData*>(node->user_data);
+   98:     TransformFunc transform = [](float value) {
+   99:       return value < 0.0f ? std::exp(value) - 1.0f : value;
+  100:     };
+  101:     PopulateLookupTable<int8_t>(input, output, transform, data);
+  102:   }
+  103:   micro_context->DeallocateTempTfLiteTensor(input);
+  104:   micro_context->DeallocateTempTfLiteTensor(output);
+  105:   return kTfLiteOk;
+  106: }
+  107: 
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/quantize_test.cc =====
+   19: #include "tensorflow/lite/micro/test_helpers.h"
+   20: #include "tensorflow/lite/micro/testing/micro_test.h"
+   21: 
+   22: namespace tflite {
+   23: namespace testing {
+   24: namespace {
+   25: 
+   26: template <typename T>
+   27: void ValidateQuantizeGoldens(TfLiteTensor* tensors, int tensors_size,
+   28:                              const float* golden, T* golden_quantized,
+   29:                              float scale, int zero_point, int output_len,
+   30:                              T* output_data) {
+   31:   int inputs_array_data[] = {1, 0};
+   32:   TfLiteIntArray* inputs_array = IntArrayFromInts(inputs_array_data);
+   33:   int outputs_array_data[] = {1, 1};
+   34:   TfLiteIntArray* outputs_array = IntArrayFromInts(outputs_array_data);
+   35: 
+   36:   // Version 1 of quantize supports int8_t and uint8_t quantization.
+   37:   const TFLMRegistration registration = Register_QUANTIZE();
+   38:   micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
+   39:                              outputs_array,
+   40:                              /*builtin_data=*/nullptr);
+   41: 
+   42:   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.InitAndPrepare());
+   43:   TF_LITE_MICRO_EXPECT_EQ(kTfLiteOk, runner.Invoke());
+   44: 
+   45:   // Use reference quantization from test utils to compare against op output.
+   46:   Quantize(golden, golden_quantized, output_len, scale, zero_point);
+   47:   for (int i = 0; i < output_len; ++i) {
+   48:     TF_LITE_MICRO_EXPECT_EQ(golden_quantized[i], output_data[i]);
+   49:   }
+   50: }
+   51: 
+   52: template <typename T>
+   53: void TestQuantizeFloat(int* input_dims_data, const float* input_data,
+   54:                        int* output_dims_data, const float* golden,
+   55:                        T* golden_quantized, const float scale,
+   56:                        const int zero_point, T* output_data) {
+   57:   TfLiteIntArray* input_dims = IntArrayFromInts(input_dims_data);
+   58:   TfLiteIntArray* output_dims = IntArrayFromInts(output_dims_data);
+   59:   const int output_dims_count = ElementCount(*output_dims);
+   60: 
+   61:   TfLiteTensor output_tensor =
+   62:       CreateQuantizedTensor(output_data, output_dims, scale, zero_point);
+   63: 
+   64:   TfLiteAffineQuantization quant;
+   65:   float scales[] = {1, scale};
+   66:   int zero_points[] = {1, zero_point};
+   67:   quant.scale = FloatArrayFromFloats(scales);
+   68:   quant.zero_point = IntArrayFromInts(zero_points);
+   69:   output_tensor.quantization = {kTfLiteAffineQuantization, &quant};
+   70: 
+   71:   // 1 input, 1 output.
+   72:   constexpr int tensors_size = 2;
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/exp.cc =====
+   41:   TF_LITE_ENSURE_TYPES_EQ(context, input->type, kTfLiteFloat32);
+   42:   TF_LITE_ENSURE_TYPES_EQ(context, output->type, input->type);
+   43:   TF_LITE_ENSURE_EQ(context, output->bytes, input->bytes);
+   44:   TF_LITE_ENSURE_EQ(context, output->dims->size, input->dims->size);
+   45:   for (int i = 0; i < output->dims->size; ++i) {
+   46:     TF_LITE_ENSURE_EQ(context, output->dims->data[i], input->dims->data[i]);
+   47:   }
+   48:   micro_context->DeallocateTempTfLiteTensor(input);
+   49:   micro_context->DeallocateTempTfLiteTensor(output);
+   50: 
+   51:   return kTfLiteOk;
+   52: }
+   53: 
+   54: TfLiteStatus ExpEval(TfLiteContext* context, TfLiteNode* node) {
+   55:   const TfLiteEvalTensor* input =
+   56:       tflite::micro::GetEvalInput(context, node, kInputTensor);
+   57:   TfLiteEvalTensor* output =
+   58:       tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+   59:   int flat_size = MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   60:                                    tflite::micro::GetTensorShape(output));
+   61: 
+   62:   if (input->type == kTfLiteFloat32) {
+   63:     reference_ops::Exp(tflite::micro::GetTensorData<float>(input),
+   64:                        static_cast<size_t>(flat_size),
+   65:                        tflite::micro::GetTensorData<float>(output));
+   66:   } else {
+   67:     MicroPrintf("Type %s (%d) currently not supported by Exp.",
+   68:                 TfLiteTypeGetName(input->type), input->type);
+   69:     return kTfLiteError;
+   70:   }
+   71:   return kTfLiteOk;
+   72: }
+   73: }  // namespace
+   74: 
+   75: TFLMRegistration Register_EXP() {
+   76:   return tflite::micro::RegisterOp(nullptr, ExpPrepare, ExpEval);
+   77: }
+   78: 
+   79: }  // namespace tflite
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/zeros_like.cc =====
+   40: 
+   41:   micro_context->DeallocateTempTfLiteTensor(input);
+   42:   micro_context->DeallocateTempTfLiteTensor(output);
+   43:   return kTfLiteOk;
+   44: }
+   45: 
+   46: template <typename T>
+   47: void resetZeros(T* out, const int num_elements) {
+   48:   for (int i = 0; i < num_elements; ++i) {
+   49:     out[i] = static_cast<T>(0);
+   50:   }
+   51: }
+   52: 
+   53: TfLiteStatus ZerosLikeEval(TfLiteContext* context, TfLiteNode* node) {
+   54:   const TfLiteEvalTensor* input =
+   55:       tflite::micro::GetEvalInput(context, node, kInputTensor);
+   56:   TfLiteEvalTensor* output =
+   57:       tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+   58:   int flat_size = MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   59:                                    tflite::micro::GetTensorShape(output));
+   60:   switch (input->type) {
+   61:     case kTfLiteInt64:
+   62:       resetZeros(tflite::micro::GetTensorData<int64_t>(output), flat_size);
+   63:       break;
+   64:     case kTfLiteInt32:
+   65:       resetZeros(tflite::micro::GetTensorData<int32_t>(output), flat_size);
+   66:       break;
+   67:     case kTfLiteInt8:
+   68:       resetZeros(tflite::micro::GetTensorData<int8_t>(output), flat_size);
+   69:       break;
+   70:     case kTfLiteFloat32:
+   71:       resetZeros(tflite::micro::GetTensorData<float>(output), flat_size);
+   72:       break;
+   73:     default:
+   74:       MicroPrintf(
+   75:           "ZerosLike only currently supports int64, int32, "
+   76:           "and float32, got %d.",
+   77:           input->type);
+   78:       return kTfLiteError;
+   79:   }
+   80:   return kTfLiteOk;
+   81: }
+   82: }  // namespace
+   83: 
+   84: TFLMRegistration Register_ZEROS_LIKE() {
+   85:   return tflite::micro::RegisterOp(nullptr, ZerosLikePrepare, ZerosLikeEval);
+   86: }
+   87: 
+   88: }  // namespace tflite
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/micro_ops.h =====
+   83: TFLMRegistration Register_LOG();
+   84: TFLMRegistration Register_LOG_SOFTMAX();
+   85: TFLMRegistration Register_LOGICAL_AND();
+   86: TFLMRegistration Register_LOGICAL_NOT();
+   87: TFLMRegistration Register_LOGICAL_OR();
+   88: TFLMRegistration Register_LOGISTIC();
+   89: TFLMRegistration Register_MAX_POOL_2D();
+   90: TFLMRegistration Register_MAXIMUM();
+   91: TFLMRegistration Register_MEAN();
+   92: TFLMRegistration Register_MINIMUM();
+   93: TFLMRegistration Register_MIRROR_PAD();
+   94: TFLMRegistration Register_MUL();
+   95: TFLMRegistration Register_NEG();
+   96: TFLMRegistration Register_NOT_EQUAL();
+   97: TFLMRegistration Register_PACK();
+   98: TFLMRegistration Register_PAD();
+   99: TFLMRegistration Register_PADV2();
+  100: TFLMRegistration Register_PRELU();
+  101: TFLMRegistration Register_QUANTIZE();
+  102: TFLMRegistration Register_READ_VARIABLE();
+  103: TFLMRegistration Register_REDUCE_MAX();
+  104: TFLMRegistration Register_RELU();
+  105: TFLMRegistration Register_RELU6();
+  106: TFLMRegistration Register_RESHAPE();
+  107: TFLMRegistration Register_RESIZE_BILINEAR();
+  108: TFLMRegistration Register_RESIZE_NEAREST_NEIGHBOR();
+  109: TFLMRegistration Register_ROUND();
+  110: TFLMRegistration Register_RSQRT();
+  111: TFLMRegistration Register_SELECT_V2();
+  112: TFLMRegistration Register_SHAPE();
+  113: TFLMRegistration Register_SIN();
+  114: TFLMRegistration Register_SLICE();
+  115: TFLMRegistration Register_SOFTMAX();
+  116: TFLMRegistration Register_SPACE_TO_BATCH_ND();
+  117: TFLMRegistration Register_SPACE_TO_DEPTH();
+  118: TFLMRegistration Register_SPLIT();
+  119: TFLMRegistration Register_SPLIT_V();
+  120: TFLMRegistration Register_SQRT();
+  121: TFLMRegistration Register_SQUARE();
+  122: TFLMRegistration Register_SQUARED_DIFFERENCE();
+  123: TFLMRegistration Register_SQUEEZE();
+  124: TFLMRegistration Register_STRIDED_SLICE();
+  125: TFLMRegistration Register_SUB();
+  126: TFLMRegistration Register_SUM();
+  127: TFLMRegistration Register_SVDF();
+  128: TFLMRegistration Register_TANH();
+  129: TFLMRegistration Register_TRANSPOSE();
+  130: TFLMRegistration Register_TRANSPOSE_CONV();
+  131: // TODO(b/230666079): resolve conflict with xtensa implementation
+  132: TFLMRegistration Register_UNIDIRECTIONAL_SEQUENCE_LSTM();
+  133: TFLMRegistration Register_UNPACK();
+  134: TFLMRegistration Register_VAR_HANDLE();
+  135: TFLMRegistration Register_WHILE();
+  136: TFLMRegistration Register_ZEROS_LIKE();
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/dequantize.cc =====
+   37: 
+   38: TfLiteStatus DequantizeEval(TfLiteContext* context, TfLiteNode* node) {
+   39:   TFLITE_DCHECK(node->user_data != nullptr);
+   40:   DequantizeOpData* data = static_cast<DequantizeOpData*>(node->user_data);
+   41: 
+   42:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+   43:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+   44: 
+   45:   // Output type ensured to be kTfLiteFloat32 at the Prepare stage
+   46:   TFLITE_DCHECK(output->type == kTfLiteFloat32);
+   47: 
+   48:   switch (input->type) {
+   49:     case kTfLiteInt8: {
+   50: #if HIFI_VFPU && (defined(HIFI5) || defined(HIFI4) || defined(HIFI3))
+   51:       int err;
+   52:       const int8_t* input_data_ptr;
+   53:       float* output_data_ptr;
+   54:       const int flat_size =
+   55:           MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   56:                            tflite::micro::GetTensorShape(output));
+   57:       input_data_ptr = tflite::micro::GetTensorData<int8_t>(input);
+   58:       output_data_ptr = tflite::micro::GetTensorData<float>(output);
+   59: 
+   60:       err = xa_nn_elm_dequantize_asym8s_f32(
+   61:           output_data_ptr, input_data_ptr, data->quantization_params.zero_point,
+   62:           data->quantization_params.scale, flat_size);
+   63:       TF_LITE_ENSURE(context, (err == 0));
+   64: #else   //  HIFI_VFPU && (defined(HIFI5) || defined(HIFI4) || defined(HIFI3))
+   65:       reference_ops::Dequantize(data->quantization_params,
+   66:                                 tflite::micro::GetTensorShape(input),
+   67:                                 tflite::micro::GetTensorData<int8_t>(input),
+   68:                                 tflite::micro::GetTensorShape(output),
+   69:                                 tflite::micro::GetTensorData<float>(output));
+   70: #endif  //  HIFI_VFPU && (defined(HIFI5) || defined(HIFI4) || defined(HIFI3))
+   71:       break;
+   72:     }
+   73:     case kTfLiteInt16: {
+   74: #if HIFI_VFPU && (defined(HIFI5) || defined(HIFI4) || defined(HIFI3))
+   75:       int err;
+   76:       const int16_t* input_data_ptr;
+   77:       float* output_data_ptr;
+   78:       const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+   79:       const RuntimeShape& output_shape = tflite::micro::GetTensorShape(output);
+   80:       const int flat_size = MatchingFlatSize(input_shape, output_shape);
+   81:       input_data_ptr = tflite::micro::GetTensorData<int16_t>(input);
+   82:       output_data_ptr = tflite::micro::GetTensorData<float>(output);
+   83:       err = xa_nn_elm_dequantize_asym16s_f32(
+   84:           output_data_ptr, input_data_ptr, data->quantization_params.zero_point,
+   85:           data->quantization_params.scale, flat_size);
+   86:       TF_LITE_ENSURE(context, (err == 0));
+   87: #else   // HIFI_VFPU && (defined(HIFI5) || defined(HIFI4) || defined(HIFI3))
+   88:       reference_ops::Dequantize(data->quantization_params,
+   89:                                 tflite::micro::GetTensorShape(input),
+   90:                                 tflite::micro::GetTensorData<int16_t>(input),
+---
+   91:                                 tflite::micro::GetTensorShape(output),
+   92:                                 tflite::micro::GetTensorData<float>(output));
+   93: #endif  // HIFI_VFPU && (defined(HIFI5) || defined(HIFI4) || defined(HIFI3))
+   94:       break;
+   95:     }
+   96:     case kTfLiteUInt8:
+   97:       reference_ops::Dequantize(data->quantization_params,
+   98:                                 tflite::micro::GetTensorShape(input),
+   99:                                 tflite::micro::GetTensorData<uint8_t>(input),
+  100:                                 tflite::micro::GetTensorShape(output),
+  101:                                 tflite::micro::GetTensorData<float>(output));
+  102:       break;
+  103:     default:
+  104:       MicroPrintf("Input %s, output %s not supported.",
+  105:                   TfLiteTypeGetName(input->type),
+  106:                   TfLiteTypeGetName(output->type));
+  107:       return kTfLiteError;
+  108:   }
+  109: 
+  110:   return kTfLiteOk;
+  111: }
+  112: 
+  113: TFLMRegistration Register_DEQUANTIZE() {
+  114:   return tflite::micro::RegisterOp(DequantizeInit, DequantizePrepare,
+  115:                                    DequantizeEval);
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/logistic.cc =====
+   42:   TfLiteEvalTensor* output =
+   43:       tflite::micro::GetEvalOutput(context, node, kLogisticOutputTensor);
+   44: 
+   45:   TFLITE_DCHECK(node->user_data != nullptr);
+   46:   OpDataLogistic* data = static_cast<OpDataLogistic*>(node->user_data);
+   47: 
+   48:   if (input->type != output->type) {
+   49:     MicroPrintf(
+   50:         "Input and output types must be identical. Input %s, output %s.",
+   51:         TfLiteTypeGetName(input->type), TfLiteTypeGetName(output->type));
+   52:     return kTfLiteError;
+   53:   }
+   54: 
+   55:   switch (input->type) {
+   56:     case kTfLiteFloat32: {
+   57: #if HIFI_VFPU && (defined(HIFI3) || defined(HIFI4) || defined(HIFI5))
+   58:       const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+   59:       const RuntimeShape& output_shape = tflite::micro::GetTensorShape(output);
+   60:       const int flat_size = MatchingFlatSize(input_shape, output_shape);
+   61: 
+   62:       const float* inp_data_ptr = tflite::micro::GetTensorData<float>(input);
+   63:       float* out_data_ptr = tflite::micro::GetTensorData<float>(output);
+   64: 
+   65:       TF_LITE_ENSURE_EQ(
+   66:           context,
+   67:           xa_nn_vec_sigmoid_f32_f32(out_data_ptr, inp_data_ptr, flat_size), 0);
+   68: #else
+   69:       reference_ops::Logistic(tflite::micro::GetTensorShape(input),
+   70:                               tflite::micro::GetTensorData<float>(input),
+   71:                               tflite::micro::GetTensorShape(output),
+   72:                               tflite::micro::GetTensorData<float>(output));
+   73: #endif  // HIFI_VFPU && (defined(HIFI3) || defined(HIFI4) || defined(HIFI5))
+   74:       break;
+   75:     }
+   76:     case kTfLiteInt8: {
+   77: #if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+   78:       const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+   79:       const RuntimeShape& output_shape = tflite::micro::GetTensorShape(output);
+   80:       const int flat_size = MatchingFlatSize(input_shape, output_shape);
+   81: 
+   82:       const int8_t* input_data_ptr =
+   83:           tflite::micro::GetTensorData<int8_t>(input);
+   84:       int8_t* output_data_ptr = tflite::micro::GetTensorData<int8_t>(output);
+   85: 
+   86:       TF_LITE_ENSURE_EQ(
+   87:           context,
+   88:           xa_nn_vec_sigmoid_asym8s_asym8s(
+   89:               output_data_ptr, input_data_ptr, data->input_zero_point,
+   90:               data->input_range_radius, data->input_multiplier,
+   91:               data->input_left_shift, flat_size),
+   92:           0);
+   93: #else
+   94:       reference_integer_ops::Logistic(
+   95:           data->input_zero_point, data->input_range_radius,
+---
+   96:           data->input_multiplier, data->input_left_shift,
+   97:           NumElements(input->dims), tflite::micro::GetTensorData<int8_t>(input),
+   98:           tflite::micro::GetTensorData<int8_t>(output));
+   99: #endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+  100:       break;
+  101:     }
+  102:     case kTfLiteInt16: {
+  103:       switch (output->type) {
+  104:         case kTfLiteInt16:
+  105:           reference_integer_ops::Logistic(
+  106:               data->input_multiplier, data->input_left_shift,
+  107:               NumElements(input->dims),
+  108:               tflite::micro::GetTensorData<int16_t>(input),
+  109:               tflite::micro::GetTensorData<int16_t>(output));
+  110:           break;
+  111:         default:
+  112:           MicroPrintf("Input %s, output %s not supported.",
+  113:                       TfLiteTypeGetName(input->type),
+  114:                       TfLiteTypeGetName(output->type));
+  115:           return kTfLiteError;
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/quantize.cc =====
+  222:       switch (output->type) {
+  223:         case kTfLiteInt8: {
+  224: #if HIFI_VFPU
+  225:           int size = ElementCount(*input->dims);
+  226:           int32_t zero_point = op_data->quantization_params.zero_point;
+  227:           const float* input_data_ptr;
+  228:           int8_t* output_data_ptr;
+  229:           input_data_ptr = tflite::micro::GetTensorData<float>(input);
+  230:           output_data_ptr = tflite::micro::GetTensorData<int8_t>(output);
+  231: 
+  232:           TF_LITE_ENSURE_EQ(
+  233:               context,
+  234:               xa_nn_elm_quantize_f32_asym8s(
+  235:                   output_data_ptr, input_data_ptr,
+  236:                   static_cast<float>(op_data->quantization_params.scale),
+  237:                   zero_point, size),
+  238:               0);
+  239: #else   // #if HIFI_VFPU
+  240:           reference_ops::AffineQuantize(
+  241:               op_data->quantization_params,
+  242:               tflite::micro::GetTensorShape(input),
+  243:               tflite::micro::GetTensorData<float>(input),
+  244:               tflite::micro::GetTensorShape(output),
+  245:               tflite::micro::GetTensorData<int8_t>(output));
+  246: #endif  // #if HIFI_VFPU
+  247:           break;
+  248:         }
+  249: 
+  250:         case kTfLiteInt16: {
+  251: #if HIFI_VFPU
+  252:           int size = ElementCount(*input->dims);
+  253:           int32_t zero_point = op_data->quantization_params.zero_point;
+  254:           const float* input_data_ptr;
+  255:           int16_t* output_data_ptr;
+  256:           input_data_ptr = tflite::micro::GetTensorData<float>(input);
+  257:           output_data_ptr = tflite::micro::GetTensorData<int16_t>(output);
+  258: 
+  259:           TF_LITE_ENSURE_EQ(
+  260:               context,
+  261:               xa_nn_elm_quantize_f32_asym16s(
+  262:                   output_data_ptr, input_data_ptr,
+  263:                   static_cast<float>(op_data->quantization_params.scale),
+  264:                   zero_point, size),
+  265:               0);
+  266: #else   // #if HIFI_VFPU
+  267:           reference_ops::AffineQuantize(
+  268:               op_data->quantization_params,
+  269:               tflite::micro::GetTensorShape(input),
+  270:               tflite::micro::GetTensorData<float>(input),
+  271:               tflite::micro::GetTensorShape(output),
+  272:               tflite::micro::GetTensorData<int16_t>(output));
+  273: #endif  // #if HIFI_VFPU
+  274:           break;
+  275:         }
+---
+  276: 
+  277:         default: {
+  278:           MicroPrintf("Input %s, output %s not supported.",
+  279:                       TfLiteTypeGetName(input->type),
+  280:                       TfLiteTypeGetName(output->type));
+  281:           return kTfLiteError;
+  282:         }
+  283:       }
+  284:       break;
+  285:     }
+  286: 
+  287:     default: {
+  288:       MicroPrintf("Input %s, output %s not supported.",
+  289:                   TfLiteTypeGetName(input->type),
+  290:                   TfLiteTypeGetName(output->type));
+  291:       return kTfLiteError;
+  292:     }
+  293:   }
+  294: 
+  295:   return kTfLiteOk;
+  296: }
+  297: #endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+  298: 
+  299: void* Init(TfLiteContext* context, const char* buffer, size_t length) {
+  300:   TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+  301:   return context->AllocatePersistentBuffer(context,
+  302:                                            sizeof(OpDataQuantizeReference));
+---
+  316: 
+  317:   op_data->input_zero_point = input->params.zero_point;
+  318: 
+  319:   double effective_scale = static_cast<double>(input->params.scale) /
+  320:                            static_cast<double>(output->params.scale);
+  321:   QuantizeMultiplier(effective_scale, &op_data->requantize_output_multiplier,
+  322:                      &op_data->requantize_output_shift);
+  323: 
+  324:   micro_context->DeallocateTempTfLiteTensor(input);
+  325:   micro_context->DeallocateTempTfLiteTensor(output);
+  326: 
+  327:   return kTfLiteOk;
+  328: }
+  329: 
+  330: TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+  331: #if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+  332:   return EvalXtensa(context, node);
+  333: #else
+  334:   return EvalQuantizeReference(context, node);
+  335: #endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+  336: }
+  337: 
+  338: }  // namespace
+  339: 
+  340: TFLMRegistration Register_QUANTIZE() {
+  341:   return tflite::micro::RegisterOp(Init, Prepare, Eval);
+  342: }
+  343: 
+  344: }  // namespace tflite
+---
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/softmax_int8_int16.cc =====
+   55:         context, context->RequestScratchBufferInArena(
+   56:                      context, required_scratch, &(data->scratch_tensor_index)));
+   57:   }
+   58: 
+   59:   micro_context->DeallocateTempTfLiteTensor(input);
+   60:   micro_context->DeallocateTempTfLiteTensor(output);
+   61:   return kTfLiteOk;
+   62: }
+   63: 
+   64: TfLiteStatus EvalHifi(const XtensaSoftmaxOpData* op_data,
+   65:                       const TfLiteEvalTensor* input, TfLiteEvalTensor* output,
+   66:                       TfLiteContext* context) {
+   67:   const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+   68:   const int8_t* input_data = tflite::micro::GetTensorData<int8_t>(input);
+   69:   const RuntimeShape& output_shape = tflite::micro::GetTensorShape(output);
+   70:   int16_t* output_data = tflite::micro::GetTensorData<int16_t>(output);
+   71:   const int trailing_dim = input_shape.DimensionsCount() - 1;
+   72:   const int outer_size =
+   73:       MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
+   74:   const int depth =
+   75:       MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
+   76: 
+   77:   void* p_scratch = static_cast<void*>(
+   78:       context->GetScratchBuffer(context, op_data->scratch_tensor_index));
+   79: 
+   80:   for (int i = 0; i < outer_size; ++i) {
+   81:     int err = xa_nn_vec_softmax_asym8s_16(
+   82:         &output_data[i * depth], &input_data[i * depth],
+   83:         op_data->params.diff_min, op_data->params.input_left_shift,
+   84:         op_data->params.input_multiplier, depth, p_scratch);
+   85:     TF_LITE_ENSURE(context, err == 0);
+   86:   }
+   87:   return kTfLiteOk;
+   88: }
+   89: #endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+   90: 
+   91: }  // namespace
+   92: 
+   93: void* XtensaInitSoftmax(TfLiteContext* context, const char* buffer,
+   94:                         size_t length) {
+   95: #if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+   96:   TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+   97:   return context->AllocatePersistentBuffer(context,
+   98:                                            sizeof(XtensaSoftmaxOpData));
+   99: #elif defined(VISION_P6)
+  100:   TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+  101:   if (InitXtensaContext()) {
+  102:     return nullptr;
+  103:   }
+  104:   return context->AllocatePersistentBuffer(context,
+  105:                                            sizeof(XtensaSoftmaxOpData));
+  106: #else
+  107:   return SoftmaxInit(context, buffer, length);
+  108: #endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/softmax.cc =====
+   26: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   27: #include "tensorflow/lite/micro/kernels/xtensa/xtensa.h"
+   28: #include "tensorflow/lite/micro/kernels/xtensa/xtensa_softmax.h"
+   29: #include "tensorflow/lite/micro/micro_log.h"
+   30: 
+   31: namespace tflite {
+   32: namespace {
+   33: 
+   34: #if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+   35: TfLiteStatus EvalHifiInt8(const XtensaSoftmaxOpData* op_data,
+   36:                           const TfLiteEvalTensor* input,
+   37:                           TfLiteEvalTensor* output, TfLiteContext* context) {
+   38:   const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+   39:   const int8_t* input_data = tflite::micro::GetTensorData<int8_t>(input);
+   40:   const RuntimeShape& output_shape = tflite::micro::GetTensorShape(output);
+   41:   int8_t* output_data = tflite::micro::GetTensorData<int8_t>(output);
+   42:   const int trailing_dim = input_shape.DimensionsCount() - 1;
+   43:   const int outer_size =
+   44:       MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
+   45:   const int depth =
+   46:       MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
+   47: 
+   48:   void* p_scratch = static_cast<void*>(
+   49:       context->GetScratchBuffer(context, op_data->scratch_tensor_index));
+   50:   for (int i = 0; i < outer_size; ++i) {
+   51:     int err = xa_nn_vec_softmax_asym8s_asym8s(
+   52:         &output_data[i * depth], &input_data[i * depth],
+   53:         op_data->params.diff_min, op_data->params.input_left_shift,
+   54:         op_data->params.input_multiplier, depth, p_scratch);
+   55:     TF_LITE_ENSURE(context, err == 0);
+   56:   }
+   57:   return kTfLiteOk;
+   58: }
+   59: #endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+   60: 
+   61: TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+   62:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+   63:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+   64: 
+   65:   if (input->type == kTfLiteInt8 && output->type == kTfLiteInt16) {
+   66:     return XtensaEvalSoftmaxInt8Int16(context, node);
+   67:   }
+   68: 
+   69:   TFLITE_DCHECK(node->user_data != nullptr);
+   70: 
+   71: #if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+   72:   XtensaSoftmaxOpData op_data =
+   73:       *static_cast<XtensaSoftmaxOpData*>(node->user_data);
+   74:   SoftmaxParams params = op_data.params;
+   75: #else
+   76:   SoftmaxParams params = *static_cast<SoftmaxParams*>(node->user_data);
+   77: #endif
+   78: 
+   79:   if (input->type == kTfLiteInt8 && output->type == kTfLiteInt8) {
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/leaky_relu.cc =====
+   64:       const auto* params =
+   65:           static_cast<TfLiteLeakyReluParams*>(node->builtin_data);
+   66: 
+   67:       op_params.alpha = params->alpha;
+   68:       reference_ops::LeakyRelu(op_params, tflite::micro::GetTensorShape(input),
+   69:                                tflite::micro::GetTensorData<float>(input),
+   70:                                tflite::micro::GetTensorShape(output),
+   71:                                tflite::micro::GetTensorData<float>(output));
+   72:       return kTfLiteOk;
+   73:     } break;
+   74:     case kTfLiteInt8: {
+   75:       QuantizeLeakyRelu<int8_t>(data, input, output);
+   76:       return kTfLiteOk;
+   77:     } break;
+   78:     case kTfLiteInt16: {
+   79: #if defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+   80:       const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+   81:       const RuntimeShape& output_shape = tflite::micro::GetTensorShape(output);
+   82:       const int flat_size = MatchingFlatSize(input_shape, output_shape);
+   83:       int32_t err = xa_nn_vec_leaky_relu_asym16s_asym16s(
+   84:           tflite::micro::GetTensorData<int16_t>(output),
+   85:           tflite::micro::GetTensorData<int16_t>(input), data.input_zero_point,
+   86:           data.output_multiplier_alpha, data.output_shift_alpha,
+   87:           data.output_multiplier_identity, data.output_shift_identity,
+   88:           data.output_zero_point, flat_size);
+   89:       if (err != 0) return kTfLiteError;
+   90: #else
+   91:       QuantizeLeakyRelu<int16_t>(data, input, output);
+   92: #endif  // defined(HIFI3) || defined(HIFI4) || defined(HIFI5)
+   93:       return kTfLiteOk;
+   94:     } break;
+   95:     default:
+   96:       MicroPrintf("Only float32, int8 are supported by LEAKY_RELU, got %s.",
+   97:                   TfLiteTypeGetName(input->type));
+   98:       return kTfLiteError;
+   99:   }
+  100: 
+  101:   return kTfLiteError;
+  102: }
+  103: 
+  104: TFLMRegistration Register_LEAKY_RELU() {
+  105:   return tflite::micro::RegisterOp(LeakyReluInit, LeakyReluPrepare,
+  106:                                    LeakyReluEval);
+  107: }
+  108: 
+  109: }  // namespace tflite
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/types.h =====
+  650:   const int size_2 = check_shape_0.FlatSize();
+  651:   TFLITE_CHECK_EQ(size_1, size_2);
+  652:   return size_1;
+  653: }
+  654: 
+  655: inline int MatchingElementsSize(const RuntimeShape& shape,
+  656:                                 const RuntimeShape& check_shape_0,
+  657:                                 const RuntimeShape& check_shape_1) {
+  658:   const int size_1 = shape.FlatSize();
+  659:   const int size_2 = check_shape_0.FlatSize();
+  660:   const int size_3 = check_shape_1.FlatSize();
+  661:   TFLITE_CHECK_EQ(size_1, size_2);
+  662:   TFLITE_CHECK_EQ(size_2, size_3);
+  663:   return size_1;
+  664: }
+  665: 
+  666: // Flat size calculation, checking that dimensions match with one or more other
+  667: // arrays.
+  668: inline int MatchingFlatSize(const RuntimeShape& shape,
+  669:                             const RuntimeShape& check_shape_0) {
+  670:   TFLITE_DCHECK_EQ(shape.DimensionsCount(), check_shape_0.DimensionsCount());
+  671:   const int dims_count = shape.DimensionsCount();
+  672:   for (int i = 0; i < dims_count; ++i) {
+  673:     TFLITE_DCHECK_EQ(shape.Dims(i), check_shape_0.Dims(i));
+  674:   }
+  675:   return shape.FlatSize();
+  676: }
+  677: 
+  678: inline int MatchingFlatSize(const RuntimeShape& shape,
+  679:                             const RuntimeShape& check_shape_0,
+  680:                             const RuntimeShape& check_shape_1) {
+  681:   TFLITE_DCHECK_EQ(shape.DimensionsCount(), check_shape_0.DimensionsCount());
+  682:   const int dims_count = shape.DimensionsCount();
+  683:   for (int i = 0; i < dims_count; ++i) {
+  684:     TFLITE_DCHECK_EQ(shape.Dims(i), check_shape_0.Dims(i));
+  685:   }
+  686:   return MatchingFlatSize(shape, check_shape_1);
+  687: }
+  688: 
+  689: inline int MatchingFlatSize(const RuntimeShape& shape,
+  690:                             const RuntimeShape& check_shape_0,
+  691:                             const RuntimeShape& check_shape_1,
+  692:                             const RuntimeShape& check_shape_2) {
+  693:   TFLITE_DCHECK_EQ(shape.DimensionsCount(), check_shape_0.DimensionsCount());
+  694:   const int dims_count = shape.DimensionsCount();
+  695:   for (int i = 0; i < dims_count; ++i) {
+  696:     TFLITE_DCHECK_EQ(shape.Dims(i), check_shape_0.Dims(i));
+  697:   }
+  698:   return MatchingFlatSize(shape, check_shape_1, check_shape_2);
+  699: }
+  700: 
+  701: inline int MatchingFlatSize(const RuntimeShape& shape,
+  702:                             const RuntimeShape& check_shape_0,
+  703:                             const RuntimeShape& check_shape_1,
+---
+  704:                             const RuntimeShape& check_shape_2,
+  705:                             const RuntimeShape& check_shape_3) {
+  706:   TFLITE_DCHECK_EQ(shape.DimensionsCount(), check_shape_0.DimensionsCount());
+  707:   const int dims_count = shape.DimensionsCount();
+  708:   for (int i = 0; i < dims_count; ++i) {
+  709:     TFLITE_DCHECK_EQ(shape.Dims(i), check_shape_0.Dims(i));
+  710:   }
+  711:   return MatchingFlatSize(shape, check_shape_1, check_shape_2, check_shape_3);
+  712: }
+  713: 
+---
+  714: // Flat size calculation, checking that dimensions match with one or more other
+  715: // arrays.
+  716: template <int N>
+  717: inline int MatchingFlatSize(const Dims<N>& dims, const Dims<N>& check_dims_0) {
+  718:   for (int i = 0; i < N; ++i) {
+  719:     TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
+  720:   }
+  721:   return FlatSize(dims);
+---
+  722: }
+  723: 
+  724: template <int N>
+---
+  725: inline int MatchingFlatSize(const Dims<N>& dims, const Dims<N>& check_dims_0,
+  726:                             const Dims<N>& check_dims_1) {
+  727:   for (int i = 0; i < N; ++i) {
+  728:     TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
+  729:   }
+  730:   return MatchingFlatSize(dims, check_dims_1);
+  731: }
+  732: 
+  733: template <int N>
+---
+  734: inline int MatchingFlatSize(const Dims<N>& dims, const Dims<N>& check_dims_0,
+  735:                             const Dims<N>& check_dims_1,
+  736:                             const Dims<N>& check_dims_2) {
+---
+  737:   for (int i = 0; i < N; ++i) {
+  738:     TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
+  739:   }
+  740:   return MatchingFlatSize(dims, check_dims_1, check_dims_2);
+  741: }
+  742: 
+  743: template <int N>
+  744: inline int MatchingFlatSize(const Dims<N>& dims, const Dims<N>& check_dims_0,
+  745:                             const Dims<N>& check_dims_1,
+  746:                             const Dims<N>& check_dims_2,
+---
+  747:                             const Dims<N>& check_dims_3) {
+  748:   for (int i = 0; i < N; ++i) {
+  749:     TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
+  750:   }
+  751:   return MatchingFlatSize(dims, check_dims_1, check_dims_2, check_dims_3);
+  752: }
+---
+  753: 
+  754: // Data is required to be contiguous, and so many operators can use either the
+  755: // full array flat size or the flat size with one dimension skipped (commonly
+  756: // the depth).
+  757: template <int N>
+  758: inline int FlatSizeSkipDim(const Dims<N>& dims, int skip_dim) {
+  759:   TFLITE_DCHECK(skip_dim >= 0 && skip_dim < N);
+  760:   int flat_size = 1;
+---
+  761:   for (int i = 0; i < N; ++i) {
+  762:     flat_size *= (i == skip_dim) ? 1 : dims.sizes[i];
+  763:   }
+  764:   return flat_size;
+  765: }
+---
+  766: 
+  767: // A combination of MatchingFlatSize() and FlatSizeSkipDim().
+  768: template <int N>
+  769: inline int MatchingFlatSizeSkipDim(const Dims<N>& dims, int skip_dim,
+---
+  770:                                    const Dims<N>& check_dims_0) {
+  771:   for (int i = 0; i < N; ++i) {
+  772:     if (i != skip_dim) {
+  773:       TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
+  774:     }
+  775:   }
+---
+  776:   return FlatSizeSkipDim(dims, skip_dim);
+  777: }
+  778: 
+  779: template <int N>
+---
+  780: inline int MatchingFlatSizeSkipDim(const Dims<N>& dims, int skip_dim,
+  781:                                    const Dims<N>& check_dims_0,
+  782:                                    const Dims<N>& check_dims_1) {
+  783:   for (int i = 0; i < N; ++i) {
+  784:     if (i != skip_dim) {
+  785:       TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
+  786:     }
+---
+  787:   }
+  788:   return MatchingFlatSizeSkipDim(dims, skip_dim, check_dims_1);
+  789: }
+  790: 
+  791: template <int N>
+  792: inline int MatchingFlatSizeSkipDim(const Dims<N>& dims, int skip_dim,
+  793:                                    const Dims<N>& check_dims_0,
+  794:                                    const Dims<N>& check_dims_1,
+  795:                                    const Dims<N>& check_dims_2) {
+  796:   for (int i = 0; i < N; ++i) {
+  797:     if (i != skip_dim) {
+  798:       TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
+  799:     }
+  800:   }
+  801:   return MatchingFlatSizeSkipDim(dims, skip_dim, check_dims_1, check_dims_2);
+  802: }
+---
+  803: 
+  804: template <int N>
+---
+  805: inline int MatchingFlatSizeSkipDim(const Dims<N>& dims, int skip_dim,
+  806:                                    const Dims<N>& check_dims_0,
+  807:                                    const Dims<N>& check_dims_1,
+  808:                                    const Dims<N>& check_dims_2,
+  809:                                    const Dims<N>& check_dims_3) {
+  810:   for (int i = 0; i < N; ++i) {
+  811:     if (i != skip_dim) {
+  812:       TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
+  813:     }
+  814:   }
+  815:   return MatchingFlatSizeSkipDim(dims, skip_dim, check_dims_1, check_dims_2,
+---
+  816:                                  check_dims_3);
+  817: }
+  818: 
+  819: // Data is required to be contiguous, and so many operators can use either the
+  820: // full array flat size or the flat size with one dimension skipped (commonly
+  821: // the depth).
+  822: inline int FlatSizeSkipDim(const RuntimeShape& shape, int skip_dim) {
+  823:   const int dims_count = shape.DimensionsCount();
+---
+  824:   TFLITE_DCHECK(skip_dim >= 0 && skip_dim < dims_count);
+  825:   const auto* dims_data = shape.DimsData();
+  826:   int flat_size = 1;
+  827:   for (int i = 0; i < dims_count; ++i) {
+---
+  828:     flat_size *= (i == skip_dim) ? 1 : dims_data[i];
+  829:   }
+  830:   return flat_size;
+  831: }
+  832: 
+  833: // A combination of MatchingFlatSize() and FlatSizeSkipDim().
+  834: inline int MatchingFlatSizeSkipDim(const RuntimeShape& shape, int skip_dim,
+  835:                                    const RuntimeShape& check_shape_0) {
+  836:   const int dims_count = shape.DimensionsCount();
+---
+  837:   for (int i = 0; i < dims_count; ++i) {
+  838:     if (i != skip_dim) {
+  839:       TFLITE_DCHECK_EQ(shape.Dims(i), check_shape_0.Dims(i));
+  840:     }
+---
+  841:   }
+  842:   return FlatSizeSkipDim(shape, skip_dim);
+  843: }
+  844: 
+  845: inline int MatchingFlatSizeSkipDim(const RuntimeShape& shape, int skip_dim,
+  846:                                    const RuntimeShape& check_shape_0,
+  847:                                    const RuntimeShape& check_shape_1) {
+  848:   const int dims_count = shape.DimensionsCount();
+  849:   for (int i = 0; i < dims_count; ++i) {
+  850:     if (i != skip_dim) {
+---
+  851:       TFLITE_DCHECK_EQ(shape.Dims(i), check_shape_0.Dims(i));
+  852:     }
+  853:   }
+  854:   return MatchingFlatSizeSkipDim(shape, skip_dim, check_shape_1);
+  855: }
+  856: 
+  857: inline int MatchingFlatSizeSkipDim(const RuntimeShape& shape, int skip_dim,
+  858:                                    const RuntimeShape& check_shape_0,
+  859:                                    const RuntimeShape& check_shape_1,
+  860:                                    const RuntimeShape& check_shape_2) {
+  861:   const int dims_count = shape.DimensionsCount();
+  862:   for (int i = 0; i < dims_count; ++i) {
+  863:     if (i != skip_dim) {
+  864:       TFLITE_DCHECK_EQ(shape.Dims(i), check_shape_0.Dims(i));
+  865:     }
+  866:   }
+  867:   return MatchingFlatSizeSkipDim(shape, skip_dim, check_shape_1, check_shape_2);
+  868: }
+---
+  869: 
+---
+  870: inline int MatchingFlatSizeSkipDim(const RuntimeShape& shape, int skip_dim,
+  871:                                    const RuntimeShape& check_shape_0,
+  872:                                    const RuntimeShape& check_shape_1,
+  873:                                    const RuntimeShape& check_shape_2,
+  874:                                    const RuntimeShape& check_shape_3) {
+  875:   const int dims_count = shape.DimensionsCount();
+  876:   for (int i = 0; i < dims_count; ++i) {
+  877:     if (i != skip_dim) {
+  878:       TFLITE_DCHECK_EQ(shape.Dims(i), check_shape_0.Dims(i));
+  879:     }
+  880:   }
+---
+  881:   return MatchingFlatSizeSkipDim(shape, skip_dim, check_shape_1, check_shape_2,
+  882:                                  check_shape_3);
+  883: }
+  884: 
+  885: template <int N>
+  886: bool IsPackedWithoutStrides(const Dims<N>& dims) {
+  887:   int expected_stride = 1;
+  888:   for (int d = 0; d < N; d++) {
+  889:     if (dims.strides[d] != expected_stride) return false;
+---
+  890:     expected_stride *= dims.sizes[d];
+  891:   }
+  892:   return true;
+---
+  893: }
+  894: 
+  895: template <int N>
+  896: void ComputeStrides(Dims<N>* dims) {
+  897:   dims->strides[0] = 1;
+  898:   for (int d = 1; d < N; d++) {
+  899:     dims->strides[d] = dims->strides[d - 1] * dims->sizes[d - 1];
+  900:   }
+  901: }
+  902: 
+---
+  903: enum class BroadcastableOpCategory : uint8_t {
+  904:   kNone,
+  905:   kNonBroadcast,               // Matching input shapes.
+---
+  906:   kFirstInputBroadcastsFast,   // Fivefold nested loops.
+  907:   kSecondInputBroadcastsFast,  // Fivefold nested loops.
+  908:   kGenericBroadcast,           // Fall-back.
+  909: };
+  910: 
+  911: struct MinMax {
+  912:   float min;
+  913:   float max;
+  914: };
+  915: static_assert(sizeof(MinMax) == 8, "");
+  916: 
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/logistic.cc =====
+   43: 
+   44: TfLiteStatus LogisticEval(TfLiteContext* context, TfLiteNode* node) {
+   45:   const TfLiteEvalTensor* input =
+   46:       tflite::micro::GetEvalInput(context, node, kLogisticInputTensor);
+   47:   TfLiteEvalTensor* output =
+   48:       tflite::micro::GetEvalOutput(context, node, kLogisticOutputTensor);
+   49: 
+   50:   TFLITE_DCHECK(node->user_data != nullptr);
+   51:   OpDataLogistic* data = static_cast<OpDataLogistic*>(node->user_data);
+   52: 
+   53:   if (input->type == kTfLiteFloat32) {
+   54:     switch (output->type) {
+   55:       case kTfLiteFloat32: {
+   56: #if defined(CEVA_BX1) || defined(CEVA_SP500)
+   57: 
+   58:         const float* input_data = tflite::micro::GetTensorData<float>(input);
+   59:         float* output_data = tflite::micro::GetTensorData<float>(output);
+   60:         const int flat_size =
+   61:             MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   62:                              tflite::micro::GetTensorShape(output));
+   63: #ifdef MCPS_MEASUREMENT
+   64:         MCPS_START_ONE;
+   65: #endif
+   66:         CEVA_TFLM_Logistic_float32(input_data, output_data, flat_size);
+   67: #ifdef MCPS_MEASUREMENT
+   68:         MCPS_STOP_ONE("Test params:CEVA_TFLM_Logistic_float32 loop = %d",
+   69:                       flat_size);
+   70: #endif
+   71: 
+   72: #else
+   73:         reference_ops::Logistic(tflite::micro::GetTensorShape(input),
+   74:                                 tflite::micro::GetTensorData<float>(input),
+   75:                                 tflite::micro::GetTensorShape(output),
+   76:                                 tflite::micro::GetTensorData<float>(output));
+   77: #endif  // ceva platform
+   78:         return kTfLiteOk;
+   79:       }
+   80:       default:
+   81:         MicroPrintf("Input %s, output %s not supported.",
+   82:                     TfLiteTypeGetName(input->type),
+   83:                     TfLiteTypeGetName(output->type));
+   84:         return kTfLiteError;
+   85:     }
+   86:   } else if (input->type == kTfLiteInt8) {
+   87:     switch (output->type) {
+   88:       case kTfLiteInt8: {
+   89: #if defined(CEVA_BX1) || defined(CEVA_SP500)
+   90:         int32_t input_zero_point = data->input_zero_point;
+   91:         int32_t input_range_radius = data->input_range_radius;
+   92:         int32_t input_multiplier = data->input_multiplier;
+   93:         int32_t input_left_shift = data->input_left_shift;
+   94:         int32_t input_size = NumElements(input->dims);
+   95:         const int8_t* input_data = tflite::micro::GetTensorData<int8_t>(input);
+   96:         int8_t* output_data = tflite::micro::GetTensorData<int8_t>(output);
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/quantize.cc =====
+   33: void* Init(TfLiteContext* context, const char* buffer, size_t length) {
+   34:   TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+   35:   return context->AllocatePersistentBuffer(context,
+   36:                                            sizeof(OpDataQuantizeReference));
+   37: }
+   38: 
+   39: TfLiteStatus EvalCEVA(TfLiteContext* context, TfLiteNode* node) {
+   40:   TFLITE_DCHECK(node->user_data != nullptr);
+   41: 
+   42:   auto* data = static_cast<OpDataQuantizeReference*>(node->user_data);
+   43: 
+   44:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+   45:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+   46: 
+   47:   if (input->type == kTfLiteFloat32 && output->type == kTfLiteInt8) {
+   48:     const float* input_data = tflite::micro::GetTensorData<float>(input);
+   49:     int8_t* output_data = tflite::micro::GetTensorData<int8_t>(output);
+   50:     const int flat_size =
+   51:         MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   52:                          tflite::micro::GetTensorShape(output));
+   53: 
+   54: #ifdef MCPS_MEASUREMENT
+   55:     MCPS_START_ONE;
+   56: #endif
+   57:     CEVA_TFLM_AffineQuantize_Int8(input_data, output_data, flat_size,
+   58:                                   data->quantization_params.scale,
+   59:                                   data->quantization_params.zero_point);
+   60: #ifdef MCPS_MEASUREMENT
+   61:     MCPS_STOP_ONE("Test params:CEVA_TFLM_AffineQuantize_Int8 loop = %d",
+   62:                   flat_size);
+   63: #endif
+   64:   } else
+   65:     return EvalQuantizeReference(context, node);
+   66:   return kTfLiteOk;
+   67: }
+   68: 
+   69: TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+   70: #if defined(CEVA_BX1) || defined(CEVA_SP500)
+   71:   return EvalCEVA(context, node);
+   72: #else
+   73:   return EvalQuantizeReference(context, node);
+   74: #endif
+   75: }
+   76: 
+   77: }  // namespace
+   78: 
+   79: // This Op (QUANTIZE) quantizes the input and produces quantized output.
+   80: // AffineQuantize takes scale and zero point and quantizes the float value to
+   81: // quantized output, in int8_t or uint8_t format.
+   82: TFLMRegistration Register_QUANTIZE() {
+   83:   return tflite::micro::RegisterOp(Init, PrepareQuantizeReference, Eval);
+   84: }
+   85: 
+   86: }  // namespace tflite
+---
+---
+---
+---
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/fully_connected.cc =====
+  222:     case kTfLiteFloat32:
+  223:       return EvalFloatCEVA(context, node, params->activation, input, filter,
+  224:                            bias, output);
+  225:     case kTfLiteInt8:
+  226:       return EvalQuantizedInt8CEVA(context, node, data, input, filter, bias,
+  227:                                    output);
+  228: 
+  229:     default:
+  230:       MicroPrintf("Type %s (%d) not supported.", TfLiteTypeGetName(input->type),
+  231:                   input->type);
+  232:       return kTfLiteError;
+  233:   }
+  234:   return kTfLiteOk;
+  235: }
+  236: TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
+  237: #if defined(CEVA_BX1) || defined(CEVA_SP500)
+  238:   return EvalCEVA(context, node);
+  239: #else
+  240:   return EvalQuantizeReference(context, node);
+  241: #endif
+  242: }
+  243: 
+  244: }  // namespace
+  245: 
+  246: TFLMRegistration Register_FULLY_CONNECTED() {
+  247:   return tflite::micro::RegisterOp(Init, Prepare, Eval);
+  248: }
+  249: 
+  250: }  // namespace tflite
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/softmax.cc =====
+   31: #ifdef MCPS_MEASUREMENT
+   32: #include "tensorflow/lite/micro/kernels/ceva/mcps_macros.h"
+   33: #endif
+   34: 
+   35: namespace tflite {
+   36: namespace {
+   37: 
+   38: // Takes a tensor and performs softmax along the last dimension.
+   39: void SoftmaxFloatCEVA(const TfLiteEvalTensor* input, TfLiteEvalTensor* output,
+   40:                       const SoftmaxParams& op_data) {
+   41:   const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+   42:   const float* input_data = tflite::micro::GetTensorData<float>(input);
+   43:   const RuntimeShape& output_shape = tflite::micro::GetTensorShape(output);
+   44:   float* output_data = tflite::micro::GetTensorData<float>(output);
+   45: 
+   46:   const float beta = static_cast<float>(op_data.beta);
+   47:   const int trailing_dim = input_shape.DimensionsCount() - 1;
+   48:   const int outer_size =
+   49:       MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
+   50:   const int depth =
+   51:       MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
+   52:   int outer_size_mcps = outer_size;
+   53:   int depth_mcps = depth;
+   54: 
+   55: #ifdef MCPS_MEASUREMENT
+   56:   MCPS_START_ONE;
+   57: #endif
+   58:   for (int i = 0; i < outer_size; ++i) {
+   59:     CEVA_TFLM_Softmax_Float32(&input_data[i * depth], &output_data[i * depth],
+   60:                               beta, depth);
+   61:   }
+   62: #ifdef MCPS_MEASUREMENT
+   63:   MCPS_STOP_ONE(
+   64:       "Test params:Call CEVA_TFLM_Softmax_Float32 %d times, inetrnal loop = %d",
+   65:       outer_size_mcps, depth_mcps);
+   66: #endif
+   67: }
+   68: 
+   69: TfLiteStatus SoftmaxQuantizedCEVA(TfLiteContext* context,
+   70:                                   const TfLiteEvalTensor* input,
+   71:                                   TfLiteEvalTensor* output,
+   72:                                   const SoftmaxParams& op_data) {
+   73:   if (input->type == kTfLiteInt8) {
+   74:     if (output->type == kTfLiteInt16) {
+   75:       tflite::reference_ops::Softmax(
+   76:           op_data, tflite::micro::GetTensorShape(input),
+   77:           tflite::micro::GetTensorData<int8_t>(input),
+   78:           tflite::micro::GetTensorShape(output),
+   79:           tflite::micro::GetTensorData<int16_t>(output));
+   80:     } else {
+   81:       const RuntimeShape& input_shape = tflite::micro::GetTensorShape(input);
+   82:       const int8_t* input_data = tflite::micro::GetTensorData<int8_t>(input);
+   83: 
+   84:       const RuntimeShape& output_shape = tflite::micro::GetTensorShape(output);
+---
+   85:       int8_t* output_data = tflite::micro::GetTensorData<int8_t>(output);
+   86: 
+   87:       const int32_t input_beta_multiplier =
+   88:           static_cast<int32_t>(op_data.input_multiplier);
+   89:       const int32_t input_beta_left_shift =
+   90:           static_cast<int32_t>(op_data.input_left_shift);
+   91:       const int trailing_dim = input_shape.DimensionsCount() - 1;
+   92:       const int outer_size =
+   93:           MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
+   94:       const int depth =
+   95:           MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
+   96:       int outer_size_mcps = outer_size;
+   97:       int depth_mcps = depth;
+   98: 
+   99:       if (depth > CEVA_TFLM_KERNELS_SCRATCH_SIZE_VAL) {
+  100:         MicroPrintf("Scratch size (%d) less that required (%d)",
+  101:                     CEVA_TFLM_KERNELS_SCRATCH_SIZE_VAL, depth);
+  102:         return kTfLiteError;
+  103:       }
+  104: 
+  105: #ifdef MCPS_MEASUREMENT
+  106:       MCPS_START_ONE;
+  107: #endif
+  108:       for (int i = 0; i < outer_size; ++i) {
+  109:         CEVA_TFLM_Softmax_Int8(&input_data[i * depth], &output_data[i * depth],
+  110:                                input_beta_multiplier, input_beta_left_shift,
+  111:                                depth, CEVA_TFLM_KERNELS_SCRATCH);
+  112:       }
+  113: #ifdef MCPS_MEASUREMENT
+  114:       MCPS_STOP_ONE(
+  115:           "Test params:Call CEVA_TFLM_Softmax_Int8 %d times, inetrnal loop = "
+  116:           "%d",
+  117:           outer_size_mcps, depth_mcps);
+  118: #endif
+  119:     }
+  120:   } else {
+  121:     tflite::reference_ops::SoftmaxInt16(
+  122:         op_data, tflite::micro::GetTensorShape(input),
+  123:         tflite::micro::GetTensorData<int16_t>(input),
+  124:         tflite::micro::GetTensorShape(output),
+  125:         tflite::micro::GetTensorData<int16_t>(output));
+  126:   }
+  127: 
+  128:   return kTfLiteOk;
+---
+
+===== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/softmax.cc =====
+   60:   TF_LITE_ENSURE_MSG(context,
+   61:                      input->type == kTfLiteFloat32 ||
+   62:                          input->type == kTfLiteInt16 ||
+   63:                          input->type == kTfLiteInt8,
+   64:                      "Input data type not supported");
+   65: 
+   66:   TF_LITE_ENSURE(context, node->user_data != nullptr);
+   67:   CMSISNNSoftmaxParams* op_data =
+   68:       static_cast<CMSISNNSoftmaxParams*>(node->user_data);
+   69: 
+   70:   auto* params = static_cast<TfLiteSoftmaxParams*>(node->builtin_data);
+   71:   auto ret_val = CalculateSoftmaxParams(context, input, output, params,
+   72:                                         &op_data->softmax_params);
+   73: 
+   74:   const auto input_shape = GetTensorShape(input);
+   75:   const auto output_shape = GetTensorShape(output);
+   76:   const int trailing_dim = input_shape.DimensionsCount() - 1;
+   77:   const int outer_size =
+   78:       MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
+   79:   const int depth =
+   80:       MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
+   81:   op_data->num_rows = outer_size;
+   82:   op_data->row_size = depth;
+   83: 
+   84:   micro_context->DeallocateTempTfLiteTensor(input);
+   85:   micro_context->DeallocateTempTfLiteTensor(output);
+   86:   return ret_val;
+   87: }
+   88: 
+   89: TfLiteStatus SoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
+   90:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+   91:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+   92: 
+   93:   TFLITE_DCHECK(node->user_data != nullptr);
+   94:   const CMSISNNSoftmaxParams op_data =
+   95:       *static_cast<const CMSISNNSoftmaxParams*>(node->user_data);
+   96: 
+   97:   switch (input->type) {
+   98:     case kTfLiteFloat32: {
+   99:       tflite::reference_ops::Softmax(
+  100:           op_data.softmax_params, tflite::micro::GetTensorShape(input),
+  101:           tflite::micro::GetTensorData<float>(input),
+  102:           tflite::micro::GetTensorShape(output),
+  103:           tflite::micro::GetTensorData<float>(output));
+  104:       return kTfLiteOk;
+  105:     }
+  106:     case kTfLiteInt8: {
+  107:       if (output->type == kTfLiteInt8) {
+  108:         arm_softmax_s8(tflite::micro::GetTensorData<int8_t>(input),
+  109:                        op_data.num_rows, op_data.row_size,
+  110:                        op_data.softmax_params.input_multiplier,
+  111:                        op_data.softmax_params.input_left_shift,
+  112:                        op_data.softmax_params.diff_min,
+  113:                        tflite::micro::GetTensorData<int8_t>(output));
+---
+
+===== 3. UPSTREAM AND DEPLOYED LSTM-RESHAPE-QUANTIZE-DOWNSTREAM CHAINS =====
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794205975.101019  130060 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794205975.101213  130060 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794205975.130265  130060 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794205975.919835  130060 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794205975.920138  130060 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+
+==============================================================================================================
+MODEL: /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+
+BiLSTM operator 284: {'index': 744, 'name': 'val_253_reshaped', 'type': 'FLOAT32', 'shape': [900, 1, 256], 'elements': 230400, 'buffer': 0, 'scales': [], 'zero_points': []}
+
+  Operator 285: RESHAPE, input position 0
+    INPUT[0]: {'index': 744, 'name': 'val_253_reshaped', 'type': 'FLOAT32', 'shape': [900, 1, 256], 'elements': 230400, 'buffer': 0, 'scales': [], 'zero_points': []}
+    OUTPUT[0]: {'index': 430, 'name': 'val_253', 'type': 'FLOAT32', 'shape': [900, 1, 2, 128], 'elements': 230400, 'buffer': 0, 'scales': [], 'zero_points': []}
+      DOWNSTREAM operator 286: QUANTIZE, input position 0
+        INPUT[0]: {'index': 430, 'name': 'val_253', 'type': 'FLOAT32', 'shape': [900, 1, 2, 128], 'elements': 230400, 'buffer': 0, 'scales': [], 'zero_points': []}
+        OUTPUT[0]: {'index': 431, 'name': 'val_253_DequantizeLinear_Output', 'type': 'INT8', 'shape': [900, 2, 1, 128], 'elements': 230400, 'buffer': 0, 'scales': [0.003935979213565588], 'zero_points': [18]}
+      QUANTIZE_INPUT_OUTPUT_ELEMENT_COUNTS_EQUAL: True
+      QUANTIZE_INPUT_OUTPUT_SHAPES_EQUAL: False
+
+==============================================================================================================
+MODEL: /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+BiLSTM operator 170: {'index': 305, 'name': 'val_253_reshaped', 'type': 'FLOAT32', 'shape': [900, 1, 256], 'elements': 230400, 'buffer': 0, 'scales': [], 'zero_points': []}
+
+  Operator 171: RESHAPE, input position 0
+    INPUT[0]: {'index': 305, 'name': 'val_253_reshaped', 'type': 'FLOAT32', 'shape': [900, 1, 256], 'elements': 230400, 'buffer': 0, 'scales': [], 'zero_points': []}
+    INPUT[1]: {'index': 306, 'name': 'new_shape', 'type': 'INT32', 'shape': [4], 'elements': 4, 'buffer': 107, 'scales': [], 'zero_points': []}
+    OUTPUT[0]: {'index': 307, 'name': 'val_253', 'type': 'FLOAT32', 'shape': [900, 1, 2, 128], 'elements': 230400, 'buffer': 0, 'scales': [], 'zero_points': []}
+      DOWNSTREAM operator 172: QUANTIZE, input position 0
+        INPUT[0]: {'index': 307, 'name': 'val_253', 'type': 'FLOAT32', 'shape': [900, 1, 2, 128], 'elements': 230400, 'buffer': 0, 'scales': [], 'zero_points': []}
+        OUTPUT[0]: {'index': 308, 'name': 'val_253_DequantizeLinear_Output', 'type': 'INT8', 'shape': [900, 2, 1, 128], 'elements': 230400, 'buffer': 0, 'scales': [0.003935979213565588], 'zero_points': [18]}
+      QUANTIZE_INPUT_OUTPUT_ELEMENT_COUNTS_EQUAL: True
+      QUANTIZE_INPUT_OUTPUT_SHAPES_EQUAL: False
+
+===== GRAPH INSPECTION COMPLETE =====
+
+===== END =====
