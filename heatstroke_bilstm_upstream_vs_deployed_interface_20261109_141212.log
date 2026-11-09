@@ -1,0 +1,420 @@
+===== UPSTREAM VS DEPLOYED BILSTM INTERFACE =====
+Mon Nov  9 02:12:12 PM HKT 2026
+
+===== MODEL HASHES =====
+db0cdb5443b63adb22e6253da1c5e11fba36cc142dce57e2e609a225ed949290  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+
+===== CUSTOM KERNEL SOURCE HASH =====
+8d4b0a724119dcb7783c46a6e5feb1b57b02d1b8839bdc6574ad6205a1770eac  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+
+===== CMAKE MODEL SELECTION =====
+117-    endif()
+118-endif()
+119-
+120-# Combined PolyU heat-stress model (Vela Ethos-U55-128).
+121-# FORCE prevents a previous ASR model path in CMakeCache.txt from winning.
+122:set(POLYU_MODEL_PATH
+123:    "${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite"
+124-    CACHE FILEPATH "Combined PolyU heat-stress model" FORCE)
+125-
+126:if (NOT EXISTS "${POLYU_MODEL_PATH}")
+127:    message(FATAL_ERROR "Combined PolyU model not found: ${POLYU_MODEL_PATH}")
+128-endif()
+129-
+130:set(POLYU_MODEL_SHA256_EXPECTED "b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3")
+131:file(SHA256 "${POLYU_MODEL_PATH}" POLYU_MODEL_SHA256_ACTUAL)
+132:if (NOT "${POLYU_MODEL_SHA256_ACTUAL}" STREQUAL "${POLYU_MODEL_SHA256_EXPECTED}")
+133-    message(FATAL_ERROR
+134-        "Combined PolyU model SHA256 mismatch. "
+135:        "Expected ${POLYU_MODEL_SHA256_EXPECTED}, got ${POLYU_MODEL_SHA256_ACTUAL}")
+136-endif()
+137-
+138:message(STATUS "Using combined heat-stress model: ${POLYU_MODEL_PATH}")
+139:message(STATUS "Combined model SHA256: ${POLYU_MODEL_SHA256_ACTUAL}")
+140-
+141-# The generator output filename is the complete model filename plus .cc.
+142-generate_model_code(
+143:    MODEL_PATH "${POLYU_MODEL_PATH}"
+144-    DESTINATION "${SRC_GEN_DIR}"
+145-    NAMESPACE "arm" "app" "polyu_heatstroke")
+146-
+147:get_filename_component(POLYU_MODEL_FILENAME "${POLYU_MODEL_PATH}" NAME)
+148:set(POLYU_MODEL_CPP "${SRC_GEN_DIR}/${POLYU_MODEL_FILENAME}.cc")
+149:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+150-
+151-# Application-local includes for the heat-stress TFLM model.
+152-target_include_directories(app PRIVATE
+153-    src/application/main/include
+154-    src/use_case/alif_asr/include
+155-    src/power
+156-    "${INC_GEN_DIR}"
+157-)
+--
+168-    src/use_case/alif_asr/src/MainLoop.cc
+169-    src/use_case/alif_asr/src/reverse_v2.cc
+170-    src/use_case/alif_asr/src/PolyUModel1.cc
+171-    src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+172-    src/power/power_mgr.c
+173:    "${POLYU_MODEL_CPP}"
+174-)
+175-
+176-set(SRC_MAIN "src/application/main/Main.cc")
+177-
+178-list(APPEND SRC_MAIN_DEFS
+179-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+180-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+181-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+
+===== FLATBUFFER INTERFACE COMPARISON =====
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794204732.399505  129047 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794204732.399676  129047 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794204733.198965  129047 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794204733.199190  129047 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+
+====================================================================================================
+MODEL: /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+SIZE: 11844264
+SUBGRAPHS: 1
+
+SUBGRAPH 0: operators=575, tensors=915
+
+--- BIDIRECTIONAL SEQUENCE LSTM ---
+Operator index: 284
+Operator version: 1
+Input count: 48
+Non-optional inputs: 29
+Output count: 1
+  INPUT[0]: 429: 'val_156_DequantizeLinear_Output', type=FLOAT32, shape=[900, 1, 16], buffer=0, variable=False
+  INPUT[1]: 728: 'fw_input_to_input', type=FLOAT32, shape=[128, 16], buffer=207, variable=False
+  INPUT[2]: 729: 'fw_input_to_forget', type=FLOAT32, shape=[128, 16], buffer=208, variable=False
+  INPUT[3]: 730: 'fw_input_to_cell', type=FLOAT32, shape=[128, 16], buffer=209, variable=False
+  INPUT[4]: 731: 'fw_input_to_output', type=FLOAT32, shape=[128, 16], buffer=210, variable=False
+  INPUT[5]: 732: 'fw_recurrent_to_input', type=FLOAT32, shape=[128, 128], buffer=211, variable=False
+  INPUT[6]: 733: 'fw_recurrent_to_forget', type=FLOAT32, shape=[128, 128], buffer=212, variable=False
+  INPUT[7]: 734: 'fw_recurrent_to_cell', type=FLOAT32, shape=[128, 128], buffer=213, variable=False
+  INPUT[8]: 735: 'fw_recurrent_to_output', type=FLOAT32, shape=[128, 128], buffer=214, variable=False
+  INPUT[9]: -1: OPTIONAL
+  INPUT[10]: -1: OPTIONAL
+  INPUT[11]: -1: OPTIONAL
+  INPUT[12]: 713: 'fw_input_bias', type=FLOAT32, shape=[128], buffer=195, variable=False
+  INPUT[13]: 715: 'fw_forget_bias', type=FLOAT32, shape=[128], buffer=197, variable=False
+  INPUT[14]: 716: 'fw_cell_bias', type=FLOAT32, shape=[128], buffer=198, variable=False
+  INPUT[15]: 714: 'fw_output_bias', type=FLOAT32, shape=[128], buffer=196, variable=False
+  INPUT[16]: -1: OPTIONAL
+  INPUT[17]: -1: OPTIONAL
+  INPUT[18]: 736: 'bw_input_to_input', type=FLOAT32, shape=[128, 16], buffer=215, variable=False
+  INPUT[19]: 737: 'bw_input_to_forget', type=FLOAT32, shape=[128, 16], buffer=216, variable=False
+  INPUT[20]: 738: 'bw_input_to_cell', type=FLOAT32, shape=[128, 16], buffer=217, variable=False
+  INPUT[21]: 739: 'bw_input_to_output', type=FLOAT32, shape=[128, 16], buffer=218, variable=False
+  INPUT[22]: 740: 'bw_recurrent_to_input', type=FLOAT32, shape=[128, 128], buffer=219, variable=False
+  INPUT[23]: 741: 'bw_recurrent_to_forget', type=FLOAT32, shape=[128, 128], buffer=220, variable=False
+  INPUT[24]: 742: 'bw_recurrent_to_cell', type=FLOAT32, shape=[128, 128], buffer=221, variable=False
+  INPUT[25]: 743: 'bw_recurrent_to_output', type=FLOAT32, shape=[128, 128], buffer=222, variable=False
+  INPUT[26]: -1: OPTIONAL
+  INPUT[27]: -1: OPTIONAL
+  INPUT[28]: -1: OPTIONAL
+  INPUT[29]: 717: 'bw_input_bias', type=FLOAT32, shape=[128], buffer=199, variable=False
+  INPUT[30]: 719: 'bw_forget_bias', type=FLOAT32, shape=[128], buffer=201, variable=False
+  INPUT[31]: 720: 'bw_cell_bias', type=FLOAT32, shape=[128], buffer=202, variable=False
+  INPUT[32]: 718: 'bw_output_bias', type=FLOAT32, shape=[128], buffer=200, variable=False
+  INPUT[33]: -1: OPTIONAL
+  INPUT[34]: -1: OPTIONAL
+  INPUT[35]: 723: 'fw_output_state', type=FLOAT32, shape=[128], buffer=203, variable=True
+  INPUT[36]: 724: 'fw_cell_state', type=FLOAT32, shape=[128], buffer=204, variable=True
+  INPUT[37]: 725: 'fw_output_state0', type=FLOAT32, shape=[128], buffer=205, variable=True
+  INPUT[38]: 726: 'fw_cell_state0', type=FLOAT32, shape=[128], buffer=206, variable=True
+  INPUT[39]: -1: OPTIONAL
+  INPUT[40]: -1: OPTIONAL
+  INPUT[41]: -1: OPTIONAL
+  INPUT[42]: -1: OPTIONAL
+  INPUT[43]: -1: OPTIONAL
+  INPUT[44]: -1: OPTIONAL
+  INPUT[45]: -1: OPTIONAL
+  INPUT[46]: -1: OPTIONAL
+  INPUT[47]: -1: OPTIONAL
+  OUTPUT[0]: 744: 'val_253_reshaped', type=FLOAT32, shape=[900, 1, 256], buffer=0, variable=False
+
+--- CONSUMERS OF LSTM OUTPUT 744 ---
+CONSUMER OPERATOR 285: RESHAPE, version=1
+  INPUT[0]: 744: 'val_253_reshaped', type=FLOAT32, shape=[900, 1, 256], buffer=0, variable=False
+  OUTPUT[0]: 430: 'val_253', type=FLOAT32, shape=[900, 1, 2, 128], buffer=0, variable=False
+  DOWNSTREAM CONSUMERS OF TENSOR 430:
+    op=286, type=QUANTIZE
+
+--- BIDIRECTIONAL SEQUENCE LSTM ---
+Operator index: 469
+Operator version: 1
+Input count: 48
+Non-optional inputs: 29
+Output count: 1
+  INPUT[0]: 553: 'val_407_DequantizeLinear_Output', type=FLOAT32, shape=[15, 1, 6], buffer=0, variable=False
+  INPUT[1]: 852: 'fw_input_to_input0', type=FLOAT32, shape=[64, 6], buffer=261, variable=False
+  INPUT[2]: 853: 'fw_input_to_forget0', type=FLOAT32, shape=[64, 6], buffer=262, variable=False
+  INPUT[3]: 854: 'fw_input_to_cell0', type=FLOAT32, shape=[64, 6], buffer=263, variable=False
+  INPUT[4]: 855: 'fw_input_to_output0', type=FLOAT32, shape=[64, 6], buffer=264, variable=False
+  INPUT[5]: 856: 'fw_recurrent_to_input0', type=FLOAT32, shape=[64, 64], buffer=265, variable=False
+  INPUT[6]: 857: 'fw_recurrent_to_forget0', type=FLOAT32, shape=[64, 64], buffer=266, variable=False
+  INPUT[7]: 858: 'fw_recurrent_to_cell0', type=FLOAT32, shape=[64, 64], buffer=267, variable=False
+  INPUT[8]: 859: 'fw_recurrent_to_output0', type=FLOAT32, shape=[64, 64], buffer=268, variable=False
+  INPUT[9]: -1: OPTIONAL
+  INPUT[10]: -1: OPTIONAL
+  INPUT[11]: -1: OPTIONAL
+  INPUT[12]: 837: 'fw_input_bias0', type=FLOAT32, shape=[64], buffer=249, variable=False
+  INPUT[13]: 839: 'fw_forget_bias0', type=FLOAT32, shape=[64], buffer=251, variable=False
+  INPUT[14]: 840: 'fw_cell_bias0', type=FLOAT32, shape=[64], buffer=252, variable=False
+  INPUT[15]: 838: 'fw_output_bias0', type=FLOAT32, shape=[64], buffer=250, variable=False
+  INPUT[16]: -1: OPTIONAL
+  INPUT[17]: -1: OPTIONAL
+  INPUT[18]: 860: 'bw_input_to_input0', type=FLOAT32, shape=[64, 6], buffer=269, variable=False
+  INPUT[19]: 861: 'bw_input_to_forget0', type=FLOAT32, shape=[64, 6], buffer=270, variable=False
+  INPUT[20]: 862: 'bw_input_to_cell0', type=FLOAT32, shape=[64, 6], buffer=271, variable=False
+  INPUT[21]: 863: 'bw_input_to_output0', type=FLOAT32, shape=[64, 6], buffer=272, variable=False
+  INPUT[22]: 864: 'bw_recurrent_to_input0', type=FLOAT32, shape=[64, 64], buffer=273, variable=False
+  INPUT[23]: 865: 'bw_recurrent_to_forget0', type=FLOAT32, shape=[64, 64], buffer=274, variable=False
+  INPUT[24]: 866: 'bw_recurrent_to_cell0', type=FLOAT32, shape=[64, 64], buffer=275, variable=False
+  INPUT[25]: 867: 'bw_recurrent_to_output0', type=FLOAT32, shape=[64, 64], buffer=276, variable=False
+  INPUT[26]: -1: OPTIONAL
+  INPUT[27]: -1: OPTIONAL
+  INPUT[28]: -1: OPTIONAL
+  INPUT[29]: 841: 'bw_input_bias0', type=FLOAT32, shape=[64], buffer=253, variable=False
+  INPUT[30]: 843: 'bw_forget_bias0', type=FLOAT32, shape=[64], buffer=255, variable=False
+  INPUT[31]: 844: 'bw_cell_bias0', type=FLOAT32, shape=[64], buffer=256, variable=False
+  INPUT[32]: 842: 'bw_output_bias0', type=FLOAT32, shape=[64], buffer=254, variable=False
+  INPUT[33]: -1: OPTIONAL
+  INPUT[34]: -1: OPTIONAL
+  INPUT[35]: 847: 'fw_output_state1', type=FLOAT32, shape=[64], buffer=257, variable=True
+  INPUT[36]: 848: 'fw_cell_state1', type=FLOAT32, shape=[64], buffer=258, variable=True
+  INPUT[37]: 849: 'fw_output_state2', type=FLOAT32, shape=[64], buffer=259, variable=True
+  INPUT[38]: 850: 'fw_cell_state2', type=FLOAT32, shape=[64], buffer=260, variable=True
+  INPUT[39]: -1: OPTIONAL
+  INPUT[40]: -1: OPTIONAL
+  INPUT[41]: -1: OPTIONAL
+  INPUT[42]: -1: OPTIONAL
+  INPUT[43]: -1: OPTIONAL
+  INPUT[44]: -1: OPTIONAL
+  INPUT[45]: -1: OPTIONAL
+  INPUT[46]: -1: OPTIONAL
+  INPUT[47]: -1: OPTIONAL
+  OUTPUT[0]: 868: 'val_502_reshaped', type=FLOAT32, shape=[15, 1, 128], buffer=0, variable=False
+
+--- CONSUMERS OF LSTM OUTPUT 868 ---
+CONSUMER OPERATOR 470: RESHAPE, version=1
+  INPUT[0]: 868: 'val_502_reshaped', type=FLOAT32, shape=[15, 1, 128], buffer=0, variable=False
+  OUTPUT[0]: 554: 'val_502', type=FLOAT32, shape=[15, 1, 2, 64], buffer=0, variable=False
+  DOWNSTREAM CONSUMERS OF TENSOR 554:
+    op=472, type=QUANTIZE
+
+ETHOS-U OPERATOR COUNT: 0
+
+====================================================================================================
+MODEL: /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+SIZE: 11026208
+SUBGRAPHS: 1
+
+SUBGRAPH 0: operators=306, tensors=525
+
+--- BIDIRECTIONAL SEQUENCE LSTM ---
+Operator index: 170
+Operator version: 1
+Input count: 29
+Non-optional inputs: 29
+Output count: 1
+  INPUT[0]: 276: 'val_156_DequantizeLinear_Output', type=FLOAT32, shape=[900, 1, 16], buffer=0, variable=False
+  INPUT[1]: 277: 'fw_input_to_input', type=FLOAT32, shape=[128, 16], buffer=83, variable=False
+  INPUT[2]: 278: 'fw_input_to_forget', type=FLOAT32, shape=[128, 16], buffer=84, variable=False
+  INPUT[3]: 279: 'fw_input_to_cell', type=FLOAT32, shape=[128, 16], buffer=85, variable=False
+  INPUT[4]: 280: 'fw_input_to_output', type=FLOAT32, shape=[128, 16], buffer=86, variable=False
+  INPUT[5]: 281: 'fw_recurrent_to_input', type=FLOAT32, shape=[128, 128], buffer=87, variable=False
+  INPUT[6]: 282: 'fw_recurrent_to_forget', type=FLOAT32, shape=[128, 128], buffer=88, variable=False
+  INPUT[7]: 283: 'fw_recurrent_to_cell', type=FLOAT32, shape=[128, 128], buffer=89, variable=False
+  INPUT[8]: 284: 'fw_recurrent_to_output', type=FLOAT32, shape=[128, 128], buffer=90, variable=False
+  INPUT[9]: 285: 'fw_input_bias', type=FLOAT32, shape=[128], buffer=91, variable=False
+  INPUT[10]: 286: 'fw_forget_bias', type=FLOAT32, shape=[128], buffer=92, variable=False
+  INPUT[11]: 287: 'fw_cell_bias', type=FLOAT32, shape=[128], buffer=93, variable=False
+  INPUT[12]: 288: 'fw_output_bias', type=FLOAT32, shape=[128], buffer=94, variable=False
+  INPUT[13]: 289: 'bw_input_to_input', type=FLOAT32, shape=[128, 16], buffer=95, variable=False
+  INPUT[14]: 290: 'bw_input_to_forget', type=FLOAT32, shape=[128, 16], buffer=96, variable=False
+  INPUT[15]: 291: 'bw_input_to_cell', type=FLOAT32, shape=[128, 16], buffer=97, variable=False
+  INPUT[16]: 292: 'bw_input_to_output', type=FLOAT32, shape=[128, 16], buffer=98, variable=False
+  INPUT[17]: 293: 'bw_recurrent_to_input', type=FLOAT32, shape=[128, 128], buffer=99, variable=False
+  INPUT[18]: 294: 'bw_recurrent_to_forget', type=FLOAT32, shape=[128, 128], buffer=100, variable=False
+  INPUT[19]: 295: 'bw_recurrent_to_cell', type=FLOAT32, shape=[128, 128], buffer=101, variable=False
+  INPUT[20]: 296: 'bw_recurrent_to_output', type=FLOAT32, shape=[128, 128], buffer=102, variable=False
+  INPUT[21]: 297: 'bw_input_bias', type=FLOAT32, shape=[128], buffer=103, variable=False
+  INPUT[22]: 298: 'bw_forget_bias', type=FLOAT32, shape=[128], buffer=104, variable=False
+  INPUT[23]: 299: 'bw_cell_bias', type=FLOAT32, shape=[128], buffer=105, variable=False
+  INPUT[24]: 300: 'bw_output_bias', type=FLOAT32, shape=[128], buffer=106, variable=False
+  INPUT[25]: 301: 'fw_output_state', type=FLOAT32, shape=[128], buffer=0, variable=True
+  INPUT[26]: 302: 'fw_cell_state', type=FLOAT32, shape=[128], buffer=0, variable=True
+  INPUT[27]: 303: 'fw_output_state0', type=FLOAT32, shape=[128], buffer=0, variable=True
+  INPUT[28]: 304: 'fw_cell_state0', type=FLOAT32, shape=[128], buffer=0, variable=True
+  OUTPUT[0]: 305: 'val_253_reshaped', type=FLOAT32, shape=[900, 1, 256], buffer=0, variable=False
+
+--- CONSUMERS OF LSTM OUTPUT 305 ---
+CONSUMER OPERATOR 171: RESHAPE, version=1
+  INPUT[0]: 305: 'val_253_reshaped', type=FLOAT32, shape=[900, 1, 256], buffer=0, variable=False
+  INPUT[1]: 306: 'new_shape', type=INT32, shape=[4], buffer=107, variable=False
+  OUTPUT[0]: 307: 'val_253', type=FLOAT32, shape=[900, 1, 2, 128], buffer=0, variable=False
+  DOWNSTREAM CONSUMERS OF TENSOR 307:
+    op=172, type=QUANTIZE
+
+--- BIDIRECTIONAL SEQUENCE LSTM ---
+Operator index: 261
+Operator version: 1
+Input count: 29
+Non-optional inputs: 29
+Output count: 1
+  INPUT[0]: 433: 'val_407_DequantizeLinear_Output', type=FLOAT32, shape=[15, 1, 6], buffer=0, variable=False
+  INPUT[1]: 434: 'fw_input_to_input0', type=FLOAT32, shape=[64, 6], buffer=145, variable=False
+  INPUT[2]: 435: 'fw_input_to_forget0', type=FLOAT32, shape=[64, 6], buffer=146, variable=False
+  INPUT[3]: 436: 'fw_input_to_cell0', type=FLOAT32, shape=[64, 6], buffer=147, variable=False
+  INPUT[4]: 437: 'fw_input_to_output0', type=FLOAT32, shape=[64, 6], buffer=148, variable=False
+  INPUT[5]: 438: 'fw_recurrent_to_input0', type=FLOAT32, shape=[64, 64], buffer=149, variable=False
+  INPUT[6]: 439: 'fw_recurrent_to_forget0', type=FLOAT32, shape=[64, 64], buffer=150, variable=False
+  INPUT[7]: 440: 'fw_recurrent_to_cell0', type=FLOAT32, shape=[64, 64], buffer=151, variable=False
+  INPUT[8]: 441: 'fw_recurrent_to_output0', type=FLOAT32, shape=[64, 64], buffer=152, variable=False
+  INPUT[9]: 442: 'fw_input_bias0', type=FLOAT32, shape=[64], buffer=153, variable=False
+  INPUT[10]: 443: 'fw_forget_bias0', type=FLOAT32, shape=[64], buffer=154, variable=False
+  INPUT[11]: 444: 'fw_cell_bias0', type=FLOAT32, shape=[64], buffer=155, variable=False
+  INPUT[12]: 445: 'fw_output_bias0', type=FLOAT32, shape=[64], buffer=156, variable=False
+  INPUT[13]: 446: 'bw_input_to_input0', type=FLOAT32, shape=[64, 6], buffer=157, variable=False
+  INPUT[14]: 447: 'bw_input_to_forget0', type=FLOAT32, shape=[64, 6], buffer=158, variable=False
+  INPUT[15]: 448: 'bw_input_to_cell0', type=FLOAT32, shape=[64, 6], buffer=159, variable=False
+  INPUT[16]: 449: 'bw_input_to_output0', type=FLOAT32, shape=[64, 6], buffer=160, variable=False
+  INPUT[17]: 450: 'bw_recurrent_to_input0', type=FLOAT32, shape=[64, 64], buffer=161, variable=False
+  INPUT[18]: 451: 'bw_recurrent_to_forget0', type=FLOAT32, shape=[64, 64], buffer=162, variable=False
+  INPUT[19]: 452: 'bw_recurrent_to_cell0', type=FLOAT32, shape=[64, 64], buffer=163, variable=False
+  INPUT[20]: 453: 'bw_recurrent_to_output0', type=FLOAT32, shape=[64, 64], buffer=164, variable=False
+  INPUT[21]: 454: 'bw_input_bias0', type=FLOAT32, shape=[64], buffer=165, variable=False
+  INPUT[22]: 455: 'bw_forget_bias0', type=FLOAT32, shape=[64], buffer=166, variable=False
+  INPUT[23]: 456: 'bw_cell_bias0', type=FLOAT32, shape=[64], buffer=167, variable=False
+  INPUT[24]: 457: 'bw_output_bias0', type=FLOAT32, shape=[64], buffer=168, variable=False
+  INPUT[25]: 458: 'fw_output_state1', type=FLOAT32, shape=[64], buffer=0, variable=True
+  INPUT[26]: 459: 'fw_cell_state1', type=FLOAT32, shape=[64], buffer=0, variable=True
+  INPUT[27]: 460: 'fw_output_state2', type=FLOAT32, shape=[64], buffer=0, variable=True
+  INPUT[28]: 461: 'fw_cell_state2', type=FLOAT32, shape=[64], buffer=0, variable=True
+  OUTPUT[0]: 462: 'val_502_reshaped', type=FLOAT32, shape=[15, 1, 128], buffer=0, variable=False
+
+--- CONSUMERS OF LSTM OUTPUT 462 ---
+CONSUMER OPERATOR 262: RESHAPE, version=1
+  INPUT[0]: 462: 'val_502_reshaped', type=FLOAT32, shape=[15, 1, 128], buffer=0, variable=False
+  INPUT[1]: 463: 'new_shape', type=INT32, shape=[4], buffer=169, variable=False
+  OUTPUT[0]: 464: 'val_502', type=FLOAT32, shape=[15, 1, 2, 64], buffer=0, variable=False
+  DOWNSTREAM CONSUMERS OF TENSOR 464:
+    op=263, type=QUANTIZE
+
+ETHOS-U OPERATOR COUNT: 47
+
+===== COMPARISON COMPLETE =====
+
+===== CUSTOM KERNEL INPUT AND OUTPUT CONTRACT =====
+23-};
+24-
+25-TfLiteEvalTensor* GetInputEvalTensor(TfLiteContext* context,
+26-                                     TfLiteNode* node,
+27-                                     int input_position) {
+28:  if (input_position < 0 || input_position >= node->inputs->size) {
+29-    return nullptr;
+30-  }
+31-
+32-  const int tensor_index = node->inputs->data[input_position];
+33-  if (tensor_index < 0) {
+34-    return nullptr;
+35-  }
+36-
+37-  return context->GetEvalTensor(context, tensor_index);
+38-}
+39-
+40-size_t TensorElementCount(const TfLiteEvalTensor* tensor) {
+--
+71-  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+72-         tensor->dims->size == 1 &&
+73-         tensor->dims->data[0] == length;
+74-}
+75-
+76:bool ValidateDirection(TfLiteContext* context,
+77-                       TfLiteNode* node,
+78-                       int input_weight_base,
+79-                       int recurrent_weight_base,
+80-                       int bias_base,
+81-                       int hidden_state_position,
+82-                       int cell_state_position,
+83-                       int input_dimension,
+84-                       int batch_size,
+85-                       int* hidden_dimension) {
+86-  TfLiteEvalTensor* first_weight =
+87-      GetInputEvalTensor(context, node, input_weight_base);
+88-
+--
+181-
+182-TfLiteStatus HeatstrokeBidirectionalLstmPrepare(TfLiteContext* context,
+183-                                                TfLiteNode* node) {
+184-  if (node == nullptr || node->builtin_data == nullptr ||
+185-      node->inputs == nullptr || node->outputs == nullptr ||
+186:      node->inputs->size != 29 || node->outputs->size != 1 ||
+187-      node->user_data == nullptr) {
+188-    MicroPrintf("Heatstroke BiLSTM: invalid node configuration");
+189-    return kTfLiteError;
+190-  }
+191-
+192-  auto* op_data =
+193-      static_cast<HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+194-
+195-  const auto* params =
+196-      static_cast<const TfLiteBidirectionalSequenceLSTMParams*>(
+197-          node->builtin_data);
+198-
+--
+206-  TfLiteEvalTensor* output =
+207-      context->GetEvalTensor(context, node->outputs->data[0]);
+208-
+209-  if (!IsFloatTensorType(input) || !IsFloatTensorType(output) ||
+210-      input->dims == nullptr || output->dims == nullptr ||
+211:      input->dims->size != 3 || output->dims->size != 3) {
+212-    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+213-    return kTfLiteError;
+214-  }
+215-
+216-  const int time_steps = input->dims->data[0];
+217-  const int batch_size = input->dims->data[1];
+218-  const int input_dimension = input->dims->data[2];
+219-
+220-  // The supplied heat-stress model uses time-major, single-batch sequences.
+221-  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+222-    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+223-    return kTfLiteError;
+224-  }
+225-
+226-  int forward_hidden = 0;
+227-  int backward_hidden = 0;
+228-
+229:  if (!ValidateDirection(context, node, 1, 5, 9, 25, 26, input_dimension, batch_size, &forward_hidden) ||
+230:      !ValidateDirection(context, node, 13, 17, 21, 27, 28, input_dimension, batch_size, &backward_hidden) ||
+231-      forward_hidden != backward_hidden) {
+232-    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+233-    return kTfLiteError;
+234-  }
+235-
+236-  const int hidden = forward_hidden;
+237-
+238-  if (output->dims->data[0] != time_steps ||
+239-      output->dims->data[1] != batch_size ||
+240-      output->dims->data[2] != 2 * hidden) {
+241:    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+242-    return kTfLiteError;
+243-  }
+244-
+245-  // The directional evaluator must see [time_steps, batch_size, hidden],
+246-  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+247-  const size_t staged_dims_bytes =
+248-      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+249-  op_data->staged_output_dims =
+250-      static_cast<TfLiteIntArray*>(
+251-          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+252-
+253-  if (op_data->staged_output_dims == nullptr) {
+
+===== END =====
