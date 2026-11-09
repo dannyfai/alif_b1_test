@@ -1,0 +1,554 @@
+============================================================
+BILSTM SINGLE-STEP EXPERIMENT
+============================================================
+
+1. Original source identity
+8d4b0a724119dcb7783c46a6e5feb1b57b02d1b8839bdc6574ad6205a1770eac  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+
+2. Generate separate experimental source
+EXPERIMENT_SOURCE_CREATED /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+CMAKE_SOURCE_ENTRY_ADDED heatstroke_bidirectional_lstm_single_step_experiment.cc
+ORIGINAL_KERNEL_PRESERVED /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+ORIGINAL_CMAKE_BACKED_UP True
+LARGE_SCRATCH_REQUESTS_REMOVED True
+FOUR_INTERNAL_SCRATCH_REQUESTS_RETAINED True
+EXPERIMENT_REGISTERED_IN_RESOLVER False
+PRODUCTION_KERNEL_REPLACED False
+
+3. Experimental source identity and remaining scratch requests
+b9268b3a33e0771ad161ae08f1f59e479d0e52ff40e213f43ee7812722563e2d  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+255-  // Match the four scratch buffers requested by TFLM's existing
+256-  // unidirectional FP32 LSTM implementation.
+257-  for (int i = 0; i < 4; ++i) {
+258:    if (context->RequestScratchBufferInArena(
+259-            context, internal_bytes,
+260-            &op_data->forward.buffer_indices[i]) != kTfLiteOk) {
+261-      MicroPrintf("Heatstroke BiLSTM: LSTM scratch allocation failed");
+262-      return kTfLiteError;
+263-    }
+
+4. Experimental implementation diff
+--- /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc	2026-11-09 10:53:30.042016001 +0800
++++ /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc	2026-11-09 16:52:55.301171169 +0800
+@@ -17,9 +17,6 @@
+ struct HeatstrokeBidirectionalLstmOpData {
+   OpDataLSTM forward;
+   OpDataLSTM backward;
+-  TfLiteIntArray* staged_output_dims;
+-  int reverse_input_buffer;
+-  int stage_output_buffer;
+ };
+ 
+ TfLiteEvalTensor* GetInputEvalTensor(TfLiteContext* context,
+@@ -242,24 +239,6 @@
+     return kTfLiteError;
+   }
+ 
+-  // The directional evaluator must see [time_steps, batch_size, hidden],
+-  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+-  const size_t staged_dims_bytes =
+-      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+-  op_data->staged_output_dims =
+-      static_cast<TfLiteIntArray*>(
+-          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+-
+-  if (op_data->staged_output_dims == nullptr) {
+-    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+-    return kTfLiteError;
+-  }
+-
+-  op_data->staged_output_dims->size = 3;
+-  op_data->staged_output_dims->data[0] = time_steps;
+-  op_data->staged_output_dims->data[1] = batch_size;
+-  op_data->staged_output_dims->data[2] = hidden;
+-
+   // Compact 29-slot model: no separate auxiliary input slots exist.
+ 
+   InitializeFloatLstmParameters(
+@@ -270,27 +249,9 @@
+       &op_data->backward, true, batch_size, time_steps,
+       input_dimension, hidden, params->activation, params->cell_clip);
+ 
+-  const size_t reverse_bytes =
+-      static_cast<size_t>(time_steps) * batch_size *
+-      input_dimension * sizeof(float);
+-
+-  const size_t stage_bytes =
+-      static_cast<size_t>(time_steps) * batch_size *
+-      hidden * sizeof(float);
+-
+   const size_t internal_bytes =
+       static_cast<size_t>(batch_size) * hidden * sizeof(float);
+ 
+-  if (context->RequestScratchBufferInArena(
+-          context, reverse_bytes, &op_data->reverse_input_buffer) !=
+-          kTfLiteOk ||
+-      context->RequestScratchBufferInArena(
+-          context, stage_bytes, &op_data->stage_output_buffer) !=
+-          kTfLiteOk) {
+-    MicroPrintf("Heatstroke BiLSTM: scratch allocation failed");
+-    return kTfLiteError;
+-  }
+-
+   // Match the four scratch buffers requested by TFLM's existing
+   // unidirectional FP32 LSTM implementation.
+   for (int i = 0; i < 4; ++i) {
+@@ -373,83 +334,90 @@
+   const int input_dimension = op_data->forward.size_info.input_dimension;
+   const int hidden = op_data->forward.size_info.state_dimension;
+ 
+-  auto* reversed_input = static_cast<float*>(
+-      context->GetScratchBuffer(
+-          context, op_data->reverse_input_buffer));
+-
+-  auto* staged_output = static_cast<float*>(
+-      context->GetScratchBuffer(
+-          context, op_data->stage_output_buffer));
+-
+-  if (reversed_input == nullptr || staged_output == nullptr) {
+-    MicroPrintf("Heatstroke BiLSTM: scratch buffer unavailable");
+-    return kTfLiteError;
+-  }
+-
+   const float* input_data = input->data.f;
+   float* output_data = output->data.f;
+ 
+-  // Reverse the time dimension for the backward direction.
+-  for (int t = 0; t < time_steps; ++t) {
+-    std::memcpy(
+-        reversed_input + t * input_dimension,
+-        input_data + (time_steps - 1 - t) * input_dimension,
+-        input_dimension * sizeof(float));
++  if (time_steps <= 0 || input_dimension <= 0 || hidden <= 0 ||
++      input_data == nullptr || output_data == nullptr) {
++    MicroPrintf("Heatstroke BiLSTM: invalid single-step tensor data");
++    return kTfLiteError;
+   }
+ 
+-  TfLiteEvalTensor reversed_input_tensor = *input;
+-  reversed_input_tensor.data.f = reversed_input;
+-
+-  TfLiteEvalTensor staged_output_tensor = *output;
+-  staged_output_tensor.data.f = staged_output;
+-  staged_output_tensor.dims = op_data->staged_output_dims;
++  // Each view redirects the existing tensor data pointer to one timestep.
++  // Its dimensions remain the original tensor dimensions; EvalLstm's
++  // step manager supplies the single-step arithmetic shapes.
++  TfLiteEvalTensor forward_input_view = *input;
++  TfLiteEvalTensor forward_output_view = *output;
+ 
+   LSTMKernelContents forward_contents{};
+-  PopulateDirectionContents(context, node, 1, 5, 9, 25, 26, input, &staged_output_tensor, &forward_contents);
++  PopulateDirectionContents(
++      context, node, 1, 5, 9, 25, 26,
++      &forward_input_view, &forward_output_view, &forward_contents);
+ 
+   LSTMBuffers<float> buffers =
+       CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+ 
+-  TfLiteStatus forward_status =
+-      EvalLstm<float, float, float, float>(
+-          op_data->forward, forward_contents, buffers);
+-  if (forward_status != kTfLiteOk) {
+-    return forward_status;
+-  }
++  OpDataLSTM forward_step_data = op_data->forward;
++  forward_step_data.size_info.time_steps = 1;
+ 
+-  // Copy forward outputs into the first half of the merged output.
++  // Forward direction: original sequence order.
+   for (int t = 0; t < time_steps; ++t) {
+-    std::memcpy(
+-        output_data + t * (2 * hidden),
+-        staged_output + t * hidden,
+-        hidden * sizeof(float));
++    const size_t input_offset =
++        static_cast<size_t>(t) * input_dimension;
++    const size_t output_offset =
++        static_cast<size_t>(t) * 2U * hidden;
++
++    forward_input_view.data.f =
++        const_cast<float*>(input_data + input_offset);
++    forward_output_view.data.f = output_data + output_offset;
++
++    TfLiteStatus status =
++        EvalLstm<float, float, float, float>(
++            forward_step_data, forward_contents, buffers);
++
++    if (status != kTfLiteOk) {
++      return status;
++    }
+   }
+ 
+-  LSTMKernelContents backward_contents{};
+-  PopulateDirectionContents(context, node, 13, 17, 21, 27, 28, &reversed_input_tensor, &staged_output_tensor, &backward_contents);
++  TfLiteEvalTensor backward_input_view = *input;
++  TfLiteEvalTensor backward_output_view = *output;
+ 
+-  TfLiteStatus backward_status =
+-      EvalLstm<float, float, float, float>(
+-          op_data->backward, backward_contents, buffers);
+-  if (backward_status != kTfLiteOk) {
+-    return backward_status;
+-  }
++  LSTMKernelContents backward_contents{};
++  PopulateDirectionContents(
++      context, node, 13, 17, 21, 27, 28,
++      &backward_input_view, &backward_output_view, &backward_contents);
++
++  OpDataLSTM backward_step_data = op_data->backward;
++  backward_step_data.size_info.time_steps = 1;
++
++  // Backward direction: traverse the original input backwards.
++  // Write each hidden state directly into the backward half of its
++  // corresponding original-time output row.
++  for (int t = time_steps - 1; t >= 0; --t) {
++    const size_t input_offset =
++        static_cast<size_t>(t) * input_dimension;
++    const size_t output_offset =
++        static_cast<size_t>(t) * 2U * hidden + hidden;
++
++    backward_input_view.data.f =
++        const_cast<float*>(input_data + input_offset);
++    backward_output_view.data.f = output_data + output_offset;
++
++    TfLiteStatus status =
++        EvalLstm<float, float, float, float>(
++            backward_step_data, backward_contents, buffers);
+ 
+-  // Restore backward outputs to original time order and copy them
+-  // into the second half of the merged output.
+-  for (int t = 0; t < time_steps; ++t) {
+-    std::memcpy(
+-        output_data + t * (2 * hidden) + hidden,
+-        staged_output + (time_steps - 1 - t) * hidden,
+-        hidden * sizeof(float));
++    if (status != kTfLiteOk) {
++      return status;
++    }
+   }
+ 
+   return kTfLiteOk;
+ }
+-
+ }  // namespace
+ 
+-TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstm() {
++TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental() {
+   return micro::RegisterOp(
+       HeatstrokeBidirectionalLstmInit,
+       HeatstrokeBidirectionalLstmPrepare,
+
+5. Build experimental translation unit (no flash)
+-- west build: generating a build system
+-- Ethos-U: ETHOSU_TARGET_NPU_CONFIG=ethos-u55-128 -> CONFIG_ARM_ETHOS_U55_128=y, model ID H128
+Loading Zephyr default modules (Zephyr base (cached)).
+-- Application: /home/user/sdk-alif/beeinventor/test_heatstroke
+-- CMake version: 3.30.5
+-- Cache files will be written to: /home/user/.cache/zephyr
+-- Zephyr version: 4.1.0 (/home/user/sdk-alif/zephyr)
+-- Found west (found suitable version "1.5.0", minimum required is "0.14.0")
+-- Board: alif_b1_dk, qualifiers: ab1c1f4m51820ph0/rtss_he
+-- Snippet(s): ospi-flash ethos-u55-enable
+-- Found host-tools: zephyr 0.17.0 (/home/user/zephyr-sdk-0.17.0)
+-- Found toolchain: zephyr 0.17.0 (/home/user/zephyr-sdk-0.17.0)
+-- Found BOARD.dts: /home/user/sdk-alif/zephyr/boards/alif/alif_b1_dk/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.dts
+-- Found devicetree overlay: /home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay
+-- Found devicetree overlay: /home/user/sdk-alif/alif/snippets/ospi-flash/b1_ospi0.overlay
+-- Found devicetree overlay: /home/user/sdk-alif/alif/snippets/ethos-u55-enable/snippet.overlay
+-- Found devicetree overlay: sleep.overlay
+-- Generated zephyr.dts: /home/user/sdk-alif/build/zephyr/zephyr.dts
+-- Generated pickled edt: /home/user/sdk-alif/build/zephyr/edt.pickle
+-- Generated devicetree_generated.h: /home/user/sdk-alif/build/zephyr/include/generated/zephyr/devicetree_generated.h
+-- Including generated dts.cmake file: /home/user/sdk-alif/build/zephyr/dts.cmake
+Parsing /home/user/sdk-alif/beeinventor/test_heatstroke/Kconfig
+Loaded configuration '/home/user/sdk-alif/build/zephyr/.config'
+No change to configuration in '/home/user/sdk-alif/build/zephyr/.config'
+No change to Kconfig header in '/home/user/sdk-alif/build/zephyr/include/generated/zephyr/autoconf.h'
+-- The C compiler identification is GNU 12.2.0
+-- The CXX compiler identification is GNU 12.2.0
+-- The ASM compiler identification is GNU
+-- Found assembler: /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-gcc
+-- *******************************************************
+-- PROJECT_NAME                           : ethosu_core_driver
+-- ETHOSU_TARGET_NPU_CONFIG               : ethos-u55-128
+-- CMAKE_SYSTEM_PROCESSOR                 : arm
+-- CMSIS_PATH                             : /home/user/sdk-alif/modules/hal/ethos_u/../cmsis
+-- ETHOSU_LOG_ENABLE                      : ON
+-- ETHOSU_LOG_SEVERITY                    : warning
+-- ETHOSU_INFERENCE_TIMEOUT               : Default (no timeout)
+-- *******************************************************
+-- Including default API config parameters...
+-- Using existing python at /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/bin/python3
+-- MLEK log is disabled
+-- **************************************************
+-- Library:                mlek_log
+-- CMAKE_SYSTEM_PROCESSOR: arm
+-- **************************************************
+-- *******************************************************
+-- Library                    : arm_math
+-- CMAKE_SYSTEM_PROCESSOR     : arm
+-- *******************************************************
+-- Adding TensorFlow Lite Micro framework to the build...
+-- *******************************************************
+-- Library: ml_framework_tflm
+-- CMAKE_SYSTEM_PROCESSOR: arm
+-- *******************************************************
+-- *******************************************************
+-- Library: ml_framework_iface
+-- CMAKE_SYSTEM_PROCESSOR: arm
+-- *******************************************************
+-- *******************************************************
+-- Library:                common_api
+-- CMAKE_SYSTEM_PROCESSOR: arm
+-- *******************************************************
+-- *******************************************************
+-- Library                                : asr_api
+-- CMAKE_SYSTEM_PROCESSOR                 : arm
+-- *******************************************************
+-- *******************************************************
+-- Library                                : kws_api
+-- CMAKE_SYSTEM_PROCESSOR                 : arm
+-- *******************************************************
+-- *******************************************************
+-- Library                                : noise_reduction_api
+-- CMAKE_SYSTEM_PROCESSOR                 : arm
+-- *******************************************************
+-- *******************************************************
+-- Library                                : img_class_api
+-- CMAKE_SYSTEM_PROCESSOR                 : arm
+-- *******************************************************
+-- *******************************************************
+-- Library                                : object_detection_api
+-- CMAKE_SYSTEM_PROCESSOR                 : arm
+-- *******************************************************
+-- *******************************************************
+-- Library                                : vww_api
+-- CMAKE_SYSTEM_PROCESSOR                 : arm
+-- *******************************************************
+-- *******************************************************
+-- Library                                : ad_api
+-- CMAKE_SYSTEM_PROCESSOR                 : arm
+-- *******************************************************
+-- *******************************************************
+-- Library:                inference_runner_api
+-- CMAKE_SYSTEM_PROCESSOR: arm
+-- *******************************************************
+-- Created interface target: mlek::asr_impl
+-- Created interface target: mlek::kws_impl
+-- Created interface target: mlek::noise_reduction_impl
+-- Created interface target: mlek::img_class_impl
+-- Created interface target: mlek::object_detection_impl
+-- Created interface target: mlek::vww_impl
+-- Created interface target: mlek::ad_impl
+-- Created interface target: mlek::inference_runner_impl
+CMake Warning at /home/user/sdk-alif/zephyr/CMakeLists.txt:1011 (message):
+  No SOURCES given to Zephyr library: drivers__power_domain
+
+  Excluding target from build.
+
+
+CMake Warning at /home/user/sdk-alif/zephyr/CMakeLists.txt:2193 (message):
+  __ASSERT() statements are globally ENABLED
+
+
+CMake Warning at /home/user/sdk-alif/zephyr/CMakeLists.txt:2224 (message):
+  
+
+        The CMake build type was set to 'Release', but the optimization flag was set to '-Os'.
+        This may be intentional and the warning can be turned off by setting the CMake variable 'NO_BUILD_TYPE_WARNING'
+
+
+-- Using existing python at /home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/bin/python3
+-- Using SRC_GEN_DIR:    /home/user/sdk-alif/build/generated/src
+-- Using INC_GEN_DIR:    /home/user/sdk-alif/build/generated/include
+-- Using combined heat-stress model: /home/user/sdk-alif/beeinventor/test_heatstroke/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+-- Combined model SHA256: b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3
+-- Using /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+++ Converting qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite to    qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite.cc
+-- Configuring done (5.2s)
+-- Generating done (0.1s)
+-- Build files have been written to: /home/user/sdk-alif/build
+-- west build: building application
+[1/159] Preparing syscall dependency handling
+
+[2/158] Generating misc/generated/syscalls.json, misc/generated/struct_tags.json
+[3/157] Generating include/generated/zephyr/syscall_dispatch.c, include/generated/zephyr/syscall_exports_llext.c, syscall_weakdefs_llext.c, include/generated/zephyr/syscall_list.h
+[4/157] Linking C static library modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a
+[5/157] Building C object zephyr/CMakeFiles/offsets.dir/arch/arm/core/offsets/offsets.c.obj
+[6/157] Generating include/generated/zephyr/offsets.h
+[7/157] Generating include/generated/zephyr/version.h
+-- Zephyr version: 4.1.0 (/home/user/sdk-alif/zephyr), build: f7f3f548f357
+[8/157] Building C object zephyr/arch/common/CMakeFiles/isr_tables.dir/isr_tables.c.obj
+[9/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/sem.c.obj
+[10/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/thread_entry.c.obj
+[11/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/printk.c.obj
+[12/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/reboot.c.obj
+[13/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/poweroff.c.obj
+[14/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/cbprintf_packaged.c.obj
+[15/157] Building C object CMakeFiles/app.dir/src/power/power_mgr.c.obj
+[16/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/assert.c.obj
+[17/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/heap/heap.c.obj
+[18/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/cbprintf.c.obj
+[19/157] Building C object zephyr/CMakeFiles/zephyr.dir/soc/alif/common/rtss/power.c.obj
+[20/157] Linking CXX static library modules/tflite-micro/libmodules__tflite-micro.a
+[21/157] Building C object zephyr/CMakeFiles/zephyr.dir/soc/alif/balletto/common/soc_common.c.obj
+[22/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/logging/log_msg.c.obj
+[23/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/os/cbprintf_complete.c.obj
+[24/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/utils/rb.c.obj
+[25/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/logging/log_output.c.obj
+[26/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/logging/log_core.c.obj
+[27/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/logging/backends/log_backend_uart.c.obj
+[28/157] Building C object zephyr/CMakeFiles/zephyr.dir/lib/utils/bitarray.c.obj
+[29/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/pm/policy/policy_latency.c.obj
+[30/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/mem_mgmt/mem_attr.c.obj
+[31/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/pm/policy/policy_events.c.obj
+[32/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/pm/policy/policy_state_lock.c.obj
+[33/157] Linking C static library zephyr/arch/common/libisr_tables.a
+[34/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/pm/policy/policy_default.c.obj
+[35/157] Generating linker_zephyr_pre0.cmd
+[36/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/console/getline.c.obj
+[37/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/pm/device_system_managed.c.obj
+[38/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/pm/device.c.obj
+[39/157] Building C object zephyr/CMakeFiles/zephyr.dir/home/user/sdk-alif/modules/hal/alif/common/src/mram_rw.c.obj
+[40/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/pm/pm.c.obj
+[41/157] Building C object zephyr/arch/common/CMakeFiles/arch__common.dir/sw_isr_common.c.obj
+[42/157] Building C object zephyr/CMakeFiles/zephyr.dir/home/user/sdk-alif/modules/hal/alif/common/src/es0_power_manager.c.obj
+[43/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/exc_exit.c.obj
+[44/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/fpu.c.obj
+[45/157] Building C object zephyr/CMakeFiles/zephyr.dir/drivers/flash/flash_util.c.obj
+[46/157] Building C object zephyr/CMakeFiles/zephyr.dir/subsys/logging/log_mgmt.c.obj
+[47/157] Building C object zephyr/arch/arch/arm/core/CMakeFiles/arch__arm__core.dir/nmi.c.obj
+[48/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/scb.c.obj
+[49/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/fault.c.obj
+[50/157] Building ASM object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/swap_helper.S.obj
+[51/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/prep_c.c.obj
+[52/157] Building C object zephyr/arch/arch/arm/core/CMakeFiles/arch__arm__core.dir/fatal.c.obj
+[53/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/thread_abort.c.obj
+[54/157] Building ASM object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/pm_s2ram.S.obj
+[55/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/thread.c.obj
+[56/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/irq_manage.c.obj
+[57/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/irq_init.c.obj
+[58/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/cpu_idle.c.obj
+[59/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/pm_s2ram.c.obj
+[60/157] Building C object zephyr/arch/arch/arm/core/mpu/CMakeFiles/arch__arm__core__mpu.dir/arm_core_mpu.c.obj
+[61/157] Building C object zephyr/arch/arch/arm/core/cortex_m/cmse/CMakeFiles/arch__arm__core__cortex_m__cmse.dir/arm_core_cmse.c.obj
+[62/157] Building C object zephyr/drivers/misc/ethos_u/CMakeFiles/drivers__misc__ethos_u.dir/ethos_u.c.obj
+[63/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/cache.c.obj
+[64/157] Building C object zephyr/arch/arch/arm/core/mpu/CMakeFiles/arch__arm__core__mpu.dir/arm_mpu.c.obj
+[65/157] Building C object zephyr/lib/libc/common/CMakeFiles/lib__libc__common.dir/source/stdlib/abort.c.obj
+[66/157] Building C object zephyr/arch/arch/arm/core/cortex_m/CMakeFiles/arch__arm__core__cortex_m.dir/isr_wrapper.c.obj
+[67/157] Building C object zephyr/lib/libc/newlib/CMakeFiles/lib__libc__newlib.dir/libc-hooks.c.obj
+[68/157] Building C object zephyr/drivers/console/CMakeFiles/drivers__console.dir/uart_console.c.obj
+[69/157] Building C object zephyr/drivers/clock_control/CMakeFiles/drivers__clock_control.dir/clock_control_alif_balletto.c.obj
+[70/157] Building C object zephyr/drivers/i2c/CMakeFiles/drivers__i2c.dir/i2c_common.c.obj
+[71/157] Building C object zephyr/drivers/flash/CMakeFiles/drivers__flash.dir/flash_page_layout.c.obj
+[72/157] Building C object zephyr/drivers/counter/CMakeFiles/drivers__counter.dir/counter_dw_rtc.c.obj
+[73/157] Building C object zephyr/drivers/flash/CMakeFiles/drivers__flash.dir/flash_mram_alif.c.obj
+[74/157] Building C object zephyr/drivers/audio/CMakeFiles/drivers__audio.dir/alif_pdm.c.obj
+[75/157] Building C object zephyr/drivers/pinctrl/CMakeFiles/drivers__pinctrl.dir/pinctrl_alif.c.obj
+[76/157] Building C object zephyr/drivers/pinctrl/CMakeFiles/drivers__pinctrl.dir/common.c.obj
+[77/157] Building C object zephyr/drivers/gpio/CMakeFiles/drivers__gpio.dir/gpio_dw.c.obj
+[78/157] Building C object zephyr/drivers/timer/CMakeFiles/drivers__timer.dir/sys_clock_init.c.obj
+[79/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/main_weak.c.obj
+[80/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/banner.c.obj
+[81/157] Building C object zephyr/drivers/i2c/CMakeFiles/drivers__i2c.dir/i2c_dw.c.obj
+[82/157] Building C object zephyr/drivers/timer/CMakeFiles/drivers__timer.dir/cortex_m_systick.c.obj
+[83/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/device.c.obj
+[84/157] Linking CXX static library modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a
+[85/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/busy_wait.c.obj
+[86/157] Building C object zephyr/drivers/ipm/CMakeFiles/drivers__ipm.dir/ipm_arm_mhuv2.c.obj
+[87/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/version.c.obj
+[88/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/errno.c.obj
+[89/157] Building C object zephyr/drivers/flash/CMakeFiles/drivers__flash.dir/flash_ospi_is25wx.c.obj
+[90/157] Building C object modules/sdk_alif/drivers/codec/wm8904/CMakeFiles/..__alif__drivers__codec__wm8904.dir/wm8904.c.obj
+[91/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/init.c.obj
+[92/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/kheap.c.obj
+[93/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/float.c.obj
+[94/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/fatal.c.obj
+[95/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/mem_slab.c.obj
+[96/157] Building C object zephyr/drivers/serial/CMakeFiles/drivers__serial.dir/uart_ns16550.c.obj
+[97/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/mailbox.c.obj
+[98/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/idle.c.obj
+[99/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/msg_q.c.obj
+[100/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/stack.c.obj
+[101/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/system_work_q.c.obj
+[102/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/mutex.c.obj
+[103/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/condvar.c.obj
+[104/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/queue.c.obj
+[105/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/sem.c.obj
+[106/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/spinlock_validate.c.obj
+[107/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/pipe.c.obj
+[108/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/timeslicing.c.obj
+[109/157] Linking C static library zephyr/libzephyr.a
+[110/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/thread.c.obj
+[111/157] Linking C static library zephyr/arch/common/libarch__common.a
+[112/157] Linking C static library zephyr/arch/arch/arm/core/libarch__arm__core.a
+[113/157] Linking C static library zephyr/arch/arch/arm/core/cortex_m/libarch__arm__core__cortex_m.a
+[114/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/xip.c.obj
+[115/157] Linking C static library zephyr/arch/arch/arm/core/cortex_m/cmse/libarch__arm__core__cortex_m__cmse.a
+[116/157] Linking C static library zephyr/lib/libc/newlib/liblib__libc__newlib.a
+[117/157] Linking C static library zephyr/arch/arch/arm/core/mpu/libarch__arm__core__mpu.a
+[118/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/events.c.obj
+[119/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/mempool.c.obj
+[120/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/timeout.c.obj
+[121/157] Linking C static library zephyr/drivers/audio/libdrivers__audio.a
+[122/157] Linking C static library zephyr/lib/libc/common/liblib__libc__common.a
+[123/157] Linking C static library zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a
+[124/157] Linking C static library zephyr/drivers/clock_control/libdrivers__clock_control.a
+[125/157] Linking C static library zephyr/drivers/flash/libdrivers__flash.a
+[126/157] Linking C static library zephyr/drivers/console/libdrivers__console.a
+[127/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/timer.c.obj
+[128/157] Linking C static library zephyr/drivers/counter/libdrivers__counter.a
+[129/157] Linking C static library zephyr/drivers/gpio/libdrivers__gpio.a
+[130/157] Linking C static library zephyr/drivers/i2c/libdrivers__i2c.a
+[131/157] Linking C static library zephyr/drivers/pinctrl/libdrivers__pinctrl.a
+[132/157] Linking C static library zephyr/drivers/timer/libdrivers__timer.a
+[133/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/dynamic_disabled.c.obj
+[134/157] Linking C static library modules/sdk_alif/drivers/codec/wm8904/lib..__alif__drivers__codec__wm8904.a
+[135/157] Linking C static library zephyr/drivers/serial/libdrivers__serial.a
+[136/157] Linking C static library zephyr/drivers/ipm/libdrivers__ipm.a
+[137/157] Linking C static library modules/alif/drivers/ospi/lib..__modules__hal__alif__drivers__ospi.a
+[138/157] Linking C static library modules/alif/drivers/ethos_u/lib..__modules__hal__alif__drivers__ethos_u.a
+[139/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/priority_queues.c.obj
+[140/157] Building C object modules/alif/se_services/CMakeFiles/..__modules__hal__alif__se_services.dir/zephyr/src/se_service.c.obj
+[141/157] Linking C static library modules/alif/se_services/lib..__modules__hal__alif__se_services.a
+[142/157] Linking C static library modules/cmsis-dsp/libmodules__cmsis-dsp.a
+[143/157] Linking CXX static library modules/mlek/mlek/mlek/math/libarm_math.a
+[144/157] Linking CXX static library modules/mlek/mlek/mlek/common/libcommon_api.a
+[145/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/work.c.obj
+[146/157] Building C object zephyr/kernel/CMakeFiles/kernel.dir/sched.c.obj
+[147/157] Linking C static library zephyr/kernel/libkernel.a
+[148/157] Building CXX object CMakeFiles/app.dir/src/use_case/alif_asr/src/MainLoop.cc.obj
+[149/157] Building CXX object CMakeFiles/app.dir/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc.obj
+[150/157] Building CXX object CMakeFiles/app.dir/src/application/main/Main.cc.obj
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/Main.cc:44: warning: "PRJ_DES_STR" redefined
+   44 |     #define PRJ_DES_STR     "BeeInventor - PolyU Model1 Test"
+      | 
+<command-line>: note: this is the location of the previous definition
+[151/157] Building CXX object CMakeFiles/app.dir/generated/src/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite.cc.obj
+[152/157] Linking CXX static library app/libapp.a
+[153/157] Linking CXX executable zephyr/zephyr_pre0.elf
+[154/157] Generating linker.cmd
+[155/157] Generating isr_tables.c, isr_tables_vt.ld, isr_tables_swi.ld
+[156/157] Building C object zephyr/CMakeFiles/zephyr_final.dir/isr_tables.c.obj
+[157/157] Linking CXX executable zephyr/zephyr.elf
+Memory region         Used Size  Region Size  %age Used
+           FLASH:      230892 B      1824 KB     12.36%
+             RAM:     1362132 B      1496 KB     88.92%
+            ITCM:          0 GB       512 KB      0.00%
+   RESERVED_DTCM:          0 GB        40 KB      0.00%
+            DTCM:          0 GB      1496 KB      0.00%
+           OSPI0:    11026208 B        64 MB     16.43%
+        IDT_LIST:          0 GB        32 KB      0.00%
+Generating files from /home/user/sdk-alif/build/zephyr/zephyr.elf for board: alif_b1_dk
+
+6. Final source identities
+8d4b0a724119dcb7783c46a6e5feb1b57b02d1b8839bdc6574ad6205a1770eac  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc
+b9268b3a33e0771ad161ae08f1f59e479d0e52ff40e213f43ee7812722563e2d  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+6ef9b75fdc91bc9983d860a0242e2cbae6abaf4a7132e1567448d59c053e9e81  /home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt
+
+============================================================
+EXPERIMENT BUILD ATTEMPT COMPLETE
+NO FLASH OPERATION PERFORMED
+============================================================
