@@ -1,0 +1,352 @@
+=== TFLMRegistration STRUCT ===
+/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+#ifndef THIRD_PARTY_TFLITE_MICRO_TENSORFLOW_LITE_MICRO_MICRO_COMMON_H_
+#define THIRD_PARTY_TFLITE_MICRO_TENSORFLOW_LITE_MICRO_MICRO_COMMON_H_
+
+#include "tensorflow/lite/c/common.h"
+
+// TFLMRegistration defines the API that TFLM kernels need to implement.
+// This will be replacing the current TfLiteRegistration_V1 struct with
+// something more compatible Embedded enviroment TFLM is used in.
+struct TFLMRegistration {
+  void* (*init)(TfLiteContext* context, const char* buffer, size_t length);
+  void (*free)(TfLiteContext* context, void* buffer);
+  TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node);
+  TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node);
+  void (*reset)(TfLiteContext* context, void* buffer);
+  int32_t builtin_code;
+  const char* custom_name;
+};
+
+struct TFLMInferenceRegistration {
+  TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node);
+  void (*reset)(TfLiteContext* context, void* buffer);
+};
+
+#endif  // THIRD_PARTY_TFLITE_MICRO_TENSORFLOW_LITE_MICRO_MICRO_COMMON_H_
+
+=== STOCK MUL IMPLEMENTATION ===
+29:namespace tflite {
+31:TfLiteStatus MulEval(TfLiteContext* context, TfLiteNode* node) {
+64:TFLMRegistration Register_MUL() {
+65:  return tflite::micro::RegisterOp(MulInit, MulPrepare, MulEval);
+68:}  // namespace tflite
+/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#include "tensorflow/lite/micro/kernels/mul.h"
+
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/internal/quantization_util.h"
+#include "tensorflow/lite/kernels/internal/reference/integer_ops/mul.h"
+#include "tensorflow/lite/kernels/internal/reference/mul.h"
+#include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+#include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/memory_helpers.h"
+#include "tensorflow/lite/micro/micro_log.h"
+
+namespace tflite {
+
+TfLiteStatus MulEval(TfLiteContext* context, TfLiteNode* node) {
+  TFLITE_DCHECK(node->builtin_data != nullptr);
+  auto* params = reinterpret_cast<TfLiteMulParams*>(node->builtin_data);
+
+  TFLITE_DCHECK(node->user_data != nullptr);
+  const OpDataMul* data = static_cast<const OpDataMul*>(node->user_data);
+
+  const TfLiteEvalTensor* input1 =
+      tflite::micro::GetEvalInput(context, node, kMulInput1Tensor);
+  const TfLiteEvalTensor* input2 =
+      tflite::micro::GetEvalInput(context, node, kMulInput2Tensor);
+  TfLiteEvalTensor* output =
+      tflite::micro::GetEvalOutput(context, node, kMulOutputTensor);
+
+  switch (input1->type) {
+    case kTfLiteInt8:
+    case kTfLiteInt16:
+    case kTfLiteInt32:
+      EvalMulQuantizedReference(context, node, data, input1, input2, output);
+      break;
+    case kTfLiteFloat32:
+      EvalMulFloatReference(context, node, params, data, input1, input2,
+                            output);
+      break;
+    default:
+      MicroPrintf("Type %s (%d) not supported.",
+                  TfLiteTypeGetName(input1->type), input1->type);
+      return kTfLiteError;
+  }
+
+  return kTfLiteOk;
+}
+
+TFLMRegistration Register_MUL() {
+  return tflite::micro::RegisterOp(MulInit, MulPrepare, MulEval);
+}
+
+}  // namespace tflite
+
+=== MUL HEADER ===
+/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#ifndef TENSORFLOW_LITE_MICRO_KERNELS_MUL_H_
+#define TENSORFLOW_LITE_MICRO_KERNELS_MUL_H_
+
+#include <cstdint>
+
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/micro/micro_common.h"
+
+namespace tflite {
+
+extern const int kMulInput1Tensor;
+extern const int kMulInput2Tensor;
+extern const int kMulOutputTensor;
+
+struct OpDataMul {
+  int32_t input1_zero_point;
+  int32_t input2_zero_point;
+
+  int32_t output_activation_min;
+  int32_t output_activation_max;
+  int32_t output_zero_point;
+  int32_t output_multiplier;
+  int output_shift;
+
+  float output_activation_min_f32;
+  float output_activation_max_f32;
+};
+
+void* MulInit(TfLiteContext* context, const char* buffer, size_t length);
+
+TfLiteStatus CalculateOpDataMul(TfLiteContext* context, TfLiteNode* node,
+                                TfLiteMulParams* params, OpDataMul* data);
+
+TfLiteStatus MulPrepare(TfLiteContext* context, TfLiteNode* node);
+
+TfLiteStatus EvalMulQuantizedReference(TfLiteContext* context, TfLiteNode* node,
+                                       const OpDataMul* data,
+                                       const TfLiteEvalTensor* input1,
+                                       const TfLiteEvalTensor* input2,
+                                       TfLiteEvalTensor* output);
+
+void EvalMulFloatReference(TfLiteContext* context, TfLiteNode* node,
+                           TfLiteMulParams* params, const OpDataMul* data,
+                           const TfLiteEvalTensor* input1,
+                           const TfLiteEvalTensor* input2,
+                           TfLiteEvalTensor* output);
+
+// Generic must define registration function.
+TFLMRegistration Register_MUL();
+
+#if defined(CMSIS_NN)
+TFLMRegistration Register_MUL_INT8();
+#else
+// Fallback registration
+inline TFLMRegistration Register_MUL_INT8() { return Register_MUL(); }
+#endif
+}  // namespace tflite
+
+#endif  // TENSORFLOW_LITE_MICRO_KERNELS_MUL_H_
+
+=== CUSTOM CAST/SUM HEADER ===
+#ifndef HEATSTROKE_INT64_CAST_SUM_HPP
+#define HEATSTROKE_INT64_CAST_SUM_HPP
+
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+
+namespace tflite {
+
+TFLMRegistration RegisterHeatstrokeCastKernel();
+TFLMRegistration RegisterHeatstrokeSumKernel();
+
+}  // namespace tflite
+
+#endif
+
+=== CURRENT RESOLVER INCLUDES ===
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Application-local heat-stress TFLM operator registrations.
+ */
+
+#include "PolyUModel1.hpp"
+
+#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+#include "heatstroke_int64_cast_sum.hpp"
+#endif
+
+
+#include <cstdint>
+
+#include <cstddef>
+#include <cstring>
+#include <limits>
+
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+#include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_utils.h"
+
+#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_log.h"
+
+#include "mlek/log/log_macros.h"
+#include "heatstroke_bidirectional_lstm.h"
+
+const tflite::MicroOpResolver&
+arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+{
+    return this->m_opResolver;
+}
+
+namespace
+{
+
+/*
+ * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+ * required by this implementation. Validate its options type and leave
+ * builtin_data null.
+ */
+TfLiteStatus ParseHeatstrokeSign(
+    const tflite::Operator* op,
+    tflite::ErrorReporter*,
+    tflite::BuiltinDataAllocator*,
+    void** builtin_data)
+{
+    if (builtin_data != nullptr) {
+        *builtin_data = nullptr;
+    }
+
+    if (op == nullptr ||
+        op->builtin_options_type() !=
+            tflite::BuiltinOptions_SignOptions) {
+        return kTfLiteError;
+    }
+
+    return kTfLiteOk;
+}
+
+/*
+ * Application-local INT32 SIGN implementation.
+ *
+ * y = -1 when x < 0
+ * y =  0 when x = 0
+ * y =  1 when x > 0
+ *
+ * No temporary buffer or scratch allocation is required.
+ */
+TfLiteStatus HeatstrokeSignEval(
+    TfLiteContext* context,
+    TfLiteNode* node)
+{
+    if (context == nullptr || node == nullptr) {
+        return kTfLiteError;
+    }
+
+    const TfLiteEvalTensor* input =
+        tflite::micro::GetEvalInput(context, node, 0);
+
+    TfLiteEvalTensor* output =
+        tflite::micro::GetEvalOutput(context, node, 0);
+
+    if (input == nullptr || output == nullptr) {
+        return kTfLiteError;
+    }
+
+    if (input->type != kTfLiteInt32 ||
+        output->type != kTfLiteInt32) {
+        MicroPrintf(
+            "Heatstroke SIGN requires INT32 input/output. "
+            "Input=%d Output=%d",
+            input->type,
+            output->type);
+
+=== CURRENT MUL REGISTRATION ===
+     */
+    {
+        const TFLMRegistration registration =
+            tflite::RegisterHeatstrokeGatherKernel();
+
+        if (this->m_opResolver.AddBuiltin(
+                tflite::BuiltinOperator_GATHER,
+                registration,
+                tflite::ParseGather) != kTfLiteOk) {
+            printf_err(
+                "Failed to register heat-stress INT64 GATHER.\n");
+            return false;
+        }
+    }
+    HS_ADD_REQUIRED(AddGreater);
+    HS_ADD_REQUIRED(AddLogicalAnd);
+    HS_ADD_REQUIRED(AddLogicalNot);
+    HS_ADD_REQUIRED(AddMaximum);
+    HS_ADD_REQUIRED(AddMean);
+    HS_ADD_REQUIRED(AddMul);
+    HS_ADD_REQUIRED(AddNeg);
+    HS_ADD_REQUIRED(AddQuantize);
+    HS_ADD_REQUIRED(AddReshape);
+    HS_ADD_REQUIRED(AddRsqrt);
+    HS_ADD_REQUIRED(AddSelectV2);
+    HS_ADD_REQUIRED(AddSoftmax);
+    HS_ADD_REQUIRED(AddSplitV);
+    HS_ADD_REQUIRED(AddSqrt);
+    HS_ADD_REQUIRED(AddSquare);
+    HS_ADD_REQUIRED(AddSub);
+#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+    {
+        const TFLMRegistration registration =
+            tflite::RegisterHeatstrokeSumKernel();
+
+        if (this->m_opResolver.AddBuiltin(
+                tflite::BuiltinOperator_SUM,
+                registration,
+                tflite::ParseReducer) != kTfLiteOk) {
+            printf_err("Failed to register heat-stress INT64 SUM.\n");
+            return false;
+
+=== COMPLETE MUL SOURCE AUDIT ===
