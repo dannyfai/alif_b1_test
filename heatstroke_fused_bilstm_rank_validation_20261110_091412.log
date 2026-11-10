@@ -1,0 +1,151 @@
+============================================================
+FUSED BILSTM RANK VALIDATION
+============================================================
+
+1. Compare BiLSTM tensor metadata
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794273252.247542  157258 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794273252.247712  157258 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794273252.277167  157258 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794273253.043951  157258 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794273253.044151  157258 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+Traceback (most recent call last):
+  File "<stdin>", line 60, in <module>
+  File "<stdin>", line 23, in inspect
+RuntimeError: Unexpected BiLSTM count: 2
+
+2. Experimental BiLSTM Prepare validation
+189-  auto* op_data =
+190-      static_cast<HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+191-
+192-  const auto* params =
+193-      static_cast<const TfLiteBidirectionalSequenceLSTMParams*>(
+194-          node->builtin_data);
+195-
+196-  if (!params->time_major || !params->merge_outputs ||
+197-      params->activation != kTfLiteActTanh) {
+198-    MicroPrintf("Heatstroke BiLSTM: unsupported LSTM options");
+199-    return kTfLiteError;
+200-  }
+201-
+202-  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+203-  TfLiteEvalTensor* output =
+204-      context->GetEvalTensor(context, node->outputs->data[0]);
+205-
+206-  if (!IsFloatTensorType(input) || !IsFloatTensorType(output) ||
+207-      input->dims == nullptr || output->dims == nullptr ||
+208-      input->dims->size != 3 || output->dims->size != 3) {
+209:    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+210-    return kTfLiteError;
+211-  }
+212-
+213-  const int time_steps = input->dims->data[0];
+214-  const int batch_size = input->dims->data[1];
+215-  const int input_dimension = input->dims->data[2];
+216-
+217-  // The supplied heat-stress model uses time-major, single-batch sequences.
+218-  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+219-    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+220-    return kTfLiteError;
+221-  }
+222-
+223-  int forward_hidden = 0;
+224-  int backward_hidden = 0;
+225-
+226-  if (!ValidateDirection(context, node, 1, 5, 9, 25, 26, input_dimension, batch_size, &forward_hidden) ||
+227-      !ValidateDirection(context, node, 13, 17, 21, 27, 28, input_dimension, batch_size, &backward_hidden) ||
+228-      forward_hidden != backward_hidden) {
+229-    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+230-    return kTfLiteError;
+231-  }
+232-
+233-  const int hidden = forward_hidden;
+234-
+235-  if (output->dims->data[0] != time_steps ||
+236-      output->dims->data[1] != batch_size ||
+237-      output->dims->data[2] != 2 * hidden) {
+238-    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+239-    return kTfLiteError;
+240-  }
+241-
+242-  // Compact 29-slot model: no separate auxiliary input slots exist.
+243-
+244-  InitializeFloatLstmParameters(
+245-      &op_data->forward, true, batch_size, time_steps,
+246-      input_dimension, hidden, params->activation, params->cell_clip);
+247-
+248-  InitializeFloatLstmParameters(
+249-      &op_data->backward, true, batch_size, time_steps,
+250-      input_dimension, hidden, params->activation, params->cell_clip);
+251-
+252-  const size_t internal_bytes =
+253-      static_cast<size_t>(batch_size) * hidden * sizeof(float);
+254-
+255-  // Match the four scratch buffers requested by TFLM's existing
+256-  // unidirectional FP32 LSTM implementation.
+257-  for (int i = 0; i < 4; ++i) {
+258-    if (context->RequestScratchBufferInArena(
+259-            context, internal_bytes,
+260-            &op_data->forward.buffer_indices[i]) != kTfLiteOk) {
+261-      MicroPrintf("Heatstroke BiLSTM: LSTM scratch allocation failed");
+262-      return kTfLiteError;
+263-    }
+264-
+265-    // Forward and backward passes execute sequentially, so they can
+266-    // safely reuse the same four evaluator scratch buffers.
+267-    op_data->backward.buffer_indices[i] =
+268-        op_data->forward.buffer_indices[i];
+269-  }
+270-
+271-  return kTfLiteOk;
+272-}
+273-
+274-void PopulateDirectionContents(TfLiteContext* context,
+275-                               TfLiteNode* node,
+276-                               int input_weight_base,
+277-                               int recurrent_weight_base,
+278-                               int bias_base,
+279-                               int hidden_state_position,
+280-                               int cell_state_position,
+281-                               const TfLiteEvalTensor* input,
+282-                               TfLiteEvalTensor* staged_output,
+283-                               LSTMKernelContents* contents) {
+284-  for (int i = 0; i < 24; ++i) {
+285-    contents->internal_tensors[i] = nullptr;
+286-  }
+287-
+288-  contents->internal_tensors[0] =
+289-      const_cast<TfLiteEvalTensor*>(input);
+290-
+291-  for (int gate = 0; gate < 4; ++gate) {
+292-    contents->internal_tensors[1 + gate] =
+293-        GetInputEvalTensor(context, node, input_weight_base + gate);
+294-
+295-    contents->internal_tensors[5 + gate] =
+296-        GetInputEvalTensor(context, node, recurrent_weight_base + gate);
+297-
+298-    contents->internal_tensors[12 + gate] =
+299-        GetInputEvalTensor(context, node, bias_base + gate);
+300-  }
+301-
+302-  // Optional peephole, projection, and layer-normalization tensors
+303-  // are not present in this model and remain nullptr.
+304-
+305-  contents->internal_tensors[18] =
+306-      GetInputEvalTensor(context, node, hidden_state_position);
+307-
+308-  contents->internal_tensors[19] =
+309-      GetInputEvalTensor(context, node, cell_state_position);
+
+3. All rank checks in Prepare
+
+4. Confirm current source hashes
+72bf7dba9d0234458108fc413915cdb161050edccf4327dd6cf34597e1cb556a  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+06455fa9d1b41e2b920485b9bfd4a1a48d68ae0474d1aa7d9558c0a0afd02125  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp.tflite
+b9268b3a33e0771ad161ae08f1f59e479d0e52ff40e213f43ee7812722563e2d  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
