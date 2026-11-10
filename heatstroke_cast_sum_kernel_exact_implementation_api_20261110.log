@@ -1,0 +1,1193 @@
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc ====================
+Total lines: 120
+    1: /* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/c/common.h"
+   17: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   18: #include "tensorflow/lite/kernels/kernel_util.h"
+   19: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   20: #include "tensorflow/lite/micro/micro_log.h"
+   21: 
+   22: namespace tflite {
+   23: namespace {
+   24: 
+   25: constexpr int kInputTensor = 0;
+   26: constexpr int kOutputTensor = 0;
+   27: 
+   28: TfLiteStatus CastPrepare(TfLiteContext* context, TfLiteNode* node) {
+   29:   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
+   30:   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+   31: 
+   32:   MicroContext* micro_context = GetMicroContext(context);
+   33: 
+   34:   TfLiteTensor* input =
+   35:       micro_context->AllocateTempInputTensor(node, kInputTensor);
+   36:   TF_LITE_ENSURE(context, input != nullptr);
+   37:   TfLiteTensor* output =
+   38:       micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+   39:   TF_LITE_ENSURE(context, output != nullptr);
+   40: 
+   41:   micro_context->DeallocateTempTfLiteTensor(input);
+   42:   micro_context->DeallocateTempTfLiteTensor(output);
+   43: 
+   44:   return kTfLiteOk;
+   45: }
+   46: 
+   47: template <typename FromT, typename ToT>
+   48: void copyCast(const FromT* in, ToT* out, int num_elements) {
+   49:   std::transform(in, in + num_elements, out,
+   50:                  [](FromT a) { return static_cast<ToT>(a); });
+   51: }
+   52: 
+   53: template <typename FromT>
+   54: TfLiteStatus copyToTensor(TfLiteContext* context, const FromT* in,
+   55:                           TfLiteEvalTensor* out, int num_elements) {
+   56:   switch (out->type) {
+   57:     case kTfLiteInt8:
+   58:       copyCast(in, out->data.int8, num_elements);
+   59:       break;
+   60:     case kTfLiteInt16:
+   61:       copyCast(in, out->data.i16, num_elements);
+   62:       break;
+   63:     case kTfLiteInt32:
+   64:       copyCast(in, out->data.i32, num_elements);
+   65:       break;
+   66:     case kTfLiteUInt32:
+   67:       copyCast(in, out->data.u32, num_elements);
+   68:       break;
+   69:     case kTfLiteFloat32:
+   70:       copyCast(in, tflite::micro::GetTensorData<float>(out), num_elements);
+   71:       break;
+   72:     default:
+   73:       // Unsupported type.
+   74:       MicroPrintf("Output type %s (%d) not supported.",
+   75:                   TfLiteTypeGetName(out->type), out->type);
+   76:   }
+   77:   return kTfLiteOk;
+   78: }
+   79: 
+   80: TfLiteStatus CastEval(TfLiteContext* context, TfLiteNode* node) {
+   81:   const TfLiteEvalTensor* input =
+   82:       tflite::micro::GetEvalInput(context, node, kInputTensor);
+   83:   TfLiteEvalTensor* output =
+   84:       tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+   85:   int num_elements = MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   86:                                       tflite::micro::GetTensorShape(output));
+   87: 
+   88:   switch (input->type) {
+   89:     case kTfLiteInt8:
+   90:       return copyToTensor(context, input->data.int8, output, num_elements);
+   91:     case kTfLiteInt16:
+   92:       return copyToTensor(context, tflite::micro::GetTensorData<int16_t>(input),
+   93:                           output, num_elements);
+   94:     case kTfLiteInt32:
+   95:       return copyToTensor(context, tflite::micro::GetTensorData<int32_t>(input),
+   96:                           output, num_elements);
+   97:     case kTfLiteUInt32:
+   98:       return copyToTensor(context,
+   99:                           tflite::micro::GetTensorData<uint32_t>(input), output,
+  100:                           num_elements);
+  101:     case kTfLiteFloat32:
+  102:       return copyToTensor(context, tflite::micro::GetTensorData<float>(input),
+  103:                           output, num_elements);
+  104:     case kTfLiteBool:
+  105:       return copyToTensor(context, tflite::micro::GetTensorData<bool>(input),
+  106:                           output, num_elements);
+  107:     default:
+  108:       // Unsupported type.
+  109:       MicroPrintf("Input type %s (%d) not supported.",
+  110:                   TfLiteTypeGetName(input->type), input->type);
+  111:   }
+  112:   return kTfLiteOk;
+  113: }
+  114: }  // namespace
+  115: 
+  116: TFLMRegistration Register_CAST() {
+  117:   return tflite::micro::RegisterOp(nullptr, CastPrepare, CastEval);
+  118: }
+  119: 
+  120: }  // namespace tflite
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc ====================
+Total lines: 74
+    1: /* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/kernels/internal/reference/reduce.h"
+   17: 
+   18: #include "tensorflow/lite/c/builtin_op_data.h"
+   19: #include "tensorflow/lite/c/common.h"
+   20: #include "tensorflow/lite/kernels/internal/quantization_util.h"
+   21: #include "tensorflow/lite/kernels/internal/reference/integer_ops/mean.h"
+   22: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   23: #include "tensorflow/lite/kernels/internal/types.h"
+   24: #include "tensorflow/lite/kernels/kernel_util.h"
+   25: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   26: #include "tensorflow/lite/micro/kernels/reduce.h"
+   27: #include "tensorflow/lite/micro/micro_utils.h"
+   28: 
+   29: namespace tflite {
+   30: 
+   31: void* InitReduce(TfLiteContext* context, const char* buffer, size_t length) {
+   32:   void* op_data =
+   33:       context->AllocatePersistentBuffer(context, sizeof(OpDataReduce));
+   34:   return new (op_data) OpDataReduce();
+   35: }
+   36: 
+   37: TfLiteStatus PrepareMax(TfLiteContext* context, TfLiteNode* node) {
+   38:   return PrepareMaxHelper(context, node,
+   39:                           static_cast<OpDataReduce*>(node->user_data));
+   40: }
+   41: 
+   42: TfLiteStatus PrepareMeanOrSum(TfLiteContext* context, TfLiteNode* node) {
+   43:   return PrepareMeanOrSumHelper(context, node,
+   44:                                 static_cast<OpDataReduce*>(node->user_data));
+   45: }
+   46: 
+   47: TfLiteStatus EvalMean(TfLiteContext* context, TfLiteNode* node) {
+   48:   return EvalMeanHelper(context, node,
+   49:                         static_cast<OpDataReduce*>(node->user_data));
+   50: }
+   51: 
+   52: TfLiteStatus EvalMax(TfLiteContext* context, TfLiteNode* node) {
+   53:   OpDataReduce* op_data = static_cast<OpDataReduce*>(node->user_data);
+   54:   return EvalMaxHelper(context, node, op_data);
+   55: }
+   56: 
+   57: TfLiteStatus EvalSum(TfLiteContext* context, TfLiteNode* node) {
+   58:   return EvalSumHelper(context, node,
+   59:                        static_cast<OpDataReduce*>(node->user_data));
+   60: }
+   61: 
+   62: TFLMRegistration Register_MEAN() {
+   63:   return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalMean);
+   64: }
+   65: 
+   66: TFLMRegistration Register_REDUCE_MAX() {
+   67:   return tflite::micro::RegisterOp(InitReduce, PrepareMax, EvalMax);
+   68: }
+   69: 
+   70: TFLMRegistration Register_SUM() {
+   71:   return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalSum);
+   72: }
+   73: 
+   74: }  // namespace tflite
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc ====================
+Total lines: 340
+    1: /* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/c/builtin_op_data.h"
+   17: #include "tensorflow/lite/c/common.h"
+   18: #include "tensorflow/lite/kernels/internal/quantization_util.h"
+   19: #include "tensorflow/lite/kernels/internal/reference/integer_ops/mean.h"
+   20: #include "tensorflow/lite/kernels/internal/reference/reduce.h"
+   21: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   22: #include "tensorflow/lite/kernels/internal/types.h"
+   23: #include "tensorflow/lite/kernels/kernel_util.h"
+   24: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   25: #include "tensorflow/lite/micro/kernels/reduce.h"
+   26: #include "tensorflow/lite/micro/micro_log.h"
+   27: #include "tensorflow/lite/micro/micro_utils.h"
+   28: 
+   29: namespace tflite {
+   30: 
+   31: const int kMaxNumberOfAxis = 5;
+   32: const int kMaxNumberOfReducedAxis = 2;
+   33: 
+   34: TfLiteStatus PrepareSimple(TfLiteContext* context, TfLiteNode* node,
+   35:                            int32_t* multiplier, int* shift) {
+   36:   MicroContext* micro_context = GetMicroContext(context);
+   37: 
+   38:   // Inputs Tensor (dtype depends on quantization):
+   39:   // [0] = Input
+   40:   // [1] = Axis
+   41:   TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+   42: 
+   43:   // Outputs Tensor (dtype depends on quantization):
+   44:   // [0] = Output
+   45: 
+   46:   // Validate number of inputs and outputs
+   47:   TF_LITE_ENSURE_EQ(context, node->inputs->size, 2);
+   48:   TF_LITE_ENSURE_EQ(context, node->outputs->size, 1);
+   49: 
+   50:   // Validate axis type
+   51:   TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 1);
+   52:   TF_LITE_ENSURE(context, axis != nullptr);
+   53:   TF_LITE_ENSURE_TYPES_EQ(context, axis->type, kTfLiteInt32);
+   54: 
+   55:   if (input->type == kTfLiteInt8) {
+   56:     TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+   57:     const double real_multiplier = static_cast<double>(input->params.scale) /
+   58:                                    static_cast<double>(output->params.scale);
+   59:     QuantizeMultiplier(real_multiplier, multiplier, shift);
+   60:     micro_context->DeallocateTempTfLiteTensor(output);
+   61:   }
+   62:   micro_context->DeallocateTempTfLiteTensor(axis);
+   63:   micro_context->DeallocateTempTfLiteTensor(input);
+   64:   return kTfLiteOk;
+   65: }
+   66: 
+   67: TfLiteStatus PrepareMaxHelper(TfLiteContext* context, TfLiteNode* node,
+   68:                               OpDataReduce* op_data) {
+   69:   TF_LITE_ENSURE_OK(context, PrepareSimple(context, node, &op_data->multiplier,
+   70:                                            &op_data->shift));
+   71: 
+   72:   MicroContext* micro_context = GetMicroContext(context);
+   73:   TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+   74:   TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+   75:   TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 1);
+   76: 
+   77:   op_data->input_zp = input->params.zero_point;
+   78:   op_data->input_scale = input->params.scale;
+   79:   op_data->output_zp = output->params.zero_point;
+   80:   op_data->output_scale = output->params.scale;
+   81:   op_data->num_output_elements = NumElements(output);
+   82: 
+   83:   context->RequestScratchBufferInArena(context, sizeof(int) * input->dims->size,
+   84:                                        &op_data->temp_buffer_idx);
+   85:   context->RequestScratchBufferInArena(
+   86:       context, sizeof(int) * static_cast<int>(ElementCount(*axis->dims)),
+   87:       &op_data->resolved_axis_idx);
+   88: 
+   89:   micro_context->DeallocateTempTfLiteTensor(input);
+   90:   micro_context->DeallocateTempTfLiteTensor(output);
+   91:   micro_context->DeallocateTempTfLiteTensor(axis);
+   92:   return kTfLiteOk;
+   93: }
+   94: 
+   95: TfLiteStatus PrepareMeanOrSumHelper(TfLiteContext* context, TfLiteNode* node,
+   96:                                     OpDataReduce* op_data) {
+   97:   MicroContext* micro_context = GetMicroContext(context);
+   98:   TfLiteTensor* input = micro_context->AllocateTempInputTensor(node, 0);
+   99:   TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+  100:   TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 1);
+  101:   if (input->type == kTfLiteInt8 || input->type == kTfLiteInt16) {
+  102:     const double real_multiplier = static_cast<double>(input->params.scale) /
+  103:                                    static_cast<double>(output->params.scale);
+  104:     QuantizeMultiplier(real_multiplier, &op_data->multiplier, &op_data->shift);
+  105:   }
+  106: 
+  107:   int output_size = NumElements(output);
+  108:   op_data->num_axis = NumElements(axis);
+  109: 
+  110:   if (input->type == kTfLiteInt8 || input->type == kTfLiteInt16) {
+  111:     context->RequestScratchBufferInArena(context, output_size * sizeof(int32_t),
+  112:                                          &op_data->temp_buffer_idx);
+  113:     op_data->input_zp = input->params.zero_point;
+  114:     op_data->input_scale = input->params.scale;
+  115:     op_data->output_zp = output->params.zero_point;
+  116:     op_data->output_scale = output->params.scale;
+  117:   }
+  118: 
+  119:   TF_LITE_ENSURE_OK(
+  120:       context,
+  121:       PrepareSimple(context, node, &(op_data->multiplier), &(op_data->shift)));
+  122:   // TODO(b/144955155): Support uint8_t(b/144955155) and int8_t(b/144955018)
+  123:   micro_context->DeallocateTempTfLiteTensor(input);
+  124:   micro_context->DeallocateTempTfLiteTensor(output);
+  125:   micro_context->DeallocateTempTfLiteTensor(axis);
+  126:   return kTfLiteOk;
+  127: }
+  128: 
+  129: void ResolveAxis(const int* axis_data, int axis_count,
+  130:                  tflite::MeanParams* op_params) {
+  131:   int i = 0;
+  132:   for (; i < axis_count; ++i) {
+  133:     op_params->axis[i] = static_cast<int16_t>(axis_data[i]);
+  134:   }
+  135:   for (; i < 4; ++i) {
+  136:     op_params->axis[i] = 1;
+  137:   }
+  138:   op_params->axis_count = axis_count;
+  139: }
+  140: 
+  141: template <typename T>
+  142: TfLiteStatus QuantizedMeanOrSum(TfLiteContext* context, TfLiteNode* node,
+  143:                                 int* temp_index, int* resolved_axis,
+  144:                                 int32_t* temp_sum, OpDataReduce* op_data,
+  145:                                 bool compute_sum) {
+  146:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+  147:   const TfLiteEvalTensor* axis = tflite::micro::GetEvalInput(context, node, 1);
+  148:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+  149:   TfLiteReducerParams* params =
+  150:       static_cast<TfLiteReducerParams*>(node->builtin_data);
+  151: 
+  152:   bool result = reference_ops::QuantizedMeanOrSumExtraArgs<T, int32_t>(
+  153:       tflite::micro::GetTensorData<T>(input), op_data->input_zp,
+  154:       op_data->input_scale, &input->dims->data[0], input->dims->size,
+  155:       tflite::micro::GetTensorData<T>(output), op_data->output_scale,
+  156:       op_data->multiplier, op_data->shift, op_data->output_zp,
+  157:       &output->dims->data[0], output->dims->size,
+  158:       tflite::micro::GetTensorData<int>(axis), op_data->num_axis,
+  159:       params->keep_dims, temp_index, resolved_axis, temp_sum, compute_sum);
+  160:   TF_LITE_ENSURE(context, result);
+  161: 
+  162:   return kTfLiteOk;
+  163: }
+  164: 
+  165: template <typename integer_type>
+  166: TfLiteStatus EvalIntegerMean(TfLiteContext* context, TfLiteNode* node,
+  167:                              int num_axis, OpDataReduce* op_data,
+  168:                              int* temp_index, int* resolved_axis) {
+  169:   int32_t* temp_sum = static_cast<int32_t*>(
+  170:       context->GetScratchBuffer(context, op_data->temp_buffer_idx));
+  171: 
+  172:   QuantizedMeanOrSum<integer_type>(context, node, temp_index, resolved_axis,
+  173:                                    temp_sum, op_data, /*compute_sum=*/false);
+  174: 
+  175:   return kTfLiteOk;
+  176: }
+  177: 
+  178: TfLiteStatus EvalMeanHelper(TfLiteContext* context, TfLiteNode* node,
+  179:                             OpDataReduce* op_data) {
+  180:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+  181:   const TfLiteEvalTensor* axis = tflite::micro::GetEvalInput(context, node, 1);
+  182:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+  183:   TfLiteReducerParams* params =
+  184:       reinterpret_cast<TfLiteReducerParams*>(node->builtin_data);
+  185: 
+  186:   int num_axis = static_cast<int>(ElementCount(*axis->dims));
+  187:   int temp_index[kMaxNumberOfAxis];
+  188:   int resolved_axis[kMaxNumberOfReducedAxis];
+  189: 
+  190:   switch (input->type) {
+  191:     case kTfLiteFloat32: {
+  192:       tflite::MeanParams op_params;
+  193:       ResolveAxis(tflite::micro::GetTensorData<int>(axis), num_axis,
+  194:                   &op_params);
+  195: 
+  196:       // Special case mean implementation exists for 4D mean across axes 1
+  197:       // and 2.
+  198:       bool special_case_4d_axes_1_and_2 =
+  199:           input->dims->size == 4 && op_params.axis_count == 2 &&
+  200:           ((op_params.axis[0] == 1 && op_params.axis[1] == 2) ||
+  201:            (op_params.axis[0] == 2 && op_params.axis[1] == 1));
+  202: 
+  203:       // Defer to specialized implementation for 4D Mean across axes 1 & 2.
+  204:       if (params->keep_dims && special_case_4d_axes_1_and_2) {
+  205:         reference_ops::Mean(op_params, tflite::micro::GetTensorShape(input),
+  206:                             tflite::micro::GetTensorData<float>(input),
+  207:                             tflite::micro::GetTensorShape(output),
+  208:                             tflite::micro::GetTensorData<float>(output));
+  209:       } else {
+  210:         TF_LITE_ENSURE(
+  211:             context,
+  212:             reference_ops::Mean(
+  213:                 tflite::micro::GetTensorData<float>(input), input->dims->data,
+  214:                 input->dims->size, tflite::micro::GetTensorData<float>(output),
+  215:                 output->dims->data, output->dims->size,
+  216:                 tflite::micro::GetTensorData<int>(axis), num_axis,
+  217:                 params->keep_dims, temp_index, resolved_axis,
+  218:                 tflite::micro::GetTensorData<float>(output)));
+  219:       }
+  220:     } break;
+  221:     case kTfLiteInt8: {
+  222:       TF_LITE_ENSURE_OK(
+  223:           context, EvalIntegerMean<int8_t>(context, node, num_axis, op_data,
+  224:                                            temp_index, resolved_axis));
+  225:     } break;
+  226:     case kTfLiteInt16: {
+  227:       TF_LITE_ENSURE_OK(
+  228:           context, EvalIntegerMean<int16_t>(context, node, num_axis, op_data,
+  229:                                             temp_index, resolved_axis));
+  230:     } break;
+  231:     default:
+  232:       TF_LITE_ENSURE_MSG(context, false,
+  233:                          "Currently, only float32, int8 or int16 input type "
+  234:                          "is supported.");
+  235:   }
+  236:   return kTfLiteOk;
+  237: }
+  238: 
+  239: TfLiteStatus EvalMaxHelper(TfLiteContext* context, TfLiteNode* node,
+  240:                            OpDataReduce* op_data) {
+  241:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+  242:   const TfLiteEvalTensor* axis = tflite::micro::GetEvalInput(context, node, 1);
+  243:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+  244:   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
+  245:   TfLiteReducerParams* params =
+  246:       static_cast<TfLiteReducerParams*>(node->builtin_data);
+  247: 
+  248:   // Interpret an axis tensor with null dimensions as a scalar
+  249:   int num_axis = static_cast<int>(ElementCount(*axis->dims));
+  250:   int* temp_buffer = static_cast<int*>(
+  251:       context->GetScratchBuffer(context, op_data->temp_buffer_idx));
+  252:   int* resolved_axis = static_cast<int*>(
+  253:       context->GetScratchBuffer(context, op_data->resolved_axis_idx));
+  254:   switch (input->type) {
+  255:     case kTfLiteFloat32:
+  256:       TF_LITE_ENSURE(
+  257:           context,
+  258:           reference_ops::ReduceGeneric<float>(
+  259:               tflite::micro::GetTensorData<float>(input), input->dims->data,
+  260:               input->dims->size, tflite::micro::GetTensorData<float>(output),
+  261:               output->dims->data, output->dims->size,
+  262:               tflite::micro::GetTensorData<int>(axis), num_axis,
+  263:               params->keep_dims, temp_buffer, resolved_axis,
+  264:               std::numeric_limits<float>::lowest(),
+  265:               [](const float current, const float in) -> float {
+  266:                 return (in > current) ? in : current;
+  267:               }));
+  268:       break;
+  269:     case kTfLiteInt8:
+  270:       TF_LITE_ENSURE_EQ(context, static_cast<double>(op_data->input_scale),
+  271:                         static_cast<double>(op_data->output_scale));
+  272:       TF_LITE_ENSURE_EQ(context, op_data->input_zp, op_data->output_zp);
+  273:       TF_LITE_ENSURE(
+  274:           context,
+  275:           reference_ops::ReduceGeneric<int8_t>(
+  276:               tflite::micro::GetTensorData<int8_t>(input), input->dims->data,
+  277:               input->dims->size, tflite::micro::GetTensorData<int8_t>(output),
+  278:               output->dims->data, output->dims->size,
+  279:               tflite::micro::GetTensorData<int>(axis), num_axis,
+  280:               params->keep_dims, temp_buffer, resolved_axis,
+  281:               std::numeric_limits<int8_t>::lowest(),
+  282:               [](const int8_t current, const int8_t in) -> int8_t {
+  283:                 return (in > current) ? in : current;
+  284:               }));
+  285:       break;
+  286:     default:
+  287:       MicroPrintf("Only float32 and int8 types are supported.");
+  288:       return kTfLiteError;
+  289:   }
+  290:   return kTfLiteOk;
+  291: }
+  292: 
+  293: TfLiteStatus EvalSumHelper(TfLiteContext* context, TfLiteNode* node,
+  294:                            OpDataReduce* op_data) {
+  295:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+  296:   const TfLiteEvalTensor* axis = tflite::micro::GetEvalInput(context, node, 1);
+  297:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+  298:   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
+  299:   TfLiteReducerParams* params =
+  300:       static_cast<TfLiteReducerParams*>(node->builtin_data);
+TRUNCATED
+
+=== FIND ACTUAL COMMON.H FILES ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/c/common.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/common.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h
+
+=== FIND ACTUAL BUILTIN OP DATA HEADERS ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/builtin_op_data.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/compiler/mlir/lite/core/c/builtin_op_data.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/c/builtin_op_data.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/builtin_op_data.h
+
+=== FIND REDUCTION AND CAST REGISTRATION DEFINITIONS ===
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/compiler/mlir/lite/core/c/builtin_op_data.h:379: } TfLiteCastParams;
+  376: typedef struct {
+  377:   TfLiteType in_data_type;
+  378:   TfLiteType out_data_type;
+  379: } TfLiteCastParams;
+  380: 
+  381: typedef enum {
+  382:   kTfLiteCombinerTypeSum = 0,
+  383:   kTfLiteCombinerTypeMean = 1,
+  384:   kTfLiteCombinerTypeSqrtn = 2,
+  385: } TfLiteCombinerType;
+  386: 
+  387: typedef struct {
+  388:   TfLiteCombinerType combiner;
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/compiler/mlir/lite/core/c/builtin_op_data.h:402: } TfLiteReducerParams;
+  399: 
+  400: typedef struct {
+  401:   bool keep_dims;
+  402: } TfLiteReducerParams;
+  403: 
+  404: typedef struct {
+  405:   int num_splits;
+  406: } TfLiteSplitParams;
+  407: 
+  408: typedef struct {
+  409:   int num_splits;
+  410: } TfLiteSplitVParams;
+  411: 
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:191: return AddBuiltin(BuiltinOperator_CAST, Register_CAST(), ParseCast);
+  188:   }
+  189: 
+  190:   TfLiteStatus AddCast() {
+  191:     return AddBuiltin(BuiltinOperator_CAST, Register_CAST(), ParseCast);
+  192:   }
+  193: 
+  194:   TfLiteStatus AddCeil() {
+  195:     return AddBuiltin(BuiltinOperator_CEIL, Register_CEIL(), ParseCeil);
+  196:   }
+  197: 
+  198:   TfLiteStatus AddCircularBuffer() {
+  199:     return AddCustom("CIRCULAR_BUFFER", tflite::Register_CIRCULAR_BUFFER());
+  200:   }
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:455: return AddBuiltin(BuiltinOperator_MEAN, Register_MEAN(), ParseReducer);
+  452:   }
+  453: 
+  454:   TfLiteStatus AddMean() {
+  455:     return AddBuiltin(BuiltinOperator_MEAN, Register_MEAN(), ParseReducer);
+  456:   }
+  457: 
+  458:   TfLiteStatus AddMinimum(
+  459:       const TFLMRegistration& registration = Register_MINIMUM()) {
+  460:     return AddBuiltin(BuiltinOperator_MINIMUM, registration, ParseMinimum);
+  461:   }
+  462: 
+  463:   TfLiteStatus AddMul(const TFLMRegistration& registration = Register_MUL()) {
+  464:     return AddBuiltin(BuiltinOperator_MUL, registration, ParseMul);
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:517: ParseReducer);
+  514: 
+  515:   TfLiteStatus AddReduceMax() {
+  516:     return AddBuiltin(BuiltinOperator_REDUCE_MAX, Register_REDUCE_MAX(),
+  517:                       ParseReducer);
+  518:   }
+  519: 
+  520:   TfLiteStatus AddRelu() {
+  521:     return AddBuiltin(BuiltinOperator_RELU, tflite::Register_RELU(), ParseRelu);
+  522:   }
+  523: 
+  524:   TfLiteStatus AddRelu6() {
+  525:     return AddBuiltin(BuiltinOperator_RELU6, tflite::Register_RELU6(),
+  526:                       ParseRelu6);
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:633: return AddBuiltin(BuiltinOperator_SUM, Register_SUM(), ParseReducer);
+  630:   }
+  631: 
+  632:   TfLiteStatus AddSum() {
+  633:     return AddBuiltin(BuiltinOperator_SUM, Register_SUM(), ParseReducer);
+  634:   }
+  635: 
+  636:   TfLiteStatus AddSvdf(const TFLMRegistration& registration = Register_SVDF()) {
+  637:     return AddBuiltin(BuiltinOperator_SVDF, registration, ParseSvdf);
+  638:   }
+  639: 
+  640:   TfLiteStatus AddTanh() {
+  641:     return AddBuiltin(BuiltinOperator_TANH, Register_TANH(), ParseTanh);
+  642:   }
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:77: TfLiteReducerParams* params,
+   74:                                    const T* expected_output_data,
+   75:                                    T* output_data, int output_length,
+   76:                                    const TFLMRegistration& registration,
+   77:                                    TfLiteReducerParams* params,
+   78:                                    float tolerance = 1e-5) {
+   79:   int inputs_array_data[] = {2, 0, 1};
+   80:   TfLiteIntArray* inputs_array = IntArrayFromInts(inputs_array_data);
+   81:   int outputs_array_data[] = {1, 2};
+   82:   TfLiteIntArray* outputs_array = IntArrayFromInts(outputs_array_data);
+   83: 
+   84:   micro::KernelRunner runner(registration, tensors, tensors_size, inputs_array,
+   85:                              outputs_array, params);
+   86: 
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:102: TfLiteReducerParams* params, float tolerance = 1e-5) {
+   99:                        int* output_dims_data, float* output_data,
+  100:                        const float* expected_output_data,
+  101:                        const TFLMRegistration& registration,
+  102:                        TfLiteReducerParams* params, float tolerance = 1e-5) {
+  103:   TfLiteIntArray* input_dims = IntArrayFromInts(input_dims_data);
+  104:   TfLiteIntArray* axis_dims = IntArrayFromInts(axis_dims_data);
+  105:   TfLiteIntArray* output_dims = IntArrayFromInts(output_dims_data);
+  106:   const int output_dims_count = ElementCount(*output_dims);
+  107: 
+  108:   constexpr int num_of_inputs = 2;   // input and axis
+  109:   constexpr int num_of_outputs = 1;  // output
+  110: 
+  111:   constexpr int tensors_size = num_of_inputs + num_of_outputs;
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:133: TfLiteReducerParams* params,
+  130:                            T* output_data_quant, T* expected_output_data_quant,
+  131:                            float output_scale, int output_zero_point,
+  132:                            const TFLMRegistration& registration,
+  133:                            TfLiteReducerParams* params,
+  134:                            float tolerance = 0.01) {
+  135:   // Convert dimesion arguments to TfLiteArrays
+  136:   TfLiteIntArray* input_dims = IntArrayFromInts(input_dims_data);
+  137:   TfLiteIntArray* axis_dims = IntArrayFromInts(axis_dims_data);
+  138:   TfLiteIntArray* output_dims = IntArrayFromInts(output_dims_data);
+  139: 
+  140:   // Get number of elements in input and output tensors
+  141:   const int output_dims_count = ElementCount(*output_dims);
+  142: 
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:173: TfLiteReducerParams params = {true};
+  170: TF_LITE_MICRO_TEST(MeanFloat2DKeepDims) {
+  171:   float output_data[tflite::testing::kOutputElements2D];
+  172: 
+  173:   TfLiteReducerParams params = {true};
+  174: 
+  175:   tflite::testing::TestReduceOpFloat(
+  176:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+  177:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  178:       tflite::testing::kOutputShape2D, output_data,
+  179:       tflite::testing::kGoldenData2D, tflite::Register_MEAN(), &params);
+  180: }
+  181: 
+  182: TF_LITE_MICRO_TEST(MeanInt82DKeepDims) {
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:192: TfLiteReducerParams params = {
+  189:   float output_scale = 0.5f;
+  190:   int output_zero_point = 0;
+  191: 
+  192:   TfLiteReducerParams params = {
+  193:       true  // keep_dims
+  194:   };
+  195: 
+  196:   tflite::testing::TestReduceOpQuantized<int8_t>(
+  197:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+  198:       input_data_quant, input_scale, input_zero_point,
+  199:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  200:       tflite::testing::kOutputShape2D, tflite::testing::kGoldenData2D,
+  201:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:215: TfLiteReducerParams params = {
+  212:   float output_scale = 0.5f;
+  213:   int output_zero_point = 0;
+  214: 
+  215:   TfLiteReducerParams params = {
+  216:       true  // keep_dims
+  217:   };
+  218: 
+  219:   tflite::testing::TestReduceOpQuantized<int16_t>(
+  220:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+  221:       input_data_quant, input_scale, input_zero_point,
+  222:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  223:       tflite::testing::kOutputShape2D, tflite::testing::kGoldenData2D,
+  224:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:231: TfLiteReducerParams params = {true};
+  228: TF_LITE_MICRO_TEST(MeanFloat3DKeepDims) {
+  229:   float output_data[tflite::testing::kOutputElements3D];
+  230: 
+  231:   TfLiteReducerParams params = {true};
+  232: 
+  233:   tflite::testing::TestReduceOpFloat(
+  234:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+  235:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  236:       tflite::testing::kOutputShape3D, output_data,
+  237:       tflite::testing::kGoldenData3D, tflite::Register_MEAN(), &params);
+  238: }
+  239: 
+  240: TF_LITE_MICRO_TEST(MeanInt83DKeepDims) {
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:250: TfLiteReducerParams params = {
+  247:   float output_scale = 0.5f;
+  248:   int output_zero_point = 0;
+  249: 
+  250:   TfLiteReducerParams params = {
+  251:       true  // keep_dims
+  252:   };
+  253: 
+  254:   tflite::testing::TestReduceOpQuantized<int8_t>(
+  255:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+  256:       input_data_quant, input_scale, input_zero_point,
+  257:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  258:       tflite::testing::kOutputShape3D, tflite::testing::kGoldenData3D,
+  259:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:273: TfLiteReducerParams params = {
+  270:   float output_scale = 0.5f;
+  271:   int output_zero_point = 0;
+  272: 
+  273:   TfLiteReducerParams params = {
+  274:       true  // keep_dims
+  275:   };
+  276: 
+  277:   tflite::testing::TestReduceOpQuantized<int16_t>(
+  278:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+  279:       input_data_quant, input_scale, input_zero_point,
+  280:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  281:       tflite::testing::kOutputShape3D, tflite::testing::kGoldenData3D,
+  282:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:289: TfLiteReducerParams params = {
+  286: TF_LITE_MICRO_TEST(MeanFloat4DKeepDims) {
+  287:   float output_data[tflite::testing::kOutputElements4D];
+  288: 
+  289:   TfLiteReducerParams params = {
+  290:       true  // keep_dims
+  291:   };
+  292: 
+  293:   tflite::testing::TestReduceOpFloat(
+  294:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+  295:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  296:       tflite::testing::kOutputShape4D, output_data,
+  297:       tflite::testing::kGoldenData4D, tflite::Register_MEAN(), &params);
+  298: }
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:310: TfLiteReducerParams params = {
+  307:   float output_scale = 0.5f;
+  308:   int output_zero_point = 0;
+  309: 
+  310:   TfLiteReducerParams params = {
+  311:       true  // keep_dims
+  312:   };
+  313: 
+  314:   tflite::testing::TestReduceOpQuantized<int8_t>(
+  315:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+  316:       input_data_quant, input_scale, input_zero_point,
+  317:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  318:       tflite::testing::kOutputShape4D, tflite::testing::kGoldenData4D,
+  319:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:333: TfLiteReducerParams params = {
+  330:   float output_scale = 0.5f;
+  331:   int output_zero_point = 0;
+  332: 
+  333:   TfLiteReducerParams params = {
+  334:       true  // keep_dims
+  335:   };
+  336: 
+  337:   tflite::testing::TestReduceOpQuantized<int16_t>(
+  338:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+  339:       input_data_quant, input_scale, input_zero_point,
+  340:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  341:       tflite::testing::kOutputShape4D, tflite::testing::kGoldenData4D,
+  342:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:349: TfLiteReducerParams params = {
+  346: TF_LITE_MICRO_TEST(MeanFloat4DWithoutKeepDims) {
+  347:   int kOutputShape4D[] = {2, 2, 2};
+  348:   float output_data[tflite::testing::kOutputElements4D];
+  349:   TfLiteReducerParams params = {
+  350:       false  // keep_dims
+  351:   };
+  352: 
+  353:   tflite::testing::TestReduceOpFloat(
+  354:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+  355:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  356:       kOutputShape4D, output_data, tflite::testing::kGoldenData4D,
+  357:       tflite::Register_MEAN(), &params);
+  358: }
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:366: TfLiteReducerParams params = {
+  363:   int8_t input_data_quant[tflite::testing::kInputElements4D];
+  364: 
+  365:   int kOutputShape4D[] = {2, 2, 2};
+  366:   TfLiteReducerParams params = {
+  367:       false  // keep_dims
+  368:   };
+  369:   float input_scale = 0.5f;
+  370:   int input_zero_point = 0;
+  371:   float output_scale = 0.5f;
+  372:   int output_zero_point = 0;
+  373: 
+  374:   tflite::testing::TestReduceOpQuantized<int8_t>(
+  375:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:389: TfLiteReducerParams params = {
+  386:   int16_t input_data_quant[tflite::testing::kInputElements4D];
+  387: 
+  388:   int kOutputShape4D[] = {2, 2, 2};
+  389:   TfLiteReducerParams params = {
+  390:       false  // keep_dims
+  391:   };
+  392:   float input_scale = 0.5f;
+  393:   int input_zero_point = 0;
+  394:   float output_scale = 0.5f;
+  395:   int output_zero_point = 0;
+  396: 
+  397:   tflite::testing::TestReduceOpQuantized<int16_t>(
+  398:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:412: TfLiteReducerParams params = {
+  409:   int16_t input_data_quant[tflite::testing::kInputElements4D];
+  410: 
+  411:   int kOutputShape4D[] = {2, 2, 2};
+  412:   TfLiteReducerParams params = {
+  413:       false  // keep_dims
+  414:   };
+  415:   float input_scale = 0.5f;
+  416:   int input_zero_point = 0;
+  417:   float output_scale = 0.7f;
+  418:   int output_zero_point = 0;
+  419: 
+  420:   tflite::testing::TestReduceOpQuantized<int16_t>(
+  421:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:437: TfLiteReducerParams params = {
+  434:   int kOutputShape4D[] = {2, 2, 1};
+  435:   const float kGoldenData4D[] = {11.166667, 19.833334};
+  436:   float output_data[kOutputElements4D];
+  437:   TfLiteReducerParams params = {
+  438:       false  // keep_dims
+  439:   };
+  440: 
+  441:   tflite::testing::TestReduceOpFloat(
+  442:       kInputShape4D, kInputData4D, tflite::testing::kAxisShape4D,
+  443:       tflite::testing::kAxisData4D, kOutputShape4D, output_data, kGoldenData4D,
+  444:       tflite::Register_MEAN(), &params);
+  445: }
+  446: 
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:458: TfLiteReducerParams params = {false};
+  455:   const float expected_output_data[] = {23, 24};
+  456:   float output_data[2];
+  457: 
+  458:   TfLiteReducerParams params = {false};
+  459: 
+  460:   tflite::testing::TestReduceOpFloat(
+  461:       input_shape, input_data, axis_shape, axis_data, output_shape, output_data,
+  462:       expected_output_data, tflite::Register_REDUCE_MAX(), &params);
+  463: }
+  464: 
+  465: TF_LITE_MICRO_TEST(FloatMaxOpTestKeepDims) {
+  466:   int input_shape[] = {3, 4, 3, 2};
+  467:   const float input_data[] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:476: TfLiteReducerParams params = {true};
+  473:   const float expected_output_data[] = {20, 22, 24};
+  474:   float output_data[3];
+  475: 
+  476:   TfLiteReducerParams params = {true};
+  477: 
+  478:   tflite::testing::TestReduceOpFloat(
+  479:       input_shape, input_data, axis_shape, axis_data, output_shape, output_data,
+  480:       expected_output_data, tflite::Register_REDUCE_MAX(), &params);
+  481: }
+  482: 
+  483: TF_LITE_MICRO_TEST(Int8MaxOpTestKeepDims) {
+  484:   int input_shape[] = {3, 1, 3, 2};
+  485:   const float input_data[] = {0.4, 0.2, 0.3, 0.4, 0.5, 0.6};
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:494: TfLiteReducerParams params = {true};
+  491:   float input_scale = 2 / 255.0;
+  492:   int input_zp = 0;
+  493: 
+  494:   TfLiteReducerParams params = {true};
+  495: 
+  496:   int8_t input_data_quant[6];
+  497:   int8_t output_data_quant[2];
+  498:   int8_t expected_output_data_quant[2];
+  499: 
+  500:   tflite::testing::TestReduceOpQuantized<int8_t>(
+  501:       input_shape, input_data, input_data_quant, input_scale, input_zp,
+  502:       axis_shape, axis_data, output_shape, expected_output_data,
+  503:       output_data_quant, expected_output_data_quant, input_scale, input_zp,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:520: TfLiteReducerParams params = {false};
+  517:   float output_scale = 2 / 255.0;
+  518:   int output_zp = 0;
+  519: 
+  520:   TfLiteReducerParams params = {false};
+  521: 
+  522:   int8_t input_data_quant[6];
+  523:   int8_t output_data_quant[2];
+  524:   int8_t expected_output_data_quant[2];
+  525: 
+  526:   tflite::testing::TestReduceOpQuantized<int8_t>(
+  527:       input_shape, input_data, input_data_quant, input_scale, input_zp,
+  528:       axis_shape, axis_data, output_shape, expected_output_data,
+  529:       output_data_quant, expected_output_data_quant, output_scale, output_zp,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:539: TfLiteReducerParams params = {
+  536:                                 11.0, 36.0, 14.0, 19.0, 17.0, 22.0};
+  537:   int kOutputShape4D[] = {2, 2, 1};
+  538:   const float kGoldenData4D[] = {11.166667, 19.833334};
+  539:   TfLiteReducerParams params = {
+  540:       false  // keep_dims
+  541:   };
+  542:   float input_scale = 0.5f;
+  543:   int input_zero_point = 0;
+  544:   float output_scale = 0.5f;
+  545:   int output_zero_point = 0;
+  546: 
+  547:   int8_t output_data_quant[2];
+  548:   int8_t expected_output_data_quant[2];
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:570: TfLiteReducerParams params = {false};
+  567:   float expected_output[] = {21.0, 57.0, 93.0, 129.0};
+  568:   float actual_output_data[4];
+  569: 
+  570:   TfLiteReducerParams params = {false};
+  571: 
+  572:   tflite::testing::TestReduceOpFloat(
+  573:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  574:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  575: }
+  576: 
+  577: TF_LITE_MICRO_TEST(SumFloatFlatten2NonReduceDims) {
+  578:   int input_shape[] = {3, 4, 3, 2};
+  579:   int output_shape[] = {1, 12};
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:574: actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  571: 
+  572:   tflite::testing::TestReduceOpFloat(
+  573:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  574:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  575: }
+  576: 
+  577: TF_LITE_MICRO_TEST(SumFloatFlatten2NonReduceDims) {
+  578:   int input_shape[] = {3, 4, 3, 2};
+  579:   int output_shape[] = {1, 12};
+  580:   int axis_shape[] = {1, 1};
+  581:   int32_t axis_data[] = {2};
+  582:   float input_data[] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+  583:                         9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:589: TfLiteReducerParams params = {false};
+  586:                              27.0, 31.0, 35.0, 39.0, 43.0, 47.0};
+  587:   float actual_output_data[12];
+  588: 
+  589:   TfLiteReducerParams params = {false};
+  590: 
+  591:   tflite::testing::TestReduceOpFloat(
+  592:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  593:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  594: }
+  595: 
+  596: TF_LITE_MICRO_TEST(SumFloatFlatten2MiddleDims) {
+  597:   int input_shape[] = {4, 2, 2, 3, 2};
+  598:   int output_shape[] = {2, 2, 2};
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:593: actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  590: 
+  591:   tflite::testing::TestReduceOpFloat(
+  592:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  593:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  594: }
+  595: 
+  596: TF_LITE_MICRO_TEST(SumFloatFlatten2MiddleDims) {
+  597:   int input_shape[] = {4, 2, 2, 3, 2};
+  598:   int output_shape[] = {2, 2, 2};
+  599:   int axis_shape[] = {1, 2};
+  600:   int32_t axis_data[] = {1, 2};
+  601:   float input_data[] = {1.0,  2.0,  3.0,  4.0,  5.0,  6.0,  7.0,  8.0,
+  602:                         9.0,  10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:607: TfLiteReducerParams params = {false};
+  604:   float expected_output[] = {36.0, 42.0, 108.0, 114.0};
+  605:   float actual_output_data[4];
+  606: 
+  607:   TfLiteReducerParams params = {false};
+  608: 
+  609:   tflite::testing::TestReduceOpFloat(
+  610:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  611:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  612: }
+  613: 
+  614: TF_LITE_MICRO_TEST(SumFloat2DKeepDims) {
+  615:   float output_data[tflite::testing::kOutputElements2D];
+  616: 
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:611: actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  608: 
+  609:   tflite::testing::TestReduceOpFloat(
+  610:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  611:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  612: }
+  613: 
+  614: TF_LITE_MICRO_TEST(SumFloat2DKeepDims) {
+  615:   float output_data[tflite::testing::kOutputElements2D];
+  616: 
+  617:   TfLiteReducerParams params = {true};
+  618: 
+  619:   tflite::testing::TestReduceOpFloat(
+  620:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:617: TfLiteReducerParams params = {true};
+  614: TF_LITE_MICRO_TEST(SumFloat2DKeepDims) {
+  615:   float output_data[tflite::testing::kOutputElements2D];
+  616: 
+  617:   TfLiteReducerParams params = {true};
+  618: 
+  619:   tflite::testing::TestReduceOpFloat(
+  620:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+  621:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  622:       tflite::testing::kOutputShape2D, output_data,
+  623:       tflite::testing::kGoldenDataSum2D, tflite::Register_SUM(), &params);
+  624: }
+  625: 
+  626: TF_LITE_MICRO_TEST(SumInt82DKeepDims) {
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:623: tflite::testing::kGoldenDataSum2D, tflite::Register_SUM(), &params);
+  620:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+  621:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  622:       tflite::testing::kOutputShape2D, output_data,
+  623:       tflite::testing::kGoldenDataSum2D, tflite::Register_SUM(), &params);
+  624: }
+  625: 
+  626: TF_LITE_MICRO_TEST(SumInt82DKeepDims) {
+  627:   int8_t expected_output_data_quant[tflite::testing::kOutputElements2D];
+  628:   int8_t output_data_quant[tflite::testing::kOutputElements2D];
+  629:   int8_t input_data_quant[tflite::testing::kInputElements2D];
+  630: 
+  631:   float input_scale = 0.5f;
+  632:   int input_zero_point = 0;
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:636: TfLiteReducerParams params = {
+  633:   float output_scale = 0.5f;
+  634:   int output_zero_point = 0;
+  635: 
+  636:   TfLiteReducerParams params = {
+  637:       true  // keep_dims
+  638:   };
+  639: 
+  640:   tflite::testing::TestReduceOpQuantized<int8_t>(
+  641:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+  642:       input_data_quant, input_scale, input_zero_point,
+  643:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  644:       tflite::testing::kOutputShape2D, tflite::testing::kGoldenDataSum2D,
+  645:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:646: output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  643:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  644:       tflite::testing::kOutputShape2D, tflite::testing::kGoldenDataSum2D,
+  645:       output_data_quant, expected_output_data_quant, output_scale,
+  646:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  647: }
+  648: 
+  649: TF_LITE_MICRO_TEST(SumInt162DKeepDims) {
+  650:   int16_t expected_output_data_quant[tflite::testing::kOutputElements2D];
+  651:   int16_t output_data_quant[tflite::testing::kOutputElements2D];
+  652:   int16_t input_data_quant[tflite::testing::kInputElements2D];
+  653: 
+  654:   float input_scale = 0.5f;
+  655:   int input_zero_point = 0;
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:659: TfLiteReducerParams params = {
+  656:   float output_scale = 0.5f;
+  657:   int output_zero_point = 0;
+  658: 
+  659:   TfLiteReducerParams params = {
+  660:       true  // keep_dims
+  661:   };
+  662: 
+  663:   tflite::testing::TestReduceOpQuantized<int16_t>(
+  664:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+  665:       input_data_quant, input_scale, input_zero_point,
+  666:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  667:       tflite::testing::kOutputShape2D, tflite::testing::kGoldenDataSum2D,
+  668:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:669: output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  666:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  667:       tflite::testing::kOutputShape2D, tflite::testing::kGoldenDataSum2D,
+  668:       output_data_quant, expected_output_data_quant, output_scale,
+  669:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  670: }
+  671: 
+  672: TF_LITE_MICRO_TEST(SumFloat3DKeepDims) {
+  673:   float output_data[tflite::testing::kOutputElements3D];
+  674: 
+  675:   TfLiteReducerParams params = {true};
+  676: 
+  677:   tflite::testing::TestReduceOpFloat(
+  678:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:675: TfLiteReducerParams params = {true};
+  672: TF_LITE_MICRO_TEST(SumFloat3DKeepDims) {
+  673:   float output_data[tflite::testing::kOutputElements3D];
+  674: 
+  675:   TfLiteReducerParams params = {true};
+  676: 
+  677:   tflite::testing::TestReduceOpFloat(
+  678:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+  679:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  680:       tflite::testing::kOutputShape3D, output_data,
+  681:       tflite::testing::kGoldenDataSum3D, tflite::Register_SUM(), &params);
+  682: }
+  683: 
+  684: TF_LITE_MICRO_TEST(SumInt83DKeepDims) {
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:681: tflite::testing::kGoldenDataSum3D, tflite::Register_SUM(), &params);
+  678:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+  679:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  680:       tflite::testing::kOutputShape3D, output_data,
+  681:       tflite::testing::kGoldenDataSum3D, tflite::Register_SUM(), &params);
+  682: }
+  683: 
+  684: TF_LITE_MICRO_TEST(SumInt83DKeepDims) {
+  685:   int8_t expected_output_data_quant[tflite::testing::kOutputElements3D];
+  686:   int8_t output_data_quant[tflite::testing::kOutputElements3D];
+  687:   int8_t input_data_quant[tflite::testing::kInputElements3D];
+  688: 
+  689:   float input_scale = 0.5f;
+  690:   int input_zero_point = 0;
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:694: TfLiteReducerParams params = {
+  691:   float output_scale = 0.5f;
+  692:   int output_zero_point = 0;
+  693: 
+  694:   TfLiteReducerParams params = {
+  695:       true  // keep_dims
+  696:   };
+  697: 
+  698:   tflite::testing::TestReduceOpQuantized<int8_t>(
+  699:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+  700:       input_data_quant, input_scale, input_zero_point,
+  701:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  702:       tflite::testing::kOutputShape3D, tflite::testing::kGoldenDataSum3D,
+  703:       output_data_quant, expected_output_data_quant, output_scale,
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:704: output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  701:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  702:       tflite::testing::kOutputShape3D, tflite::testing::kGoldenDataSum3D,
+  703:       output_data_quant, expected_output_data_quant, output_scale,
+  704:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  705: }
+  706: 
+  707: TF_LITE_MICRO_TEST(SumInt163DKeepDims) {
+  708:   int16_t expected_output_data_quant[tflite::testing::kOutputElements3D];
+  709:   int16_t output_data_quant[tflite::testing::kOutputElements3D];
+  710:   int16_t input_data_quant[tflite::testing::kInputElements3D];
+  711: 
+  712:   float input_scale = 0.5f;
+  713:   int input_zero_point = 0;
+
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc:717: TfLiteReducerParams params = {
+  714:   float output_scale = 0.5f;
+  715:   int output_zero_point = 0;
+  716: 
+  717:   TfLiteReducerParams params = {
+  718:       true  // keep_dims
+  719:   };
+  720: 
+  721:   tflite::testing::TestReduceOpQuantized<int16_t>(
+  722:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+  723:       input_data_quant, input_scale, input_zero_point,
+  724:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  725:       tflite::testing::kOutputShape3D, tflite::testing::kGoldenDataSum3D,
+  726:       output_data_quant, expected_output_data_quant, output_scale,
+SOURCE MATCH OUTPUT CAPPED AT 45
