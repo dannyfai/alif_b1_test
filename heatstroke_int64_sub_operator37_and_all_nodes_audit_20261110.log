@@ -1,0 +1,432 @@
+=== ALL INT64 SUB OPERATORS IN THE FROZEN MODEL ===
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794302487.398498  196284 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794302487.398670  196284 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794302487.428202  196284 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794302488.312110  196284 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794302488.312371  196284 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+Total operators: 303
+SUB nodes touching INT64: [37, 40, 52, 53]
+
+=== SUB OPERATOR #37; version=1 ===
+Inputs:
+    tensor 52: val_64
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=36, consumers=[37]
+    tensor 49: val_63
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=34, consumers=[37]
+Outputs:
+    tensor 53: floor_divide
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=37, consumers=[53, 56]
+
+=== SUB OPERATOR #40; version=1 ===
+Inputs:
+    tensor 56: add_2
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=39, consumers=[40]
+    tensor 34: val_39
+      type=INT64, shape=[]
+      buffer=10, constant_bytes=8
+      producer=None, consumers=[23, 31, 40, 46, 54, 155]
+      INT64 constants count=1
+      INT64 constants first 32=[1]
+      INT64 constant range=[1, 1]
+Outputs:
+    tensor 57: sub
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=40, consumers=[41, 43]
+
+=== SUB OPERATOR #52; version=1 ===
+Inputs:
+    tensor 68: val_73
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=51, consumers=[52]
+    tensor 66: val_72
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=49, consumers=[52]
+Outputs:
+    tensor 69: floor_divide_1
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=52, consumers=[53, 70]
+
+=== SUB OPERATOR #53; version=1 ===
+Inputs:
+    tensor 69: floor_divide_1
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=52, consumers=[53, 70]
+    tensor 53: floor_divide
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=37, consumers=[53, 56]
+Outputs:
+    tensor 70: sub_1
+      type=INT64, shape=[1, 1800, 6]
+      buffer=0, constant_bytes=0
+      producer=53, consumers=[54]
+
+=== STOCK TFLM SUB SOURCE ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/sub.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc
+
+=== STOCK SUB IMPLEMENTATION ===
+/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#include "tensorflow/lite/micro/kernels/sub.h"
+
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/internal/common.h"
+#include "tensorflow/lite/kernels/internal/quantization_util.h"
+#include "tensorflow/lite/kernels/internal/reference/add.h"
+#include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
+#include "tensorflow/lite/kernels/internal/reference/sub.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+#include "tensorflow/lite/kernels/internal/types.h"
+#include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/kernels/op_macros.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_log.h"
+
+namespace tflite {
+
+void* SubInit(TfLiteContext* context, const char* buffer, size_t length) {
+  TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+  return context->AllocatePersistentBuffer(context, sizeof(OpDataSub));
+}
+
+void EvalSub(TfLiteContext* context, TfLiteNode* node, TfLiteSubParams* params,
+             const OpDataSub* data, const TfLiteEvalTensor* input1,
+             const TfLiteEvalTensor* input2, TfLiteEvalTensor* output) {
+  float output_activation_min, output_activation_max;
+  CalculateActivationRange(params->activation, &output_activation_min,
+                           &output_activation_max);
+  tflite::ArithmeticParams op_params;
+  SetActivationParams(output_activation_min, output_activation_max, &op_params);
+  if (data->requires_broadcast) {
+    tflite::reference_ops::BroadcastSubSlow(
+        op_params, tflite::micro::GetTensorShape(input1),
+        tflite::micro::GetTensorData<float>(input1),
+        tflite::micro::GetTensorShape(input2),
+        tflite::micro::GetTensorData<float>(input2),
+        tflite::micro::GetTensorShape(output),
+        tflite::micro::GetTensorData<float>(output));
+  } else {
+    tflite::reference_ops::SubWithActivation(
+        op_params, tflite::micro::GetTensorShape(input1),
+        tflite::micro::GetTensorData<float>(input1),
+        tflite::micro::GetTensorShape(input2),
+        tflite::micro::GetTensorData<float>(input2),
+        tflite::micro::GetTensorShape(output),
+        tflite::micro::GetTensorData<float>(output));
+  }
+}
+
+TfLiteStatus EvalSubQuantized(TfLiteContext* context, TfLiteNode* node,
+                              TfLiteSubParams* params, const OpDataSub* data,
+                              const TfLiteEvalTensor* input1,
+                              const TfLiteEvalTensor* input2,
+                              TfLiteEvalTensor* output) {
+  tflite::ArithmeticParams op_params;
+  op_params.left_shift = data->left_shift;
+  op_params.input1_offset = data->input1_offset;
+  op_params.input1_multiplier = data->input1_multiplier;
+  op_params.input1_shift = data->input1_shift;
+  op_params.input2_offset = data->input2_offset;
+  op_params.input2_multiplier = data->input2_multiplier;
+  op_params.input2_shift = data->input2_shift;
+  op_params.output_offset = data->output_offset;
+  op_params.output_multiplier = data->output_multiplier;
+  op_params.output_shift = data->output_shift;
+  SetActivationParams(data->output_activation_min, data->output_activation_max,
+                      &op_params);
+  bool need_broadcast = reference_ops::ProcessBroadcastShapes(
+      tflite::micro::GetTensorShape(input1),
+      tflite::micro::GetTensorShape(input2), &op_params);
+
+  switch (output->type) {
+    case kTfLiteInt8: {
+      if (need_broadcast) {
+        tflite::reference_ops::BroadcastQuantSubSlow(
+            op_params, tflite::micro::GetTensorShape(input1),
+            tflite::micro::GetTensorData<int8_t>(input1),
+            tflite::micro::GetTensorShape(input2),
+            tflite::micro::GetTensorData<int8_t>(input2),
+            tflite::micro::GetTensorShape(output),
+            tflite::micro::GetTensorData<int8_t>(output));
+      } else {
+        tflite::reference_ops::Sub(
+            op_params, tflite::micro::GetTensorShape(input1),
+            tflite::micro::GetTensorData<int8_t>(input1),
+            tflite::micro::GetTensorShape(input2),
+            tflite::micro::GetTensorData<int8_t>(input2),
+            tflite::micro::GetTensorShape(output),
+            tflite::micro::GetTensorData<int8_t>(output));
+      }
+      break;
+    }
+    case kTfLiteInt16: {
+      if (need_broadcast) {
+        tflite::reference_ops::BroadcastQuantSubSlow(
+            op_params, tflite::micro::GetTensorShape(input1),
+            tflite::micro::GetTensorData<int16_t>(input1),
+            tflite::micro::GetTensorShape(input2),
+            tflite::micro::GetTensorData<int16_t>(input2),
+            tflite::micro::GetTensorShape(output),
+            tflite::micro::GetTensorData<int16_t>(output));
+      } else {
+        tflite::reference_ops::Sub(
+            op_params, tflite::micro::GetTensorShape(input1),
+            tflite::micro::GetTensorData<int16_t>(input1),
+            tflite::micro::GetTensorShape(input2),
+            tflite::micro::GetTensorData<int16_t>(input2),
+            tflite::micro::GetTensorShape(output),
+            tflite::micro::GetTensorData<int16_t>(output));
+      }
+      break;
+    }
+    default:
+      MicroPrintf("Quantized type %s not currently supported.",
+                  TfLiteTypeGetName(output->type));
+      return kTfLiteError;
+  }
+  return kTfLiteOk;
+}
+
+TfLiteStatus SubEval(TfLiteContext* context, TfLiteNode* node) {
+  auto* params = reinterpret_cast<TfLiteSubParams*>(node->builtin_data);
+
+  const TfLiteEvalTensor* input1 =
+      tflite::micro::GetEvalInput(context, node, kSubInputTensor1);
+  const TfLiteEvalTensor* input2 =
+      tflite::micro::GetEvalInput(context, node, kSubInputTensor2);
+  TfLiteEvalTensor* output =
+      tflite::micro::GetEvalOutput(context, node, kSubOutputTensor);
+
+  TFLITE_DCHECK(node->user_data != nullptr);
+  const OpDataSub& data = *(static_cast<const OpDataSub*>(node->user_data));
+
+  if (output->type == kTfLiteFloat32) {
+    EvalSub(context, node, params, &data, input1, input2, output);
+  } else if (output->type == kTfLiteInt8 || output->type == kTfLiteInt16) {
+    TF_LITE_ENSURE_OK(context, EvalSubQuantized(context, node, params, &data,
+                                                input1, input2, output));
+  } else {
+    MicroPrintf("Type %s (%d) not supported.", TfLiteTypeGetName(output->type),
+                output->type);
+    return kTfLiteError;
+  }
+
+  return kTfLiteOk;
+}
+
+TFLMRegistration Register_SUB() {
+  return tflite::micro::RegisterOp(SubInit, SubPrepare, SubEval);
+}
+
+}  // namespace tflite
+
+=== STOCK SUB HEADER ===
+/* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#ifndef TENSORFLOW_LITE_MICRO_KERNELS_SUB_H_
+#define TENSORFLOW_LITE_MICRO_KERNELS_SUB_H_
+
+#include <cstdint>
+
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/c/common.h"
+
+namespace tflite {
+
+extern const int kSubInputTensor1;
+extern const int kSubInputTensor2;
+extern const int kSubOutputTensor;
+
+struct OpDataSub {
+  bool requires_broadcast;
+
+  // These fields are used in both the general 8-bit -> 8bit quantized path,
+  // and the special 16-bit -> 16bit quantized path
+  int input1_shift;
+  int input2_shift;
+  int32_t output_activation_min;
+  int32_t output_activation_max;
+
+  // These fields are used only in the general 8-bit -> 8bit quantized path
+  int32_t input1_multiplier;
+  int32_t input2_multiplier;
+  int32_t output_multiplier;
+  int output_shift;
+  int left_shift;
+  int32_t input1_offset;
+  int32_t input2_offset;
+  int32_t output_offset;
+};
+
+TfLiteStatus CalculateOpDataSub(TfLiteContext* context, TfLiteSubParams* params,
+                                const TfLiteTensor* input1,
+                                const TfLiteTensor* input2,
+                                TfLiteTensor* output, OpDataSub* data);
+
+TfLiteStatus SubPrepare(TfLiteContext* context, TfLiteNode* node);
+
+}  // namespace tflite
+
+#endif  // TENSORFLOW_LITE_MICRO_KERNELS_SUB_H_
+
+=== RESOLVER AddSub API ===
+622-
+623-  TfLiteStatus AddStacker() {
+624-    // TODO(b/286250473): change back name to "Stacker" and remove namespace
+625-    return AddCustom("SignalStacker", tflite::tflm_signal::Register_STACKER());
+626-  }
+627-
+628:  TfLiteStatus AddSub() {
+629-    return AddBuiltin(BuiltinOperator_SUB, tflite::Register_SUB(), ParseSub);
+630-  }
+631-
+632-  TfLiteStatus AddSum() {
+633-    return AddBuiltin(BuiltinOperator_SUM, Register_SUM(), ParseReducer);
+634-  }
+635-
+636-  TfLiteStatus AddSvdf(const TFLMRegistration& registration = Register_SVDF()) {
+637-    return AddBuiltin(BuiltinOperator_SVDF, registration, ParseSvdf);
+638-  }
+639-
+640-  TfLiteStatus AddTanh() {
+
+=== APPLICATION SUB REGISTRATION ===
+705-    HS_ADD_REQUIRED(AddQuantize);
+706-    HS_ADD_REQUIRED(AddReshape);
+707-    HS_ADD_REQUIRED(AddRsqrt);
+708-    HS_ADD_REQUIRED(AddSelectV2);
+709-    HS_ADD_REQUIRED(AddSoftmax);
+710-    HS_ADD_REQUIRED(AddSplitV);
+711-    HS_ADD_REQUIRED(AddSqrt);
+712-    HS_ADD_REQUIRED(AddSquare);
+713:    HS_ADD_REQUIRED(AddSub);
+714-#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+715-    {
+716-        const TFLMRegistration registration =
+717-            tflite::RegisterHeatstrokeSumKernel();
+718-
+719-        if (this->m_opResolver.AddBuiltin(
+720-                tflite::BuiltinOperator_SUM,
+721-                registration,
+722-                tflite::ParseReducer) != kTfLiteOk) {
+723-            printf_err("Failed to register heat-stress INT64 SUM.\n");
+724-            return false;
+725-        }
+726-    }
+727-#else
+
+=== ParseSub DECLARATION AND DEFINITION ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-624-    // TODO(b/286250473): change back name to "Stacker" and remove namespace
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-625-    return AddCustom("SignalStacker", tflite::tflm_signal::Register_STACKER());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-626-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-627-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-628-  TfLiteStatus AddSub() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:629:    return AddBuiltin(BuiltinOperator_SUB, tflite::Register_SUB(), ParseSub);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-630-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-631-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-632-  TfLiteStatus AddSum() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-633-    return AddBuiltin(BuiltinOperator_SUM, Register_SUM(), ParseReducer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-634-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-635-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-636-  TfLiteStatus AddSvdf(const TFLMRegistration& registration = Register_SVDF()) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-637-    return AddBuiltin(BuiltinOperator_SVDF, registration, ParseSvdf);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-638-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h-639-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-373-TfLiteStatus ParseStridedSlice(const Operator* op,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-374-                               ErrorReporter* error_reporter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-375-                               BuiltinDataAllocator* allocator,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-376-                               void** builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-377-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h:378:TfLiteStatus ParseSub(const Operator* op, ErrorReporter* error_reporter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-379-                      BuiltinDataAllocator* allocator, void** builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-380-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-381-TfLiteStatus ParseSvdf(const Operator* op, ErrorReporter* error_reporter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-382-                       BuiltinDataAllocator* allocator, void** builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-383-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-384-TfLiteStatus ParseTanh(const Operator* op, ErrorReporter* error_reporter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-385-                       BuiltinDataAllocator* allocator, void** builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-386-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-387-TfLiteStatus ParseTranspose(const Operator* op, ErrorReporter* error_reporter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h-388-                            BuiltinDataAllocator* allocator,
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-530-    case BuiltinOperator_STRIDED_SLICE: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-531-      return ParseStridedSlice(op, error_reporter, allocator, builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-532-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-533-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-534-    case BuiltinOperator_SUB: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc:535:      return ParseSub(op, error_reporter, allocator, builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-536-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-537-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-538-    case BuiltinOperator_SUM: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-539-      return ParseReducer(op, error_reporter, allocator, builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-540-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-541-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-542-    case BuiltinOperator_SVDF: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-543-      return ParseSvdf(op, error_reporter, allocator, builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-544-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-545-
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2748-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2749-  *builtin_data = params.release();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2750-  return kTfLiteOk;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2751-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2752-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc:2753:TfLiteStatus ParseSub(const Operator* op, ErrorReporter* error_reporter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2754-                      BuiltinDataAllocator* allocator, void** builtin_data) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2755-  CheckParsePointerParams(op, error_reporter, allocator, builtin_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2756-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2757-  SafeBuiltinDataAllocator safe_allocator(allocator);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2758-  std::unique_ptr<TfLiteSubParams, SafeBuiltinDataAllocator::BuiltinDataDeleter>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2759-      params = safe_allocator.Allocate<TfLiteSubParams>();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2760-  TF_LITE_ENSURE(error_reporter, params != nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2761-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2762-  const SubOptions* schema_params = op->builtin_options_as_SubOptions();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc-2763-
+
+=== END AUDIT ===
