@@ -1,0 +1,233 @@
+============================================================
+NEWLIB HEAP AND ACTIVATION ARENA TRADEOFF AUDIT
+============================================================
+
+================================================
+BUILD: /home/user/sdk-alif/build_heatstroke_layernorm_rank4_fix_20261110_091757
+================================================
+
+1. Relevant Kconfig
+CONFIG_MAIN_STACK_SIZE=4096
+CONFIG_ISR_STACK_SIZE=4096
+CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=1024
+CONFIG_HEAP_MEM_POOL_SIZE=163840
+CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=163840
+CONFIG_ACTIVATION_BUF_SZ=0x120000
+
+2. Linker memory configuration
+Memory Configuration
+
+Name             Origin             Length             Attributes
+FLASH            0x0000000080000000 0x00000000001c8000 xr
+RAM              0x000000002000a000 0x0000000000176000 xw
+ITCM             0x0000000000000000 0x0000000000080000 rw
+RESERVED_DTCM    0x0000000020000000 0x000000000000a000 rw
+DTCM             0x000000002000a000 0x0000000000176000 rw
+OSPI0            0x00000000b0000000 0x0000000004000000 rw
+IDT_LIST         0x00000000ffff7fff 0x0000000000008000 xw
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+3. Exact _end symbol
+201568d4 B _end
+
+4. Relevant ELF sections
+  [22] k_heap_area       PROGBITS        2000af40 038960 000018 00  WA  0   0  4
+
+5. Firmware size
+-rwxrwxr-x 1 user user 227K Nov 10 09:20 /home/user/sdk-alif/build_heatstroke_layernorm_rank4_fix_20261110_091757/zephyr/zephyr.bin
+-rwxrwxr-x 1 user user  31M Nov 10 09:20 /home/user/sdk-alif/build_heatstroke_layernorm_rank4_fix_20261110_091757/zephyr/zephyr.elf
+
+================================================
+BUILD: /home/user/sdk-alif/build_heatstroke_layernorm_arena_plus64k_20261110_093157
+================================================
+
+1. Relevant Kconfig
+CONFIG_MAIN_STACK_SIZE=4096
+CONFIG_ISR_STACK_SIZE=4096
+CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=1024
+CONFIG_HEAP_MEM_POOL_SIZE=163840
+CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=163840
+CONFIG_ACTIVATION_BUF_SZ=0x130000
+
+2. Linker memory configuration
+Memory Configuration
+
+Name             Origin             Length             Attributes
+FLASH            0x0000000080000000 0x00000000001c8000 xr
+RAM              0x000000002000a000 0x0000000000176000 xw
+ITCM             0x0000000000000000 0x0000000000080000 rw
+RESERVED_DTCM    0x0000000020000000 0x000000000000a000 rw
+DTCM             0x000000002000a000 0x0000000000176000 rw
+OSPI0            0x00000000b0000000 0x0000000004000000 rw
+IDT_LIST         0x00000000ffff7fff 0x0000000000008000 xw
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+3. Exact _end symbol
+201668d4 B _end
+
+4. Relevant ELF sections
+  [22] k_heap_area       PROGBITS        2000af40 038960 000018 00  WA  0   0  4
+
+5. Firmware size
+-rwxrwxr-x 1 user user 227K Nov 10 09:34 /home/user/sdk-alif/build_heatstroke_layernorm_arena_plus64k_20261110_093157/zephyr/zephyr.bin
+-rwxrwxr-x 1 user user  31M Nov 10 09:34 /home/user/sdk-alif/build_heatstroke_layernorm_arena_plus64k_20261110_093157/zephyr/zephyr.elf
+
+6. Calculate Newlib heap headroom from _end
+awk: line 16: syntax error at or near =
+
+7. Newlib minimum heap Kconfig definition
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-127-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-128-#ifdef Z_MALLOC_PARTITION_EXISTS
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-129-	z_malloc_partition.start = (uintptr_t)HEAP_BASE;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-130-	z_malloc_partition.size = (size_t)MAX_HEAP_SIZE;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-131-	z_malloc_partition.attr = K_MEM_PARTITION_P_RW_U_RW;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-132-#endif /* Z_MALLOC_PARTITION_EXISTS */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-133-#endif /* USE_MALLOC_PREPARE */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-134-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-135-	/*
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-136-	 * Validate that the memory space available for the newlib heap is
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-137-	 * greater than the minimum required size.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-138-	 */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c:139:	__ASSERT(MAX_HEAP_SIZE >= CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE,
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-140-		 "memory space available for newlib heap is less than the "
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-141-		 "minimum required size specified by "
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c:142:		 "CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE");
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-143-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-144-	return 0;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-145-}
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-146-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-147-SYS_INIT(malloc_prepare, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_LIBC);
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-148-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-149-/* Current offset from HEAP_BASE of unused memory */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-150-LIBC_BSS static size_t heap_sz;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-151-#endif /* CONFIG_NEWLIB_LIBC_CUSTOM_SBRK */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-152-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-153-static int _stdout_hook_default(int c)
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-154-{
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-155-	(void)(c);  /* Prevent warning about unused argument */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-156-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-157-	return EOF;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-158-}
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-159-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-160-static int (*_stdout_hook)(int) = _stdout_hook_default;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-161-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-162-void __stdout_hook_install(int (*hook)(int))
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-163-{
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-164-	_stdout_hook = hook;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-165-}
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-166-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-167-static unsigned char _stdin_hook_default(void)
+--
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-12-	  GNU Tools for ARM Embedded Processors.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-13-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-14-config NEWLIB_LIBC_MAX_MAPPED_REGION_SIZE
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-15-	int "Maximum memory mapped for newlib heap"
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-16-	depends on MMU
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-17-	default 1048576
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-18-	help
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-19-	  On MMU-based systems, indicates the maximum amount of memory which
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-20-	  will be used for the newlib malloc() heap. The actual amount of
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-21-	  memory used will be the minimum of this value and the amount of
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-22-	  free physical memory at kernel boot.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-23-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig:24:config NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-25-	int "Newlib minimum required heap size"
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-26-	default 2048 if NEWLIB_LIBC_NANO
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-27-	default 8192 if !NEWLIB_LIBC_NANO
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-28-	help
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-29-	  Specifies the amount of memory space that must be available for the
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-30-	  newlib heap. An assertion failure message will be displayed during
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-31-	  initialization if the memory space available for the newlib heap is
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-32-	  smaller than this value.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-33-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-34-config NEWLIB_LIBC_ALIGNED_HEAP_SIZE
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-35-	int "Newlib aligned heap size"
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-36-	depends on MPU_REQUIRES_POWER_OF_TWO_ALIGNMENT
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-37-	depends on USERSPACE
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-38-	default 0
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-39-	help
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-40-	  If user mode is enabled, and MPU hardware has requirements that
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-41-	  regions be sized to a power of two and aligned to their size,
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-42-	  and user mode threads need to access this heap, then this is necessary
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-43-	  to properly define an MPU region for the heap.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-44-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-45-	  If this is left at 0, then remaining system RAM will be used for this
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-46-	  area and it may not be possible to program it as an MPU region.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-47-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-48-config NEWLIB_LIBC_FLOAT_PRINTF
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-49-	bool "Build with newlib float printf"
+
+8. Newlib startup heap assertion implementation
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c
+/home/user/sdk-alif/zephyr/lib/libc/armstdc/src/libc-hooks.c
+/home/user/sdk-alif/zephyr/lib/libc/iar/src/libc-hooks.c
+/home/user/sdk-alif/zephyr/lib/libc/arcmwdt/libc-hooks.c
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-122-		__ASSERT(heap_base != NULL,
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-123-			 "failed to allocate heap of size %zu", max_heap_size);
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-124-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-125-	}
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-126-#endif /* CONFIG_MMU */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-127-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-128-#ifdef Z_MALLOC_PARTITION_EXISTS
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-129-	z_malloc_partition.start = (uintptr_t)HEAP_BASE;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-130-	z_malloc_partition.size = (size_t)MAX_HEAP_SIZE;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-131-	z_malloc_partition.attr = K_MEM_PARTITION_P_RW_U_RW;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-132-#endif /* Z_MALLOC_PARTITION_EXISTS */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-133-#endif /* USE_MALLOC_PREPARE */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-134-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-135-	/*
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-136-	 * Validate that the memory space available for the newlib heap is
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-137-	 * greater than the minimum required size.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-138-	 */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-139-	__ASSERT(MAX_HEAP_SIZE >= CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE,
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c:140:		 "memory space available for newlib heap is less than the "
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-141-		 "minimum required size specified by "
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-142-		 "CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE");
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-143-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-144-	return 0;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-145-}
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-146-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-147-SYS_INIT(malloc_prepare, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_LIBC);
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-148-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-149-/* Current offset from HEAP_BASE of unused memory */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-150-LIBC_BSS static size_t heap_sz;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-151-#endif /* CONFIG_NEWLIB_LIBC_CUSTOM_SBRK */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-152-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-153-static int _stdout_hook_default(int c)
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-154-{
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-155-	(void)(c);  /* Prevent warning about unused argument */
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-156-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-157-	return EOF;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-158-}
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-159-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-160-static int (*_stdout_hook)(int) = _stdout_hook_default;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-161-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-162-void __stdout_hook_install(int (*hook)(int))
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-163-{
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-164-	_stdout_hook = hook;
+/home/user/sdk-alif/zephyr/lib/libc/newlib/libc-hooks.c-165-}
+
+9. Application and MLEK dynamic allocation references
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:265:		(char *)malloc(AUDIO_CHANNELS * WORD_SIZE * AUDIO_CHUNK_SIZE_SAMPLES);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:346:	free(my_slab_buffer);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp:136:         *                             populated with new audio data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc:92:    /* We moved to the next window - set the features sliding to the new address. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc:76:        /* Set the features sliding window to the new address. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp:34:     * Call this method before starting processing the new sequence of logically related data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:161:        debug("Created new allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:99:         * @brief     Resets the slider to the start of the new data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:100:         *            New data size MUST be the same as the old one.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:101:         * @param[in] newStart   Pointer to the new data to slide through.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:109:         * @brief     Resets the slider to the start of the new data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:110:         * @param[in] newStart   Pointer to the new data to slide through.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:139:         * @param[in] index   New position of the sliding window. If index is invalid
+
+10. Heap-related unresolved firmware symbols
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
