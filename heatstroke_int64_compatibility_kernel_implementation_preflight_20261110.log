@@ -1,0 +1,1591 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794290483.784215  174748 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794290483.784498  174748 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794290483.820686  174748 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794290484.588114  174748 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794290484.588384  174748 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+=== REDUCE / SUM IMPLEMENTATION ===
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc ====================
+Showing lines 250-340 of 340
+  250:   int* temp_buffer = static_cast<int*>(
+  251:       context->GetScratchBuffer(context, op_data->temp_buffer_idx));
+  252:   int* resolved_axis = static_cast<int*>(
+  253:       context->GetScratchBuffer(context, op_data->resolved_axis_idx));
+  254:   switch (input->type) {
+  255:     case kTfLiteFloat32:
+  256:       TF_LITE_ENSURE(
+  257:           context,
+  258:           reference_ops::ReduceGeneric<float>(
+  259:               tflite::micro::GetTensorData<float>(input), input->dims->data,
+  260:               input->dims->size, tflite::micro::GetTensorData<float>(output),
+  261:               output->dims->data, output->dims->size,
+  262:               tflite::micro::GetTensorData<int>(axis), num_axis,
+  263:               params->keep_dims, temp_buffer, resolved_axis,
+  264:               std::numeric_limits<float>::lowest(),
+  265:               [](const float current, const float in) -> float {
+  266:                 return (in > current) ? in : current;
+  267:               }));
+  268:       break;
+  269:     case kTfLiteInt8:
+  270:       TF_LITE_ENSURE_EQ(context, static_cast<double>(op_data->input_scale),
+  271:                         static_cast<double>(op_data->output_scale));
+  272:       TF_LITE_ENSURE_EQ(context, op_data->input_zp, op_data->output_zp);
+  273:       TF_LITE_ENSURE(
+  274:           context,
+  275:           reference_ops::ReduceGeneric<int8_t>(
+  276:               tflite::micro::GetTensorData<int8_t>(input), input->dims->data,
+  277:               input->dims->size, tflite::micro::GetTensorData<int8_t>(output),
+  278:               output->dims->data, output->dims->size,
+  279:               tflite::micro::GetTensorData<int>(axis), num_axis,
+  280:               params->keep_dims, temp_buffer, resolved_axis,
+  281:               std::numeric_limits<int8_t>::lowest(),
+  282:               [](const int8_t current, const int8_t in) -> int8_t {
+  283:                 return (in > current) ? in : current;
+  284:               }));
+  285:       break;
+  286:     default:
+  287:       MicroPrintf("Only float32 and int8 types are supported.");
+  288:       return kTfLiteError;
+  289:   }
+  290:   return kTfLiteOk;
+  291: }
+  292: 
+  293: TfLiteStatus EvalSumHelper(TfLiteContext* context, TfLiteNode* node,
+  294:                            OpDataReduce* op_data) {
+  295:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+  296:   const TfLiteEvalTensor* axis = tflite::micro::GetEvalInput(context, node, 1);
+  297:   TfLiteEvalTensor* output = tflite::micro::GetEvalOutput(context, node, 0);
+  298:   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
+  299:   TfLiteReducerParams* params =
+  300:       static_cast<TfLiteReducerParams*>(node->builtin_data);
+  301: 
+  302:   // Interpret an axis tensor with null dimensions as a scalar.
+  303:   int num_axis = static_cast<int>(ElementCount(*axis->dims));
+  304:   int temp_index[kMaxNumberOfAxis];
+  305:   int resolved_axis[kMaxNumberOfReducedAxis];
+  306: 
+  307:   switch (input->type) {
+  308:     case kTfLiteFloat32: {
+  309:       TF_LITE_ENSURE(
+  310:           context,
+  311:           reference_ops::ReduceGeneric<float>(
+  312:               tflite::micro::GetTensorData<float>(input), input->dims->data,
+  313:               input->dims->size, tflite::micro::GetTensorData<float>(output),
+  314:               output->dims->data, output->dims->size,
+  315:               tflite::micro::GetTensorData<int>(axis), num_axis,
+  316:               params->keep_dims, temp_index, resolved_axis, /*init_value=*/0.f,
+  317:               [](const float current, const float in) -> float {
+  318:                 return in + current;
+  319:               }));
+  320:     } break;
+  321:     case kTfLiteInt8: {
+  322:       int32_t* temp_sum = static_cast<int32_t*>(
+  323:           context->GetScratchBuffer(context, op_data->temp_buffer_idx));
+  324:       QuantizedMeanOrSum<int8_t>(context, node, temp_index, resolved_axis,
+  325:                                  temp_sum, op_data, /*compute_sum=*/true);
+  326:     } break;
+  327:     case kTfLiteInt16: {
+  328:       int32_t* temp_sum = static_cast<int32_t*>(
+  329:           context->GetScratchBuffer(context, op_data->temp_buffer_idx));
+  330:       QuantizedMeanOrSum<int16_t>(context, node, temp_index, resolved_axis,
+  331:                                   temp_sum, op_data, /*compute_sum=*/true);
+  332:     } break;
+  333:     default:
+  334:       MicroPrintf("Only float32, int8, and int16 types are supported.");
+  335:       return kTfLiteError;
+  336:   }
+  337:   return kTfLiteOk;
+  338: }
+  339: 
+  340: }  // namespace tflite
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc ====================
+Showing lines 30-74 of 74
+   30: 
+   31: void* InitReduce(TfLiteContext* context, const char* buffer, size_t length) {
+   32:   void* op_data =
+   33:       context->AllocatePersistentBuffer(context, sizeof(OpDataReduce));
+   34:   return new (op_data) OpDataReduce();
+   35: }
+   36: 
+   37: TfLiteStatus PrepareMax(TfLiteContext* context, TfLiteNode* node) {
+   38:   return PrepareMaxHelper(context, node,
+   39:                           static_cast<OpDataReduce*>(node->user_data));
+   40: }
+   41: 
+   42: TfLiteStatus PrepareMeanOrSum(TfLiteContext* context, TfLiteNode* node) {
+   43:   return PrepareMeanOrSumHelper(context, node,
+   44:                                 static_cast<OpDataReduce*>(node->user_data));
+   45: }
+   46: 
+   47: TfLiteStatus EvalMean(TfLiteContext* context, TfLiteNode* node) {
+   48:   return EvalMeanHelper(context, node,
+   49:                         static_cast<OpDataReduce*>(node->user_data));
+   50: }
+   51: 
+   52: TfLiteStatus EvalMax(TfLiteContext* context, TfLiteNode* node) {
+   53:   OpDataReduce* op_data = static_cast<OpDataReduce*>(node->user_data);
+   54:   return EvalMaxHelper(context, node, op_data);
+   55: }
+   56: 
+   57: TfLiteStatus EvalSum(TfLiteContext* context, TfLiteNode* node) {
+   58:   return EvalSumHelper(context, node,
+   59:                        static_cast<OpDataReduce*>(node->user_data));
+   60: }
+   61: 
+   62: TFLMRegistration Register_MEAN() {
+   63:   return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalMean);
+   64: }
+   65: 
+   66: TFLMRegistration Register_REDUCE_MAX() {
+   67:   return tflite::micro::RegisterOp(InitReduce, PrepareMax, EvalMax);
+   68: }
+   69: 
+   70: TFLMRegistration Register_SUM() {
+   71:   return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalSum);
+   72: }
+   73: 
+   74: }  // namespace tflite
+
+=== CAST IMPLEMENTATION ===
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc ====================
+Showing lines 1-120 of 120
+    1: /* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/c/common.h"
+   17: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   18: #include "tensorflow/lite/kernels/kernel_util.h"
+   19: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   20: #include "tensorflow/lite/micro/micro_log.h"
+   21: 
+   22: namespace tflite {
+   23: namespace {
+   24: 
+   25: constexpr int kInputTensor = 0;
+   26: constexpr int kOutputTensor = 0;
+   27: 
+   28: TfLiteStatus CastPrepare(TfLiteContext* context, TfLiteNode* node) {
+   29:   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
+   30:   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+   31: 
+   32:   MicroContext* micro_context = GetMicroContext(context);
+   33: 
+   34:   TfLiteTensor* input =
+   35:       micro_context->AllocateTempInputTensor(node, kInputTensor);
+   36:   TF_LITE_ENSURE(context, input != nullptr);
+   37:   TfLiteTensor* output =
+   38:       micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+   39:   TF_LITE_ENSURE(context, output != nullptr);
+   40: 
+   41:   micro_context->DeallocateTempTfLiteTensor(input);
+   42:   micro_context->DeallocateTempTfLiteTensor(output);
+   43: 
+   44:   return kTfLiteOk;
+   45: }
+   46: 
+   47: template <typename FromT, typename ToT>
+   48: void copyCast(const FromT* in, ToT* out, int num_elements) {
+   49:   std::transform(in, in + num_elements, out,
+   50:                  [](FromT a) { return static_cast<ToT>(a); });
+   51: }
+   52: 
+   53: template <typename FromT>
+   54: TfLiteStatus copyToTensor(TfLiteContext* context, const FromT* in,
+   55:                           TfLiteEvalTensor* out, int num_elements) {
+   56:   switch (out->type) {
+   57:     case kTfLiteInt8:
+   58:       copyCast(in, out->data.int8, num_elements);
+   59:       break;
+   60:     case kTfLiteInt16:
+   61:       copyCast(in, out->data.i16, num_elements);
+   62:       break;
+   63:     case kTfLiteInt32:
+   64:       copyCast(in, out->data.i32, num_elements);
+   65:       break;
+   66:     case kTfLiteUInt32:
+   67:       copyCast(in, out->data.u32, num_elements);
+   68:       break;
+   69:     case kTfLiteFloat32:
+   70:       copyCast(in, tflite::micro::GetTensorData<float>(out), num_elements);
+   71:       break;
+   72:     default:
+   73:       // Unsupported type.
+   74:       MicroPrintf("Output type %s (%d) not supported.",
+   75:                   TfLiteTypeGetName(out->type), out->type);
+   76:   }
+   77:   return kTfLiteOk;
+   78: }
+   79: 
+   80: TfLiteStatus CastEval(TfLiteContext* context, TfLiteNode* node) {
+   81:   const TfLiteEvalTensor* input =
+   82:       tflite::micro::GetEvalInput(context, node, kInputTensor);
+   83:   TfLiteEvalTensor* output =
+   84:       tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+   85:   int num_elements = MatchingFlatSize(tflite::micro::GetTensorShape(input),
+   86:                                       tflite::micro::GetTensorShape(output));
+   87: 
+   88:   switch (input->type) {
+   89:     case kTfLiteInt8:
+   90:       return copyToTensor(context, input->data.int8, output, num_elements);
+   91:     case kTfLiteInt16:
+   92:       return copyToTensor(context, tflite::micro::GetTensorData<int16_t>(input),
+   93:                           output, num_elements);
+   94:     case kTfLiteInt32:
+   95:       return copyToTensor(context, tflite::micro::GetTensorData<int32_t>(input),
+   96:                           output, num_elements);
+   97:     case kTfLiteUInt32:
+   98:       return copyToTensor(context,
+   99:                           tflite::micro::GetTensorData<uint32_t>(input), output,
+  100:                           num_elements);
+  101:     case kTfLiteFloat32:
+  102:       return copyToTensor(context, tflite::micro::GetTensorData<float>(input),
+  103:                           output, num_elements);
+  104:     case kTfLiteBool:
+  105:       return copyToTensor(context, tflite::micro::GetTensorData<bool>(input),
+  106:                           output, num_elements);
+  107:     default:
+  108:       // Unsupported type.
+  109:       MicroPrintf("Input type %s (%d) not supported.",
+  110:                   TfLiteTypeGetName(input->type), input->type);
+  111:   }
+  112:   return kTfLiteOk;
+  113: }
+  114: }  // namespace
+  115: 
+  116: TFLMRegistration Register_CAST() {
+  117:   return tflite::micro::RegisterOp(nullptr, CastPrepare, CastEval);
+  118: }
+  119: 
+  120: }  // namespace tflite
+
+=== MUL IMPLEMENTATION ===
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/mul.cc ====================
+Showing lines 1-68 of 68
+    1: /* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/micro/kernels/mul.h"
+   17: 
+   18: #include "tensorflow/lite/c/common.h"
+   19: #include "tensorflow/lite/kernels/internal/quantization_util.h"
+   20: #include "tensorflow/lite/kernels/internal/reference/integer_ops/mul.h"
+   21: #include "tensorflow/lite/kernels/internal/reference/mul.h"
+   22: #include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
+   23: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   24: #include "tensorflow/lite/kernels/kernel_util.h"
+   25: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   26: #include "tensorflow/lite/micro/memory_helpers.h"
+   27: #include "tensorflow/lite/micro/micro_log.h"
+   28: 
+   29: namespace tflite {
+   30: 
+   31: TfLiteStatus MulEval(TfLiteContext* context, TfLiteNode* node) {
+   32:   TFLITE_DCHECK(node->builtin_data != nullptr);
+   33:   auto* params = reinterpret_cast<TfLiteMulParams*>(node->builtin_data);
+   34: 
+   35:   TFLITE_DCHECK(node->user_data != nullptr);
+   36:   const OpDataMul* data = static_cast<const OpDataMul*>(node->user_data);
+   37: 
+   38:   const TfLiteEvalTensor* input1 =
+   39:       tflite::micro::GetEvalInput(context, node, kMulInput1Tensor);
+   40:   const TfLiteEvalTensor* input2 =
+   41:       tflite::micro::GetEvalInput(context, node, kMulInput2Tensor);
+   42:   TfLiteEvalTensor* output =
+   43:       tflite::micro::GetEvalOutput(context, node, kMulOutputTensor);
+   44: 
+   45:   switch (input1->type) {
+   46:     case kTfLiteInt8:
+   47:     case kTfLiteInt16:
+   48:     case kTfLiteInt32:
+   49:       EvalMulQuantizedReference(context, node, data, input1, input2, output);
+   50:       break;
+   51:     case kTfLiteFloat32:
+   52:       EvalMulFloatReference(context, node, params, data, input1, input2,
+   53:                             output);
+   54:       break;
+   55:     default:
+   56:       MicroPrintf("Type %s (%d) not supported.",
+   57:                   TfLiteTypeGetName(input1->type), input1->type);
+   58:       return kTfLiteError;
+   59:   }
+   60: 
+   61:   return kTfLiteOk;
+   62: }
+   63: 
+   64: TFLMRegistration Register_MUL() {
+   65:   return tflite::micro::RegisterOp(MulInit, MulPrepare, MulEval);
+   66: }
+   67: 
+   68: }  // namespace tflite
+
+=== FLOOR_MOD IMPLEMENTATION ===
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_mod.cc ====================
+Showing lines 1-128 of 128
+    1: /* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/kernels/internal/reference/floor_mod.h"
+   17: 
+   18: #include "tensorflow/lite/c/common.h"
+   19: #include "tensorflow/lite/kernels/internal/reference/binary_function.h"
+   20: #include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
+   21: #include "tensorflow/lite/kernels/internal/types.h"
+   22: #include "tensorflow/lite/kernels/kernel_util.h"
+   23: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   24: #include "tensorflow/lite/micro/micro_log.h"
+   25: #include "tensorflow/lite/micro/micro_utils.h"
+   26: 
+   27: // OLD-TODO(b/117523611): We should factor out a binary_op and put binary ops
+   28: // there.
+   29: namespace tflite {
+   30: namespace {
+   31: 
+   32: // Input/output tensor index.
+   33: constexpr int kInputTensor1 = 0;
+   34: constexpr int kInputTensor2 = 1;
+   35: constexpr int kOutputTensor = 0;
+   36: 
+   37: // OLD-TODO(b/117912880): Support quantization.
+   38: 
+   39: TfLiteStatus CalculateOpData(TfLiteContext* context, TfLiteNode* node) {
+   40:   MicroContext* micro_context = GetMicroContext(context);
+   41: 
+   42:   TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
+   43:   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+   44: 
+   45:   TfLiteTensor* input1 =
+   46:       micro_context->AllocateTempInputTensor(node, kInputTensor1);
+   47:   TF_LITE_ENSURE(context, input1 != nullptr);
+   48:   TfLiteTensor* input2 =
+   49:       micro_context->AllocateTempInputTensor(node, kInputTensor2);
+   50:   TF_LITE_ENSURE(context, input2 != nullptr);
+   51:   TfLiteTensor* output =
+   52:       micro_context->AllocateTempOutputTensor(node, kOutputTensor);
+   53:   TF_LITE_ENSURE(context, output != nullptr);
+   54: 
+   55:   TF_LITE_ENSURE_TYPES_EQ(context, input1->type, input2->type);
+   56:   TF_LITE_ENSURE_TYPES_EQ(context, input1->type, output->type);
+   57: 
+   58:   micro_context->DeallocateTempTfLiteTensor(input1);
+   59:   micro_context->DeallocateTempTfLiteTensor(input2);
+   60:   micro_context->DeallocateTempTfLiteTensor(output);
+   61: 
+   62:   return kTfLiteOk;
+   63: }
+   64: 
+   65: void* FloorModInit(TfLiteContext* context, const char* buffer, size_t length) {
+   66:   return nullptr;
+   67: }
+   68: 
+   69: TfLiteStatus FloorModPrepare(TfLiteContext* context, TfLiteNode* node) {
+   70:   return CalculateOpData(context, node);
+   71: }
+   72: 
+   73: template <typename T>
+   74: TfLiteStatus EvalFloorMod(TfLiteContext* context, bool requires_broadcast,
+   75:                           const TfLiteEvalTensor* input1,
+   76:                           const TfLiteEvalTensor* input2,
+   77:                           TfLiteEvalTensor* output) {
+   78:   const T* denominator_data = tflite::micro::GetTensorData<T>(input2);
+   79: 
+   80:   if (requires_broadcast) {
+   81:     reference_ops::BroadcastBinaryFunction4DSlow<T, T, T>(
+   82:         tflite::micro::GetTensorShape(input1),
+   83:         tflite::micro::GetTensorData<T>(input1),
+   84:         tflite::micro::GetTensorShape(input2), denominator_data,
+   85:         tflite::micro::GetTensorShape(output),
+   86:         tflite::micro::GetTensorData<T>(output), reference_ops::FloorMod<T>);
+   87:   } else {
+   88:     reference_ops::BinaryFunction<T, T, T>(
+   89:         tflite::micro::GetTensorShape(input1),
+   90:         tflite::micro::GetTensorData<T>(input1),
+   91:         tflite::micro::GetTensorShape(input2), denominator_data,
+   92:         tflite::micro::GetTensorShape(output),
+   93:         tflite::micro::GetTensorData<T>(output), reference_ops::FloorMod<T>);
+   94:   }
+   95: 
+   96:   return kTfLiteOk;
+   97: }
+   98: 
+   99: TfLiteStatus FloorModEval(TfLiteContext* context, TfLiteNode* node) {
+  100:   const TfLiteEvalTensor* input1 =
+  101:       tflite::micro::GetEvalInput(context, node, kInputTensor1);
+  102:   const TfLiteEvalTensor* input2 =
+  103:       tflite::micro::GetEvalInput(context, node, kInputTensor2);
+  104:   TfLiteEvalTensor* output =
+  105:       tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+  106: 
+  107:   bool requires_broadcast = !tflite::micro::HaveSameShapes(input1, input2);
+  108: 
+  109:   switch (input1->type) {
+  110:     case kTfLiteFloat32: {
+  111:       return EvalFloorMod<float>(context, requires_broadcast, input1, input2,
+  112:                                  output);
+  113:     }
+  114:     default: {
+  115:       MicroPrintf("Type '%s' is not supported by FLOOR_MOD.",
+  116:                   TfLiteTypeGetName(input1->type));
+  117:       return kTfLiteError;
+  118:     }
+  119:   }
+  120: }
+  121: 
+  122: }  // namespace
+  123: 
+  124: TFLMRegistration Register_FLOOR_MOD() {
+  125:   return tflite::micro::RegisterOp(FloorModInit, FloorModPrepare, FloorModEval);
+  126: }
+  127: 
+  128: }  // namespace tflite
+
+=== SUB IMPLEMENTATION ===
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc ====================
+Showing lines 1-168 of 168
+    1: /* Copyright 2021 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/micro/kernels/sub.h"
+   17: 
+   18: #include "tensorflow/lite/c/builtin_op_data.h"
+   19: #include "tensorflow/lite/c/common.h"
+   20: #include "tensorflow/lite/kernels/internal/common.h"
+   21: #include "tensorflow/lite/kernels/internal/quantization_util.h"
+   22: #include "tensorflow/lite/kernels/internal/reference/add.h"
+   23: #include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
+   24: #include "tensorflow/lite/kernels/internal/reference/sub.h"
+   25: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   26: #include "tensorflow/lite/kernels/internal/types.h"
+   27: #include "tensorflow/lite/kernels/kernel_util.h"
+   28: #include "tensorflow/lite/kernels/op_macros.h"
+   29: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   30: #include "tensorflow/lite/micro/micro_log.h"
+   31: 
+   32: namespace tflite {
+   33: 
+   34: void* SubInit(TfLiteContext* context, const char* buffer, size_t length) {
+   35:   TFLITE_DCHECK(context->AllocatePersistentBuffer != nullptr);
+   36:   return context->AllocatePersistentBuffer(context, sizeof(OpDataSub));
+   37: }
+   38: 
+   39: void EvalSub(TfLiteContext* context, TfLiteNode* node, TfLiteSubParams* params,
+   40:              const OpDataSub* data, const TfLiteEvalTensor* input1,
+   41:              const TfLiteEvalTensor* input2, TfLiteEvalTensor* output) {
+   42:   float output_activation_min, output_activation_max;
+   43:   CalculateActivationRange(params->activation, &output_activation_min,
+   44:                            &output_activation_max);
+   45:   tflite::ArithmeticParams op_params;
+   46:   SetActivationParams(output_activation_min, output_activation_max, &op_params);
+   47:   if (data->requires_broadcast) {
+   48:     tflite::reference_ops::BroadcastSubSlow(
+   49:         op_params, tflite::micro::GetTensorShape(input1),
+   50:         tflite::micro::GetTensorData<float>(input1),
+   51:         tflite::micro::GetTensorShape(input2),
+   52:         tflite::micro::GetTensorData<float>(input2),
+   53:         tflite::micro::GetTensorShape(output),
+   54:         tflite::micro::GetTensorData<float>(output));
+   55:   } else {
+   56:     tflite::reference_ops::SubWithActivation(
+   57:         op_params, tflite::micro::GetTensorShape(input1),
+   58:         tflite::micro::GetTensorData<float>(input1),
+   59:         tflite::micro::GetTensorShape(input2),
+   60:         tflite::micro::GetTensorData<float>(input2),
+   61:         tflite::micro::GetTensorShape(output),
+   62:         tflite::micro::GetTensorData<float>(output));
+   63:   }
+   64: }
+   65: 
+   66: TfLiteStatus EvalSubQuantized(TfLiteContext* context, TfLiteNode* node,
+   67:                               TfLiteSubParams* params, const OpDataSub* data,
+   68:                               const TfLiteEvalTensor* input1,
+   69:                               const TfLiteEvalTensor* input2,
+   70:                               TfLiteEvalTensor* output) {
+   71:   tflite::ArithmeticParams op_params;
+   72:   op_params.left_shift = data->left_shift;
+   73:   op_params.input1_offset = data->input1_offset;
+   74:   op_params.input1_multiplier = data->input1_multiplier;
+   75:   op_params.input1_shift = data->input1_shift;
+   76:   op_params.input2_offset = data->input2_offset;
+   77:   op_params.input2_multiplier = data->input2_multiplier;
+   78:   op_params.input2_shift = data->input2_shift;
+   79:   op_params.output_offset = data->output_offset;
+   80:   op_params.output_multiplier = data->output_multiplier;
+   81:   op_params.output_shift = data->output_shift;
+   82:   SetActivationParams(data->output_activation_min, data->output_activation_max,
+   83:                       &op_params);
+   84:   bool need_broadcast = reference_ops::ProcessBroadcastShapes(
+   85:       tflite::micro::GetTensorShape(input1),
+   86:       tflite::micro::GetTensorShape(input2), &op_params);
+   87: 
+   88:   switch (output->type) {
+   89:     case kTfLiteInt8: {
+   90:       if (need_broadcast) {
+   91:         tflite::reference_ops::BroadcastQuantSubSlow(
+   92:             op_params, tflite::micro::GetTensorShape(input1),
+   93:             tflite::micro::GetTensorData<int8_t>(input1),
+   94:             tflite::micro::GetTensorShape(input2),
+   95:             tflite::micro::GetTensorData<int8_t>(input2),
+   96:             tflite::micro::GetTensorShape(output),
+   97:             tflite::micro::GetTensorData<int8_t>(output));
+   98:       } else {
+   99:         tflite::reference_ops::Sub(
+  100:             op_params, tflite::micro::GetTensorShape(input1),
+  101:             tflite::micro::GetTensorData<int8_t>(input1),
+  102:             tflite::micro::GetTensorShape(input2),
+  103:             tflite::micro::GetTensorData<int8_t>(input2),
+  104:             tflite::micro::GetTensorShape(output),
+  105:             tflite::micro::GetTensorData<int8_t>(output));
+  106:       }
+  107:       break;
+  108:     }
+  109:     case kTfLiteInt16: {
+  110:       if (need_broadcast) {
+  111:         tflite::reference_ops::BroadcastQuantSubSlow(
+  112:             op_params, tflite::micro::GetTensorShape(input1),
+  113:             tflite::micro::GetTensorData<int16_t>(input1),
+  114:             tflite::micro::GetTensorShape(input2),
+  115:             tflite::micro::GetTensorData<int16_t>(input2),
+  116:             tflite::micro::GetTensorShape(output),
+  117:             tflite::micro::GetTensorData<int16_t>(output));
+  118:       } else {
+  119:         tflite::reference_ops::Sub(
+  120:             op_params, tflite::micro::GetTensorShape(input1),
+  121:             tflite::micro::GetTensorData<int16_t>(input1),
+  122:             tflite::micro::GetTensorShape(input2),
+  123:             tflite::micro::GetTensorData<int16_t>(input2),
+  124:             tflite::micro::GetTensorShape(output),
+  125:             tflite::micro::GetTensorData<int16_t>(output));
+  126:       }
+  127:       break;
+  128:     }
+  129:     default:
+  130:       MicroPrintf("Quantized type %s not currently supported.",
+  131:                   TfLiteTypeGetName(output->type));
+  132:       return kTfLiteError;
+  133:   }
+  134:   return kTfLiteOk;
+  135: }
+  136: 
+  137: TfLiteStatus SubEval(TfLiteContext* context, TfLiteNode* node) {
+  138:   auto* params = reinterpret_cast<TfLiteSubParams*>(node->builtin_data);
+  139: 
+  140:   const TfLiteEvalTensor* input1 =
+  141:       tflite::micro::GetEvalInput(context, node, kSubInputTensor1);
+  142:   const TfLiteEvalTensor* input2 =
+  143:       tflite::micro::GetEvalInput(context, node, kSubInputTensor2);
+  144:   TfLiteEvalTensor* output =
+  145:       tflite::micro::GetEvalOutput(context, node, kSubOutputTensor);
+  146: 
+  147:   TFLITE_DCHECK(node->user_data != nullptr);
+  148:   const OpDataSub& data = *(static_cast<const OpDataSub*>(node->user_data));
+  149: 
+  150:   if (output->type == kTfLiteFloat32) {
+  151:     EvalSub(context, node, params, &data, input1, input2, output);
+  152:   } else if (output->type == kTfLiteInt8 || output->type == kTfLiteInt16) {
+  153:     TF_LITE_ENSURE_OK(context, EvalSubQuantized(context, node, params, &data,
+  154:                                                 input1, input2, output));
+  155:   } else {
+  156:     MicroPrintf("Type %s (%d) not supported.", TfLiteTypeGetName(output->type),
+  157:                 output->type);
+  158:     return kTfLiteError;
+  159:   }
+  160: 
+  161:   return kTfLiteOk;
+  162: }
+  163: 
+  164: TFLMRegistration Register_SUB() {
+  165:   return tflite::micro::RegisterOp(SubInit, SubPrepare, SubEval);
+  166: }
+  167: 
+  168: }  // namespace tflite
+
+=== SPLIT_V IMPLEMENTATION ===
+
+==================== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/split_v.cc ====================
+Showing lines 1-127 of 127
+    1: /* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/c/builtin_op_data.h"
+   17: #include "tensorflow/lite/c/common.h"
+   18: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   19: #include "tensorflow/lite/kernels/kernel_util.h"
+   20: #include "tensorflow/lite/kernels/op_macros.h"
+   21: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   22: #include "tensorflow/lite/micro/micro_log.h"
+   23: 
+   24: namespace tflite {
+   25: 
+   26: namespace {
+   27: 
+   28: template <typename T>
+   29: TfLiteStatus SplitImpl(TfLiteContext* context, TfLiteNode* node,
+   30:                        const TfLiteEvalTensor* input, int axis_value) {
+   31:   const TfLiteIntArray* input_dims = input->dims;
+   32:   const TfLiteEvalTensor* output0 =
+   33:       tflite::micro::GetEvalOutput(context, node, 0);
+   34: 
+   35:   const int split_dimensions = input_dims->size;
+   36: 
+   37:   TFLITE_DCHECK_LT(axis_value, split_dimensions);
+   38:   TFLITE_DCHECK_EQ(output0->dims->size, split_dimensions);
+   39: 
+   40:   int64_t split_size = 0;
+   41:   const int output_count = NumOutputs(node);
+   42:   for (int i = 0; i < output_count; i++) {
+   43:     split_size +=
+   44:         tflite::micro::GetEvalOutput(context, node, i)->dims->data[axis_value];
+   45:   }
+   46:   TFLITE_DCHECK_EQ(split_size, input_dims->data[axis_value]);
+   47:   int64_t outer_size = 1;
+   48:   for (int i = 0; i < axis_value; ++i) {
+   49:     outer_size *= input_dims->data[i];
+   50:   }
+   51: 
+   52:   int64_t base_inner_size = 1;
+   53:   for (int i = axis_value + 1; i < split_dimensions; ++i) {
+   54:     base_inner_size *= input_dims->data[i];
+   55:   }
+   56: 
+   57:   const T* input_ptr = tflite::micro::GetTensorData<T>(input);
+   58:   for (int k = 0; k < outer_size; ++k) {
+   59:     for (int i = 0; i < output_count; ++i) {
+   60:       TfLiteEvalTensor* output_tensor =
+   61:           tflite::micro::GetEvalOutput(context, node, i);
+   62:       T* output_data = tflite::micro::GetTensorData<T>(output_tensor);
+   63:       const int copy_size =
+   64:           output_tensor->dims->data[axis_value] * base_inner_size;
+   65:       T* output_ptr = output_data + k * copy_size;
+   66:       for (int j = 0; j < copy_size; ++j) output_ptr[j] = input_ptr[j];
+   67:       input_ptr += copy_size;
+   68:     }
+   69:   }
+   70: 
+   71:   return kTfLiteOk;
+   72: }
+   73: 
+   74: TfLiteStatus SplitVPrepare(TfLiteContext* context, TfLiteNode* node) {
+   75:   TF_LITE_ENSURE_EQ(context, NumInputs(node), 3);
+   76: 
+   77:   MicroContext* micro_context = GetMicroContext(context);
+   78:   // Dynamic output tensors are needed if axis tensor is not constant.
+   79:   // But Micro doesn't support dynamic memory allocation, so we only support
+   80:   // constant axis tensor for now.
+   81:   TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 2);
+   82:   TF_LITE_ENSURE_MSG(context, IsConstantTensor(axis),
+   83:                      "Non constant axis tensor not supported");
+   84:   micro_context->DeallocateTempTfLiteTensor(axis);
+   85:   return kTfLiteOk;
+   86: }
+   87: 
+   88: TfLiteStatus SplitVEval(TfLiteContext* context, TfLiteNode* node) {
+   89:   const TfLiteEvalTensor* input = tflite::micro::GetEvalInput(context, node, 0);
+   90:   const TfLiteEvalTensor* axis = tflite::micro::GetEvalInput(context, node, 2);
+   91: 
+   92:   int axis_value = tflite::micro::GetTensorData<int32_t>(axis)[0];
+   93:   if (axis_value < 0) {
+   94:     axis_value += input->dims->size;
+   95:   }
+   96: 
+   97:   TF_LITE_ENSURE(context, axis_value >= 0);
+   98:   TF_LITE_ENSURE(context, axis_value < input->dims->size);
+   99: 
+  100:   switch (input->type) {
+  101:     case kTfLiteFloat32: {
+  102:       return SplitImpl<float>(context, node, input, axis_value);
+  103:     }
+  104:     case kTfLiteInt8: {
+  105:       return SplitImpl<int8_t>(context, node, input, axis_value);
+  106:     }
+  107:     case kTfLiteInt16: {
+  108:       return SplitImpl<int16_t>(context, node, input, axis_value);
+  109:     }
+  110:     case kTfLiteInt32: {
+  111:       return SplitImpl<int32_t>(context, node, input, axis_value);
+  112:     }
+  113:     default:
+  114:       MicroPrintf("Type %s currently not supported.",
+  115:                   TfLiteTypeGetName(input->type));
+  116:       return kTfLiteError;
+  117:   }
+  118:   return kTfLiteOk;
+  119: }
+  120: 
+  121: }  // namespace
+  122: 
+  123: TFLMRegistration Register_SPLIT_V() {
+  124:   return tflite::micro::RegisterOp(nullptr, SplitVPrepare, SplitVEval);
+  125: }
+  126: 
+  127: }  // namespace tflite
+
+=== EXISTING APPLICATION GATHER FILES ===
+
+==================== /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_int64_gather_20261109_095629 ====================
+Showing lines 1-315 of 315
+    1: /*
+    2:  * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+    3:  * SPDX-License-Identifier: Apache-2.0
+    4:  *
+    5:  * Application-local heat-stress TFLM operator registrations.
+    6:  */
+    7: 
+    8: #include "PolyUModel1.hpp"
+    9: 
+   10: #include <cstdint>
+   11: 
+   12: #include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+   13: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   14: #include "tensorflow/lite/micro/micro_log.h"
+   15: 
+   16: #include "mlek/log/log_macros.h"
+   17: #include "heatstroke_bidirectional_lstm.h"
+   18: 
+   19: const tflite::MicroOpResolver&
+   20: arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+   21: {
+   22:     return this->m_opResolver;
+   23: }
+   24: 
+   25: namespace
+   26: {
+   27: 
+   28: /*
+   29:  * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+   30:  * required by this implementation. Validate its options type and leave
+   31:  * builtin_data null.
+   32:  */
+   33: TfLiteStatus ParseHeatstrokeSign(
+   34:     const tflite::Operator* op,
+   35:     tflite::ErrorReporter*,
+   36:     tflite::BuiltinDataAllocator*,
+   37:     void** builtin_data)
+   38: {
+   39:     if (builtin_data != nullptr) {
+   40:         *builtin_data = nullptr;
+   41:     }
+   42: 
+   43:     if (op == nullptr ||
+   44:         op->builtin_options_type() !=
+   45:             tflite::BuiltinOptions_SignOptions) {
+   46:         return kTfLiteError;
+   47:     }
+   48: 
+   49:     return kTfLiteOk;
+   50: }
+   51: 
+   52: /*
+   53:  * Application-local INT32 SIGN implementation.
+   54:  *
+   55:  * y = -1 when x < 0
+   56:  * y =  0 when x = 0
+   57:  * y =  1 when x > 0
+   58:  *
+   59:  * No temporary buffer or scratch allocation is required.
+   60:  */
+   61: TfLiteStatus HeatstrokeSignEval(
+   62:     TfLiteContext* context,
+   63:     TfLiteNode* node)
+   64: {
+   65:     if (context == nullptr || node == nullptr) {
+   66:         return kTfLiteError;
+   67:     }
+   68: 
+   69:     const TfLiteEvalTensor* input =
+   70:         tflite::micro::GetEvalInput(context, node, 0);
+   71: 
+   72:     TfLiteEvalTensor* output =
+   73:         tflite::micro::GetEvalOutput(context, node, 0);
+   74: 
+   75:     if (input == nullptr || output == nullptr) {
+   76:         return kTfLiteError;
+   77:     }
+   78: 
+   79:     if (input->type != kTfLiteInt32 ||
+   80:         output->type != kTfLiteInt32) {
+   81:         MicroPrintf(
+   82:             "Heatstroke SIGN requires INT32 input/output. "
+   83:             "Input=%d Output=%d",
+   84:             input->type,
+   85:             output->type);
+   86:         return kTfLiteError;
+   87:     }
+   88: 
+   89:     const auto input_shape =
+   90:         tflite::micro::GetTensorShape(input);
+   91: 
+   92:     const auto output_shape =
+   93:         tflite::micro::GetTensorShape(output);
+   94: 
+   95:     const int input_count = input_shape.FlatSize();
+   96:     const int output_count = output_shape.FlatSize();
+   97: 
+   98:     if (input_count < 0 || input_count != output_count) {
+   99:         MicroPrintf(
+  100:             "Heatstroke SIGN tensor element-count mismatch.");
+  101:         return kTfLiteError;
+  102:     }
+  103: 
+  104:     const int32_t* input_data =
+  105:         tflite::micro::GetTensorData<int32_t>(input);
+  106: 
+  107:     int32_t* output_data =
+  108:         tflite::micro::GetTensorData<int32_t>(output);
+  109: 
+  110:     if (input_count > 0 &&
+  111:         (input_data == nullptr || output_data == nullptr)) {
+  112:         MicroPrintf(
+  113:             "Heatstroke SIGN received a null tensor data pointer.");
+  114:         return kTfLiteError;
+  115:     }
+  116: 
+  117:     for (int i = 0; i < input_count; ++i) {
+  118:         const int32_t value = input_data[i];
+  119: 
+  120:         output_data[i] =
+  121:             (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+  122:     }
+  123: 
+  124:     return kTfLiteOk;
+  125: }
+  126: 
+  127: TFLMRegistration RegisterHeatstrokeSignKernel()
+  128: {
+  129:     return tflite::micro::RegisterOp(
+  130:         nullptr,
+  131:         nullptr,
+  132:         HeatstrokeSignEval);
+  133: }
+  134: 
+  135: } // namespace
+  136: 
+  137: /*
+  138:  * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+  139:  * Keep its existing parser and implementation unchanged.
+  140:  */
+  141: TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+  142:     const tflite::Operator* op,
+  143:     tflite::ErrorReporter* error_reporter,
+  144:     tflite::BuiltinDataAllocator* allocator,
+  145:     void** builtin_data)
+  146: {
+  147:     return tflite::ParseOpData(
+  148:         op,
+  149:         tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+  150:         error_reporter,
+  151:         allocator,
+  152:         builtin_data);
+  153: }
+  154: 
+  155: bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+  156: {
+  157: #define HS_ADD_REQUIRED(method)                                      \
+  158:     do {                                                              \
+  159:         const TfLiteStatus status = this->m_opResolver.method();      \
+  160:         if (status != kTfLiteOk) {                                    \
+  161:             printf_err(                                               \
+  162:                 "Failed to register heat-stress operator: %s\n",     \
+  163:                 #method);                                             \
+  164:             return false;                                             \
+  165:         }                                                             \
+  166:     } while (0)
+  167: 
+  168:     /*
+  169:      * 29 ordinary built-in operators required by the exact Vela model.
+  170:      * These CPU registrations must remain available with Ethos-U enabled.
+  171:      */
+  172:     HS_ADD_REQUIRED(AddAdd);
+  173:     HS_ADD_REQUIRED(AddBroadcastArgs);
+  174:     HS_ADD_REQUIRED(AddBroadcastTo);
+  175:     HS_ADD_REQUIRED(AddCast);
+  176:     HS_ADD_REQUIRED(AddConcatenation);
+  177:     HS_ADD_REQUIRED(AddCumSum);
+  178:     HS_ADD_REQUIRED(AddDequantize);
+  179:     HS_ADD_REQUIRED(AddDiv);
+  180:     HS_ADD_REQUIRED(AddEqual);
+  181:     HS_ADD_REQUIRED(AddFloorMod);
+  182:     HS_ADD_REQUIRED(AddGather);
+  183:     HS_ADD_REQUIRED(AddGreater);
+  184:     HS_ADD_REQUIRED(AddLogicalAnd);
+  185:     HS_ADD_REQUIRED(AddLogicalNot);
+  186:     HS_ADD_REQUIRED(AddMaximum);
+  187:     HS_ADD_REQUIRED(AddMean);
+  188:     HS_ADD_REQUIRED(AddMul);
+  189:     HS_ADD_REQUIRED(AddNeg);
+  190:     HS_ADD_REQUIRED(AddQuantize);
+  191:     HS_ADD_REQUIRED(AddReshape);
+  192:     HS_ADD_REQUIRED(AddRsqrt);
+  193:     HS_ADD_REQUIRED(AddSelectV2);
+  194:     HS_ADD_REQUIRED(AddSoftmax);
+  195:     HS_ADD_REQUIRED(AddSplitV);
+  196:     HS_ADD_REQUIRED(AddSqrt);
+  197:     HS_ADD_REQUIRED(AddSquare);
+  198:     HS_ADD_REQUIRED(AddSub);
+  199:     HS_ADD_REQUIRED(AddSum);
+  200:     HS_ADD_REQUIRED(AddTopKV2);
+  201: 
+  202: #undef HS_ADD_REQUIRED
+  203: 
+  204:     /*
+  205:      * Custom SIGN registration under the built-in SIGN opcode.
+  206:      */
+  207:     {
+  208:         const TFLMRegistration registration =
+  209:             RegisterHeatstrokeSignKernel();
+  210: 
+  211:         if (this->m_opResolver.AddBuiltin(
+  212:                 tflite::BuiltinOperator_SIGN,
+  213:                 registration,
+  214:                 ParseHeatstrokeSign) != kTfLiteOk) {
+  215:             printf_err("Failed to register heat-stress SIGN.\n");
+  216:             return false;
+  217:         }
+  218:     }
+  219: 
+  220:     /*
+  221:      * Custom compact bidirectional LSTM registration.
+  222:      */
+  223:     {
+  224:         const TFLMRegistration registration =
+  225:             tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+  226: 
+  227:         if (this->m_opResolver.AddBuiltin(
+  228:                 tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+  229:                 registration,
+  230:                 ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+  231:             printf_err(
+  232:                 "Failed to register heat-stress bidirectional LSTM.\n");
+  233:             return false;
+  234:         }
+  235:     }
+  236: 
+  237:     /*
+  238:      * Ethos-U registration.
+  239:      *
+  240:      * AddEthosU() in this SDK can report success even when the hardware
+  241:      * registration is null. Therefore, explicitly verify FindOp().
+  242:      */
+  243:     if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+  244:         printf_err("Failed to add Ethos-U to the resolver.\n");
+  245:         return false;
+  246:     }
+  247: 
+  248:     const char* ethos_name = tflite::GetString_ETHOSU();
+  249: 
+  250:     if (ethos_name == nullptr ||
+  251:         this->m_opResolver.FindOp(ethos_name) == nullptr) {
+  252:         printf_err(
+  253:             "Ethos-U registration is missing from the resolver.\n");
+  254:         return false;
+  255:     }
+  256: 
+  257:     /*
+  258:      * Verify all built-in registrations and parser callbacks.
+  259:      */
+  260:     const tflite::BuiltinOperator required_ops[] = {
+  261:         tflite::BuiltinOperator_ADD,
+  262:         tflite::BuiltinOperator_BROADCAST_ARGS,
+  263:         tflite::BuiltinOperator_BROADCAST_TO,
+  264:         tflite::BuiltinOperator_CAST,
+  265:         tflite::BuiltinOperator_CONCATENATION,
+  266:         tflite::BuiltinOperator_CUMSUM,
+  267:         tflite::BuiltinOperator_DEQUANTIZE,
+  268:         tflite::BuiltinOperator_DIV,
+  269:         tflite::BuiltinOperator_EQUAL,
+  270:         tflite::BuiltinOperator_FLOOR_MOD,
+  271:         tflite::BuiltinOperator_GATHER,
+  272:         tflite::BuiltinOperator_GREATER,
+  273:         tflite::BuiltinOperator_LOGICAL_AND,
+  274:         tflite::BuiltinOperator_LOGICAL_NOT,
+  275:         tflite::BuiltinOperator_MAXIMUM,
+  276:         tflite::BuiltinOperator_MEAN,
+  277:         tflite::BuiltinOperator_MUL,
+  278:         tflite::BuiltinOperator_NEG,
+  279:         tflite::BuiltinOperator_QUANTIZE,
+  280:         tflite::BuiltinOperator_RESHAPE,
+  281:         tflite::BuiltinOperator_RSQRT,
+  282:         tflite::BuiltinOperator_SELECT_V2,
+  283:         tflite::BuiltinOperator_SIGN,
+  284:         tflite::BuiltinOperator_SOFTMAX,
+  285:         tflite::BuiltinOperator_SPLIT_V,
+  286:         tflite::BuiltinOperator_SQRT,
+  287:         tflite::BuiltinOperator_SQUARE,
+  288:         tflite::BuiltinOperator_SUB,
+  289:         tflite::BuiltinOperator_SUM,
+  290:         tflite::BuiltinOperator_TOPK_V2,
+  291:         tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+  292:     };
+  293: 
+  294:     for (const auto op : required_ops) {
+  295:         if (this->m_opResolver.FindOp(op) == nullptr) {
+  296:             printf_err(
+  297:                 "Required heat-stress builtin registration is missing: %d\n",
+  298:                 static_cast<int>(op));
+  299:             return false;
+  300:         }
+  301: 
+  302:         if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+  303:             printf_err(
+  304:                 "Required heat-stress builtin parser is missing: %d\n",
+  305:                 static_cast<int>(op));
+  306:             return false;
+  307:         }
+  308:     }
+  309: 
+  310:     info(
+  311:         "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+  312:         ethos_name);
+  313: 
+  314:     return true;
+  315: }
+
+=== APPLICATION KERNEL BUILD INTEGRATION ===
+
+==================== /home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt ====================
+Showing lines 1-236 of 236
+    1: # Copyright (C) Alif Semiconductor - All Rights Reserved.
+    2: # Use, distribution and modification of this code is permitted under the
+    3: # terms stated in the Alif Semiconductor Software License Agreement
+    4: #
+    5: # You should have received a copy of the Alif Semiconductor Software
+    6: # License Agreement with this file. If not, please write to:
+    7: # contact@alifsemi.com, or visit: https://alifsemi.com/license
+    8: 
+    9: cmake_minimum_required(VERSION 3.20.0)
+   10: 
+   11: if(NOT ospi-flash IN_LIST SNIPPET)
+   12:   set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+   13: endif()
+   14: 
+   15: # Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+   16: # so the module is not auto-discovered and must be registered explicitly. Ask
+   17: # west for the module path instead of hardcoding the workspace layout.
+   18: execute_process(
+   19:     COMMAND west list --format "{abspath}" alif-mlek
+   20:     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+   21:     OUTPUT_VARIABLE MLEK_ROOT
+   22:     OUTPUT_STRIP_TRAILING_WHITESPACE
+   23:     RESULT_VARIABLE MLEK_LIST_RESULT
+   24:     ERROR_QUIET
+   25: )
+   26: if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+   27:     message(FATAL_ERROR
+   28:         "alif-mlek module not found. Enable and fetch it first:\n"
+   29:         "  west config manifest.project-filter -- +alif-mlek\n"
+   30:         "  west update\n")
+   31: endif()
+   32: 
+   33: # Register the MLEK Zephyr port as an extra Zephyr module
+   34: list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+   35: 
+   36: # ---------------------------------------------------------------------------
+   37: # Ethos-U NPU selection
+   38: # ---------------------------------------------------------------------------
+   39: # When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+   40: # source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+   41: # that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+   42: # the build and the Ethos-U driver targets the requested NPU. This overrides the
+   43: # board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+   44: #
+   45: # The parsed value is also used to pick the correct Vela-compiled model below.
+   46: # Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+   47: if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+   48:     string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+   49:     if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+   50:         set(_npu_arch "${CMAKE_MATCH_1}")
+   51:         set(_npu_macs "${CMAKE_MATCH_2}")
+   52:         if (_npu_arch STREQUAL "u55")
+   53:             set(_npu_prefix "H")
+   54:         elseif (_npu_arch STREQUAL "u65")
+   55:             set(_npu_prefix "Y")
+   56:         elseif (_npu_arch STREQUAL "u85")
+   57:             set(_npu_prefix "Z")
+   58:         else()
+   59:             message(FATAL_ERROR
+   60:                 "Unsupported Ethos-U architecture '${_npu_arch}' in "
+   61:                 "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+   62:         endif()
+   63:         set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+   64: 
+   65:         # Feed the matching Kconfig choice into the Zephyr configuration.
+   66:         string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+   67:         set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+   68:             CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+   69:         message(STATUS
+   70:             "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+   71:             "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+   72:     else()
+   73:         message(FATAL_ERROR
+   74:             "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+   75:             "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+   76:     endif()
+   77: endif()
+   78: 
+   79: find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+   80: 
+   81: project(alif_asr)
+   82: 
+   83: # Silence "changed in GCC 7.1" warnigns from C++ headers
+   84: set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+   85: set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+   86: 
+   87: set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+   88: 
+   89: set(ML_FRAMEWORK TensorFlowLiteMicro)
+   90: 
+   91: # ---------------------------------------------------------------------------
+   92: # Build-time model and labels generation from MLEK resources
+   93: # ---------------------------------------------------------------------------
+   94: set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+   95: set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+   96:     "Path to MLEK resources (models compiled with Vela)")
+   97: setup_source_generator()
+   98: 
+   99: # Source generation output directories
+  100: set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+  101: set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+  102: file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+  103: 
+  104: message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+  105: message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+  106: 
+  107: # Determine NPU config ID based on Zephyr Kconfig.
+  108: # If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+  109: # has already been computed above. Otherwise fall back to the board Kconfig defaults.
+  110: if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+  111:     if (CONFIG_ARM_ETHOS_U85_256)
+  112:         set(ETHOS_U_NPU_CONFIG_ID "Z256")
+  113:     elseif (CONFIG_ARM_ETHOS_U55_256)
+  114:         set(ETHOS_U_NPU_CONFIG_ID "H256")
+  115:     else()
+  116:         set(ETHOS_U_NPU_CONFIG_ID "H128")
+  117:     endif()
+  118: endif()
+  119: 
+  120: # Opt-in experiment. Default remains the production model and kernel.
+  121: option(HEATSTROKE_SINGLE_STEP_EXPERIMENT
+  122:     "Use repaired Vela model and single-step BiLSTM experiment" OFF)
+  123: 
+  124: if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+  125:     set(POLYU_MODEL_PATH
+  126:         "${CMAKE_CURRENT_SOURCE_DIR}/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite"
+  127:         CACHE FILEPATH "Experimental PolyU heat-stress model" FORCE)
+  128: else()
+  129:     set(POLYU_MODEL_PATH
+  130:         "${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite"
+  131:         CACHE FILEPATH "Production PolyU heat-stress model" FORCE)
+  132: endif()
+  133: 
+  134: if (HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+  135:     set(POLYU_MODEL_PATH
+  136:         "${CMAKE_CURRENT_SOURCE_DIR}/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp.tflite"
+  137:         CACHE FILEPATH "Fused LayerNorm heat-stress experimental model" FORCE)
+  138: endif()
+  139: 
+  140: if (NOT EXISTS "${POLYU_MODEL_PATH}")
+  141:     message(FATAL_ERROR "Combined PolyU model not found: ${POLYU_MODEL_PATH}")
+  142: endif()
+  143: 
+  144: if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+  145:     set(POLYU_MODEL_SHA256_EXPECTED
+  146:         "72bf7dba9d0234458108fc413915cdb161050edccf4327dd6cf34597e1cb556a")
+  147: else()
+  148:     set(POLYU_MODEL_SHA256_EXPECTED
+  149:         "b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3")
+  150: endif()
+  151: if (HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+  152:     set(POLYU_MODEL_SHA256_EXPECTED "06455fa9d1b41e2b920485b9bfd4a1a48d68ae0474d1aa7d9558c0a0afd02125")
+  153: endif()
+  154: 
+  155: file(SHA256 "${POLYU_MODEL_PATH}" POLYU_MODEL_SHA256_ACTUAL)
+  156: if (NOT "${POLYU_MODEL_SHA256_ACTUAL}" STREQUAL "${POLYU_MODEL_SHA256_EXPECTED}")
+  157:     message(FATAL_ERROR
+  158:         "Combined PolyU model SHA256 mismatch. "
+  159:         "Expected ${POLYU_MODEL_SHA256_EXPECTED}, got ${POLYU_MODEL_SHA256_ACTUAL}")
+  160: endif()
+  161: 
+  162: message(STATUS "Using combined heat-stress model: ${POLYU_MODEL_PATH}")
+  163: message(STATUS "Combined model SHA256: ${POLYU_MODEL_SHA256_ACTUAL}")
+  164: 
+  165: # The generator output filename is the complete model filename plus .cc.
+  166: generate_model_code(
+  167:     MODEL_PATH "${POLYU_MODEL_PATH}"
+  168:     DESTINATION "${SRC_GEN_DIR}"
+  169:     NAMESPACE "arm" "app" "polyu_heatstroke")
+  170: 
+  171: get_filename_component(POLYU_MODEL_FILENAME "${POLYU_MODEL_PATH}" NAME)
+  172: set(POLYU_MODEL_CPP "${SRC_GEN_DIR}/${POLYU_MODEL_FILENAME}.cc")
+  173: set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+  174: 
+  175: # Application-local includes for the heat-stress TFLM model.
+  176: target_include_directories(app PRIVATE
+  177:     src/application/main/include
+  178:     src/use_case/alif_asr/include
+  179:     src/power
+  180:     "${INC_GEN_DIR}"
+  181: )
+  182: 
+  183: target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+  184: 
+  185: 
+  186: if (CONFIG_USE_APP_MENU)
+  187: target_compile_definitions(app PRIVATE USE_APP_MENU)
+  188: endif()
+  189: 
+  190: target_sources(app PRIVATE
+  191:     src/application/main/Main.cc
+  192:     src/use_case/alif_asr/src/MainLoop.cc
+  193:     src/use_case/alif_asr/src/reverse_v2.cc
+  194:     src/use_case/alif_asr/src/PolyUModel1.cc
+  195:     src/power/power_mgr.c
+  196:     "${POLYU_MODEL_CPP}"
+  197: )
+  198: 
+  199: if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+  200:     target_sources(app PRIVATE
+  201:         src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc)
+  202:     target_compile_definitions(app PRIVATE
+  203:         HEATSTROKE_SINGLE_STEP_EXPERIMENT=1)
+  204: else()
+  205:     target_sources(app PRIVATE
+  206:         src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc)
+  207: endif()
+  208: 
+  209: set(SRC_MAIN "src/application/main/Main.cc")
+  210: 
+  211: list(APPEND SRC_MAIN_DEFS
+  212:     "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+  213:     "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+  214:     "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+  215: 
+  216: set_source_files_properties(${SRC_MAIN}
+  217:     PROPERTIES COMPILE_DEFINITIONS
+  218:     "${SRC_MAIN_DEFS}")
+  219: 
+  220: target_link_libraries(app PRIVATE
+  221:     mlek::ml_framework_impl
+  222: )
+  223: 
+  224: # Optional application-local fused LayerNorm/quantization kernel.
+  225: # Default builds do not compile or register this experimental operator.
+  226: option(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT
+  227:        "Compile the fused LayerNorm quantization experiment" OFF)
+  228: 
+  229: if (HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+  230:     target_sources(app PRIVATE
+  231:         ${CMAKE_CURRENT_SOURCE_DIR}/src/use_case/alif_asr/src/heatstroke_fused_layernorm.cc
+  232:     )
+  233:     target_compile_definitions(app PRIVATE
+  234:         HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT=1
+  235:     )
+  236: endif()
+
+=== INT64 OPERATOR TYPES AND VERSIONS ===
+
+Operator #21: CAST, version=1
+  in: tensor=14, name=bitwise_not, type=BOOL, shape=[1, 900, 6]
+  out: tensor=31, name=convert_element_type_default_1, type=INT64, shape=[1, 900, 6]
+
+Operator #22: SUM, version=1
+  in: tensor=31, name=convert_element_type_default_1, type=INT64, shape=[1, 900, 6]
+  in: tensor=32, name=axes, type=INT32, shape=[1]
+  out: tensor=33, name=sum_1, type=INT64, shape=[1, 6]
+
+Operator #23: MAXIMUM, version=1
+  in: tensor=33, name=sum_1, type=INT64, shape=[1, 6]
+  in: tensor=34, name=val_39, type=INT64, shape=[]
+  out: tensor=35, name=clamp, type=INT64, shape=[1, 6]
+
+Operator #25: MUL, version=1
+  in: tensor=38, name=convert_element_type_default_2, type=INT64, shape=[1, 1800, 1]
+  in: tensor=37, name=unsqueeze, type=INT64, shape=[1, 1, 6]
+  out: tensor=39, name=mul_1, type=INT64, shape=[1, 1800, 6]
+
+Operator #26: FLOOR_MOD, version=1
+  in: tensor=39, name=mul_1, type=INT64, shape=[1, 1800, 6]
+  in: tensor=40, name=val_46, type=INT64, shape=[]
+  out: tensor=41, name=val_60, type=INT64, shape=[1, 1800, 6]
+
+Operator #27: CAST, version=1
+  in: tensor=41, name=val_60, type=INT64, shape=[1, 1800, 6]
+  out: tensor=42, name=val_61, type=BOOL, shape=[1, 1800, 6]
+
+Operator #28: CAST, version=1
+  in: tensor=39, name=mul_1, type=INT64, shape=[1, 1800, 6]
+  out: tensor=43, name=node_Div_64_input_0_int32, type=INT32, shape=[1, 1800, 6]
+
+Operator #30: CAST, version=1
+  in: tensor=44, name=node_Sign_56_output_int32, type=INT32, shape=[1, 1800, 6]
+  out: tensor=45, name=val_56, type=INT64, shape=[1, 1800, 6]
+
+Operator #34: CAST, version=1
+  in: tensor=48, name=val_62, type=BOOL, shape=[1, 1800, 6]
+  out: tensor=49, name=val_63, type=INT64, shape=[1, 1800, 6]
+
+Operator #36: CAST, version=1
+  in: tensor=51, name=node_Div_64_output_int32, type=INT32, shape=[1, 1800, 6]
+  out: tensor=52, name=val_64, type=INT64, shape=[1, 1800, 6]
+
+Operator #37: SUB, version=1
+  in: tensor=52, name=val_64, type=INT64, shape=[1, 1800, 6]
+  in: tensor=49, name=val_63, type=INT64, shape=[1, 1800, 6]
+  out: tensor=53, name=floor_divide, type=INT64, shape=[1, 1800, 6]
+
+Operator #38: MUL, version=1
+  in: tensor=54, name=convert_element_type_default_3, type=INT64, shape=[1, 1800, 1]
+  in: tensor=37, name=unsqueeze, type=INT64, shape=[1, 1, 6]
+  out: tensor=55, name=mul_2, type=INT64, shape=[1, 1800, 6]
+
+Operator #40: SUB, version=1
+  in: tensor=56, name=add_2, type=INT64, shape=[1, 1800, 6]
+  in: tensor=34, name=val_39, type=INT64, shape=[]
+  out: tensor=57, name=sub, type=INT64, shape=[1, 1800, 6]
+
+Operator #41: FLOOR_MOD, version=1
+  in: tensor=57, name=sub, type=INT64, shape=[1, 1800, 6]
+  in: tensor=40, name=val_46, type=INT64, shape=[]
+  out: tensor=58, name=val_69, type=INT64, shape=[1, 1800, 6]
+
+Operator #42: CAST, version=1
+  in: tensor=58, name=val_69, type=INT64, shape=[1, 1800, 6]
+  out: tensor=59, name=val_70, type=BOOL, shape=[1, 1800, 6]
+
+Operator #43: CAST, version=1
+  in: tensor=57, name=sub, type=INT64, shape=[1, 1800, 6]
+  out: tensor=60, name=node_Div_73_input_0_int32, type=INT32, shape=[1, 1800, 6]
+
+Operator #45: CAST, version=1
+  in: tensor=61, name=node_Sign_65_output_int32, type=INT32, shape=[1, 1800, 6]
+  out: tensor=62, name=val_65, type=INT64, shape=[1, 1800, 6]
+
+Operator #49: CAST, version=1
+  in: tensor=65, name=val_71, type=BOOL, shape=[1, 1800, 6]
+  out: tensor=66, name=val_72, type=INT64, shape=[1, 1800, 6]
+
+Operator #51: CAST, version=1
+  in: tensor=67, name=node_Div_73_output_int32, type=INT32, shape=[1, 1800, 6]
+  out: tensor=68, name=val_73, type=INT64, shape=[1, 1800, 6]
+
+Operator #52: SUB, version=1
+  in: tensor=68, name=val_73, type=INT64, shape=[1, 1800, 6]
+  in: tensor=66, name=val_72, type=INT64, shape=[1, 1800, 6]
+  out: tensor=69, name=floor_divide_1, type=INT64, shape=[1, 1800, 6]
+
+Operator #53: SUB, version=1
+  in: tensor=69, name=floor_divide_1, type=INT64, shape=[1, 1800, 6]
+  in: tensor=53, name=floor_divide, type=INT64, shape=[1, 1800, 6]
+  out: tensor=70, name=sub_1, type=INT64, shape=[1, 1800, 6]
+
+Operator #54: MAXIMUM, version=1
+  in: tensor=70, name=sub_1, type=INT64, shape=[1, 1800, 6]
+  in: tensor=34, name=val_39, type=INT64, shape=[]
+  out: tensor=71, name=clamp_1, type=INT64, shape=[1, 1800, 6]
+
+Operator #55: CAST, version=1
+  in: tensor=71, name=clamp_1, type=INT64, shape=[1, 1800, 6]
+  out: tensor=72, name=_to_copy_2, type=FLOAT32, shape=[1, 1800, 6]
+
+Operator #56: SPLIT_V, version=1
+  in: tensor=53, name=floor_divide, type=INT64, shape=[1, 1800, 6]
+  in: tensor=73, name=node_gather_1_split_sizes, type=INT64, shape=[6]
+  in: tensor=74, name=split_dim_1, type=INT32, shape=[]
+  out: tensor=75, name=node_gather_1_index_ch0, type=INT64, shape=[1, 1800, 1]
+  out: tensor=76, name=node_gather_1_index_ch1, type=INT64, shape=[1, 1800, 1]
+  out: tensor=77, name=node_gather_1_index_ch2, type=INT64, shape=[1, 1800, 1]
+  out: tensor=78, name=node_gather_1_index_ch3, type=INT64, shape=[1, 1800, 1]
+  out: tensor=79, name=node_gather_1_index_ch4, type=INT64, shape=[1, 1800, 1]
+  out: tensor=80, name=node_gather_1_index_ch5, type=INT64, shape=[1, 1800, 1]
+
+Operator #59: CAST, version=1
+  in: tensor=83, name=bitwise_not_1, type=BOOL, shape=[1, 900, 6]
+  out: tensor=84, name=_to_copy, type=INT64, shape=[1, 900, 6]
+
+Operator #60: MUL, version=1
+  in: tensor=84, name=_to_copy, type=INT64, shape=[1, 900, 6]
+  in: tensor=85, name=val_19, type=INT64, shape=[]
+  out: tensor=86, name=mul, type=INT64, shape=[1, 900, 6]
+
+Operator #62: CAST, version=1
+  in: tensor=88, name=add, type=INT64, shape=[1, 900, 6]
+  out: tensor=89, name=topk_input_float32, type=FLOAT32, shape=[1, 900, 6]
+
+Operator #70: SPLIT_V, version=1
+  in: tensor=69, name=floor_divide_1, type=INT64, shape=[1, 1800, 6]
+  in: tensor=102, name=node_gather_2_split_sizes, type=INT64, shape=[6]
+  in: tensor=103, name=split_dim_2, type=INT32, shape=[]
+  out: tensor=104, name=node_gather_2_index_ch0, type=INT64, shape=[1, 1800, 1]
+  out: tensor=105, name=node_gather_2_index_ch1, type=INT64, shape=[1, 1800, 1]
+  out: tensor=106, name=node_gather_2_index_ch2, type=INT64, shape=[1, 1800, 1]
+  out: tensor=107, name=node_gather_2_index_ch3, type=INT64, shape=[1, 1800, 1]
+  out: tensor=108, name=node_gather_2_index_ch4, type=INT64, shape=[1, 1800, 1]
+  out: tensor=109, name=node_gather_2_index_ch5, type=INT64, shape=[1, 1800, 1]
+
+Operator #106: SPLIT_V, version=1
+  in: tensor=171, name=getitem_1_casted, type=INT32, shape=[1, 900, 6]
+  in: tensor=172, name=node_gather_split_sizes, type=INT64, shape=[6]
+  in: tensor=173, name=split_dim_0, type=INT32, shape=[]
+  out: tensor=174, name=node_gather_index_ch0, type=INT32, shape=[1, 900, 1]
+  out: tensor=175, name=node_gather_index_ch1, type=INT32, shape=[1, 900, 1]
+  out: tensor=176, name=node_gather_index_ch2, type=INT32, shape=[1, 900, 1]
+  out: tensor=177, name=node_gather_index_ch3, type=INT32, shape=[1, 900, 1]
+  out: tensor=178, name=node_gather_index_ch4, type=INT32, shape=[1, 900, 1]
+  out: tensor=179, name=node_gather_index_ch5, type=INT32, shape=[1, 900, 1]
+
+Operator #125: GATHER, version=1
+  in: tensor=213, name=node_gather_1_data_1d_0_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=82, name=node_gather_1_indices_1d_0, type=INT64, shape=[1800]
+  out: tensor=214, name=node_gather_1_gather_0_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #127: GATHER, version=1
+  in: tensor=216, name=node_gather_1_data_1d_1_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=93, name=node_gather_1_indices_1d_1, type=INT64, shape=[1800]
+  out: tensor=217, name=node_gather_1_gather_1_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #129: GATHER, version=1
+  in: tensor=219, name=node_gather_1_data_1d_2_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=95, name=node_gather_1_indices_1d_2, type=INT64, shape=[1800]
+  out: tensor=220, name=node_gather_1_gather_2_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #131: GATHER, version=1
+  in: tensor=222, name=node_gather_1_data_1d_3_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=97, name=node_gather_1_indices_1d_3, type=INT64, shape=[1800]
+  out: tensor=223, name=node_gather_1_gather_3_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #133: GATHER, version=1
+  in: tensor=225, name=node_gather_1_data_1d_4_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=99, name=node_gather_1_indices_1d_4, type=INT64, shape=[1800]
+  out: tensor=226, name=node_gather_1_gather_4_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #135: GATHER, version=1
+  in: tensor=228, name=node_gather_1_data_1d_5_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=101, name=node_gather_1_indices_1d_5, type=INT64, shape=[1800]
+  out: tensor=229, name=node_gather_1_gather_5_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #137: GATHER, version=1
+  in: tensor=231, name=node_gather_2_data_1d_0_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=111, name=node_gather_2_indices_1d_0, type=INT64, shape=[1800]
+  out: tensor=232, name=node_gather_2_gather_0_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #139: GATHER, version=1
+  in: tensor=234, name=node_gather_2_data_1d_1_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=113, name=node_gather_2_indices_1d_1, type=INT64, shape=[1800]
+  out: tensor=235, name=node_gather_2_gather_1_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #141: GATHER, version=1
+  in: tensor=237, name=node_gather_2_data_1d_2_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=115, name=node_gather_2_indices_1d_2, type=INT64, shape=[1800]
+  out: tensor=238, name=node_gather_2_gather_2_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #143: GATHER, version=1
+  in: tensor=240, name=node_gather_2_data_1d_3_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=117, name=node_gather_2_indices_1d_3, type=INT64, shape=[1800]
+  out: tensor=241, name=node_gather_2_gather_3_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #145: GATHER, version=1
+  in: tensor=243, name=node_gather_2_data_1d_4_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=119, name=node_gather_2_indices_1d_4, type=INT64, shape=[1800]
+  out: tensor=244, name=node_gather_2_gather_4_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #147: GATHER, version=1
+  in: tensor=246, name=node_gather_2_data_1d_5_DequantizeLinear_Output, type=INT8, shape=[901]
+  in: tensor=121, name=node_gather_2_indices_1d_5, type=INT64, shape=[1800]
+  out: tensor=247, name=node_gather_2_gather_5_DequantizeLinear_Output, type=INT8, shape=[1800]
+
+Operator #153: GATHER, version=1
+  in: tensor=254, name=where_DequantizeLinear_Output_6, type=INT8, shape=[1, 1800, 6]
+  in: tensor=122, name=val_1, type=INT64, shape=[]
+  out: tensor=255, name=select_DequantizeLinear_Output, type=INT8, shape=[1, 1800]
+
+Operator #155: GATHER, version=1
+  in: tensor=254, name=where_DequantizeLinear_Output_6, type=INT8, shape=[1, 1800, 6]
+  in: tensor=34, name=val_39, type=INT64, shape=[]
+  out: tensor=257, name=select_1_DequantizeLinear_Output, type=INT8, shape=[1, 1800]
+
+Operator #157: GATHER, version=1
+  in: tensor=254, name=where_DequantizeLinear_Output_6, type=INT8, shape=[1, 1800, 6]
+  in: tensor=259, name=val_89, type=INT64, shape=[]
+  out: tensor=260, name=select_2_DequantizeLinear_Output, type=INT8, shape=[1, 1800]
+
+Operator #159: GATHER, version=1
+  in: tensor=254, name=where_DequantizeLinear_Output_6, type=INT8, shape=[1, 1800, 6]
+  in: tensor=262, name=val_90, type=INT64, shape=[]
+  out: tensor=263, name=select_3_DequantizeLinear_Output, type=INT8, shape=[1, 1800]
+
+Operator #161: GATHER, version=1
+  in: tensor=254, name=where_DequantizeLinear_Output_6, type=INT8, shape=[1, 1800, 6]
+  in: tensor=265, name=val_91, type=INT64, shape=[]
+  out: tensor=266, name=select_4_DequantizeLinear_Output, type=INT8, shape=[1, 1800]
+
+Operator #163: GATHER, version=1
+  in: tensor=254, name=where_DequantizeLinear_Output_6, type=INT8, shape=[1, 1800, 6]
+  in: tensor=268, name=val_92, type=INT64, shape=[]
+  out: tensor=269, name=select_5_DequantizeLinear_Output, type=INT8, shape=[1, 1800]
+
+=== PREFLIGHT COMPLETE ===
