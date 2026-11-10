@@ -1,0 +1,718 @@
+=== MODEL CLASS DEFINITIONS ===
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:212-242 ---
+  212: class StaticCombinedModel(nn.Module):
+  213:     """One end-to-end model: static regression -> restore -> classification."""
+  214: 
+  215:     def __init__(self, reg_model, cla_model):
+  216:         super().__init__()
+  217:         self.reg_model = reg_model
+  218:         self.cla_model = cla_model
+  219: 
+  220:     def forward(self, x_values, missing_mask, x_mark, worker_features):
+  221:         # The input x_values must contain zero at missing positions. The
+  222:         # separate mask carries missingness, avoiding -999x values in INT8.
+  223:         mask = missing_mask > 0.5
+  224: 
+  225:         reg_prediction = self.reg_model(
+  226:             x_values,
+  227:             mask,
+  228:             x_mark,
+  229:             worker_features[:, :REG_WORKER_FEATURES],
+  230:         )
+  231: 
+  232:         restored_sequence = torch.where(mask, reg_prediction, x_values)
+  233: 
+  234:         rpe_logits, psi_logits = self.cla_model(
+  235:             restored_sequence,
+  236:             x_mark_enc=None,  # Cla_Model's original forward does not use it.
+  237:             one_hot_x=worker_features[:, :CLA_WORKER_FEATURES],
+  238:             device=x_values.device,
+  239:         )
+  240:         return rpe_logits, psi_logits
+  241: 
+  242: 
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/convert.py:88-201 ---
+   88: class Reg_Model(nn.Module):
+   89:     def __init__(self):
+   90:         super(Reg_Model, self).__init__()
+   91:         self.seq_len = 900
+   92:         # self.target_length = configs.seq_len
+   93:         self.non_seq_len = 18
+   94:         self.seq_feature_num = 6
+   95:         self.time_feature_num = 3
+   96:         self.hidden_dim1 = 256
+   97:         self.e_layers = 1
+   98:         self.dropout = 0.1
+   99:         self.batch_first = True
+  100:         self.rnn_type = 'BiLSTM'
+  101:         bidirectional = True if 'Bi' in self.rnn_type else False
+  102:         if self.non_seq_len > 0:
+  103:             self.non_seq_enc = torch.nn.Linear(self.non_seq_len, self.seq_len)
+  104: 
+  105:         # single variate feature
+  106:         self.compact_seq_len = self.seq_len * 2
+  107:         svf = []
+  108:         for i in range(self.seq_feature_num):
+  109:             svf.append(nn.Linear(self.compact_seq_len, self.seq_len, bias=True))
+  110:         self.svf = nn.ModuleList(svf)
+  111: 
+  112:         # cross-variate features
+  113:         self.cvf = nn.Sequential(
+  114:             nn.Conv1d(self.seq_feature_num, 16, kernel_size=3, stride=1, padding=1, padding_mode='reflect', bias=True),
+  115:             nn.Conv1d(16, 32, kernel_size=5, stride=1, padding=2, padding_mode='reflect', bias=True),
+  116:             nn.LayerNorm(self.seq_len),
+  117:             nn.GELU(),
+  118:             nn.Conv1d(32, 64, kernel_size=7, stride=1, padding=3, padding_mode='reflect', bias=True),
+  119:             nn.Conv1d(64, 128, kernel_size=9, stride=1, padding=4, padding_mode='reflect', bias=True),
+  120:             nn.LayerNorm(self.seq_len),
+  121:             nn.GELU(),
+  122:             nn.Conv1d(128, self.seq_feature_num, kernel_size=11, stride=1, padding=5, padding_mode='reflect', bias=True),
+  123:         )
+  124: 
+  125:         # rnn encoder
+  126:         rnn_input_size = self.seq_feature_num * 2 + self.time_feature_num + (1 if self.non_seq_len > 0 else 0)
+  127:         if 'GRU' in self.rnn_type:
+  128:             RNN = nn.GRU
+  129:         else:
+  130:             RNN = nn.LSTM
+  131:         self.rnn = RNN(rnn_input_size, int(self.hidden_dim1 / 2), self.e_layers, batch_first=self.batch_first, bidirectional=bidirectional, bias=True)
+  132: 
+  133:         # projector
+  134:         dim_in = self.hidden_dim1 if bidirectional else int(self.hidden_dim1 / 2)
+  135:         proj = []
+  136:         for i in range(self.seq_feature_num):
+  137:             proj.append(
+  138:                 nn.Sequential(
+  139:                     nn.Linear(dim_in, int(self.hidden_dim1 / 2)),
+  140:                     nn.LayerNorm(int(self.hidden_dim1 / 2)),
+  141:                     nn.GELU(),
+  142:                     nn.Dropout(self.dropout),
+  143:                     nn.Linear(int(self.hidden_dim1 / 2), 1)
+  144:                 )
+  145:             )
+  146:         self.proj = nn.ModuleList(proj)
+  147: 
+  148:     def forward(self, x, x_mark_enc=None, one_hot_x=None, device='cpu'):
+  149:         B, L, N = x.shape
+  150:         missing_mask = (x == -9997) | (x == -9998) | (x == -9999)
+  151:         
+  152:         if self.non_seq_len > 0:
+  153:             non_seq_enc_out = self.non_seq_enc(one_hot_x)
+  154:         else:
+  155:             non_seq_enc_out = None
+  156:         if x_mark_enc is not None and non_seq_enc_out is not None:
+  157:             x_mark_enc = torch.cat((x_mark_enc, non_seq_enc_out.view(B, -1, 1)), dim=2)
+  158: 
+  159:         # --- Vectorized Single Variate Feature (SVF) processing ---
+  160:         # Use torch.where instead of in-place boolean indexing to avoid JAX non-concrete index errors
+  161:         x_masked = torch.where(missing_mask, torch.zeros_like(x), x)
+  162:         
+  163:         # Reshape to (B * N, 1, L) for batch-wise 1D adaptive average pooling
+  164:         x_pooled_input = x_masked.permute(0, 2, 1).reshape(B * N, 1, L)
+  165:         x_pooled = nn.functional.adaptive_avg_pool1d(x_pooled_input, self.compact_seq_len)
+  166:         
+  167:         # Reshape back to (B, compact_seq_len, N)
+  168:         a = x_pooled.reshape(B, N, self.compact_seq_len).permute(0, 2, 1)
+  169: 
+  170:         svf_out = []
+  171:         for i, l in enumerate(self.svf):
+  172:             svf_out.append(l(a[:, :, i]))
+  173:         svf_enc = torch.stack(svf_out, dim=2)
+  174:         
+  175:         # Also replace subsequent conditional assignments using torch.where for safety
+  176:         svf_enc = torch.where(missing_mask, torch.zeros_like(svf_enc), svf_enc)
+  177: 
+  178:         # cross-variate features
+  179:         b = x.clone()
+  180:         b = torch.where(missing_mask, torch.full_like(b, float('nan')), b)
+  181:         means = torch.tile(torch.nanmean(b, dim=1).unsqueeze(1), (1, self.seq_len, 1))
+  182:         b = torch.where(missing_mask, means, b)
+  183:         b = torch.nan_to_num(b, nan=0.0)
+  184:         cvf_enc = self.cvf(b.permute(0, 2, 1)).permute(0, 2, 1)
+  185:         cvf_enc = torch.where(missing_mask, torch.zeros_like(cvf_enc), cvf_enc)
+  186: 
+  187:         # rnn features
+  188:         c = torch.where(missing_mask, torch.zeros_like(x), x)
+  189:         emb = torch.cat(((svf_enc + cvf_enc) / 2, c), dim=2)
+  190:         if x_mark_enc is not None:
+  191:             emb = torch.cat((emb, x_mark_enc), dim=2)
+  192:         enc, _ = self.rnn(emb)
+  193: 
+  194:         # projector
+  195:         out = []
+  196:         for i, l in enumerate(self.proj):
+  197:             out.append(l(enc).reshape(B, L))
+  198:         out = torch.stack(out, dim=2)
+  199: 
+  200:         return out
+  201: 
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/oa_combine_models.py:31-111 ---
+   31: class CombinedModel(nn.Module):
+   32:     """
+   33:     End-to-end pipeline:
+   34:       x_reg -> Reg_Model -> restore observed values -> Cla_Model
+   35:     """
+   36: 
+   37:     def __init__(self, reg_model: nn.Module, cla_model: nn.Module):
+   38:         super().__init__()
+   39:         self.reg_model = reg_model
+   40:         self.cla_model = cla_model
+   41: 
+   42:     def forward(self, x_original, x_reg, x_mark, worker_features):
+   43:         """
+   44:         Args:
+   45:             x_original:
+   46:                 Original sequence before artificial missing-value masking,
+   47:                 shape [B, 900, 6]. This corresponds to batch_x1_1.
+   48:             x_reg:
+   49:                 Sequence containing missing-value markers, shape [B, 900, 6].
+   50:                 This corresponds to batch_x1_2.
+   51:             x_mark:
+   52:                 Time features, shape [B, 900, 3].
+   53:             worker_features:
+   54:                 Encoded worker features, shape [B, 30]. The first 18 values
+   55:                 are used by Reg_Model and all 30 by Cla_Model.
+   56: 
+   57:         Returns:
+   58:             rpe_logits: [B, 4]
+   59:             psi_logits: [B, 4]
+   60:         """
+   61:         if x_original.shape != x_reg.shape:
+   62:             raise ValueError(
+   63:                 f"x_original and x_reg must have identical shapes; "
+   64:                 f"got {tuple(x_original.shape)} and {tuple(x_reg.shape)}"
+   65:             )
+   66:         if x_reg.ndim != 3 or x_reg.shape[1:] != (900, 6):
+   67:             raise ValueError(
+   68:                 f"Expected x_reg shape [B, 900, 6], got {tuple(x_reg.shape)}"
+   69:             )
+   70:         if x_mark.shape != (x_reg.shape[0], 900, 3):
+   71:             raise ValueError(
+   72:                 f"Expected x_mark shape [B, 900, 3], got {tuple(x_mark.shape)}"
+   73:             )
+   74:         if worker_features.ndim != 2 or worker_features.shape[1] < 30:
+   75:             raise ValueError(
+   76:                 "worker_features must have shape [B, >=30]; "
+   77:                 f"got {tuple(worker_features.shape)}"
+   78:             )
+   79: 
+   80:         # Regression model uses the first 18 encoded worker features.
+   81:         # Pass the input device explicitly because Reg_Model creates a zero
+   82:         # tensor on the supplied device for a completely missing channel.
+   83:         reg_prediction = self.reg_model(
+   84:             x_reg,
+   85:             x_mark_enc=x_mark,
+   86:             one_hot_x=worker_features[:, :18],
+   87:             device=x_reg.device,
+   88:         )
+   89: 
+   90:         # Match the original run.py behavior:
+   91:         # retain original values wherever x_reg is not a missing marker;
+   92:         # use regression predictions only at -9997/-9998/-9999 positions.
+   93:         missing_mask = (
+   94:             (x_reg == -9997)
+   95:             | (x_reg == -9998)
+   96:             | (x_reg == -9999)
+   97:         )
+   98:         restored_sequence = torch.where(
+   99:             missing_mask, reg_prediction, x_original
+  100:         )
+  101: 
+  102:         # Classification model uses all 30 encoded worker features.
+  103:         rpe_logits, psi_logits = self.cla_model(
+  104:             restored_sequence,
+  105:             x_mark_enc=x_mark,
+  106:             one_hot_x=worker_features[:, :30],
+  107:             device=x_reg.device,
+  108:         )
+  109:         return rpe_logits, psi_logits
+  110: 
+  111: 
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/run.py:87-203 ---
+   87: class Reg_Model(nn.Module):
+   88:     def __init__(self):
+   89:         super(Reg_Model, self).__init__()
+   90:         self.seq_len = 900
+   91:         # self.target_length = configs.seq_len
+   92:         self.non_seq_len = 18
+   93:         self.seq_feature_num = 6
+   94:         self.time_feature_num = 3
+   95:         self.hidden_dim1 = 256
+   96:         self.e_layers = 1
+   97:         self.dropout = 0.1
+   98:         self.batch_first = True
+   99:         self.rnn_type = 'BiLSTM'
+  100:         bidirectional = True if 'Bi' in self.rnn_type else False
+  101:         if self.non_seq_len > 0:
+  102:             self.non_seq_enc = torch.nn.Linear(self.non_seq_len, self.seq_len)
+  103: 
+  104:         # single variate feature
+  105:         self.compact_seq_len = self.seq_len * 2
+  106:         svf = []
+  107:         for i in range(self.seq_feature_num):
+  108:             svf.append(nn.Linear(self.compact_seq_len, self.seq_len, bias=True))
+  109:         self.svf = nn.ModuleList(svf)
+  110: 
+  111:         # cross-variate features
+  112:         self.cvf = nn.Sequential(
+  113:             nn.Conv1d(self.seq_feature_num, 16, kernel_size=3, stride=1, padding=1, padding_mode='reflect', bias=True),
+  114:             nn.Conv1d(16, 32, kernel_size=5, stride=1, padding=2, padding_mode='reflect', bias=True),
+  115:             nn.LayerNorm(self.seq_len),
+  116:             nn.GELU(),
+  117:             nn.Conv1d(32, 64, kernel_size=7, stride=1, padding=3, padding_mode='reflect', bias=True),
+  118:             nn.Conv1d(64, 128, kernel_size=9, stride=1, padding=4, padding_mode='reflect', bias=True),
+  119:             nn.LayerNorm(self.seq_len),
+  120:             nn.GELU(),
+  121:             nn.Conv1d(128, self.seq_feature_num, kernel_size=11, stride=1, padding=5, padding_mode='reflect', bias=True),
+  122:         )
+  123: 
+  124:         # rnn encoder
+  125:         rnn_input_size = self.seq_feature_num * 2 + self.time_feature_num + (1 if self.non_seq_len > 0 else 0)
+  126:         if 'GRU' in self.rnn_type:
+  127:             RNN = nn.GRU
+  128:         else:
+  129:             RNN = nn.LSTM
+  130:         self.rnn = RNN(rnn_input_size, int(self.hidden_dim1 / 2), self.e_layers, batch_first=self.batch_first, bidirectional=bidirectional, bias=True)
+  131: 
+  132:         # projector
+  133:         dim_in = self.hidden_dim1 if bidirectional else int(self.hidden_dim1 / 2)
+  134:         proj = []
+  135:         for i in range(self.seq_feature_num):
+  136:             proj.append(
+  137:                 nn.Sequential(
+  138:                     nn.Linear(dim_in, int(self.hidden_dim1 / 2)),
+  139:                     nn.LayerNorm(int(self.hidden_dim1 / 2)),
+  140:                     nn.GELU(),
+  141:                     nn.Dropout(self.dropout),
+  142:                     nn.Linear(int(self.hidden_dim1 / 2), 1)
+  143:                 )
+  144:             )
+  145:         self.proj = nn.ModuleList(proj)
+  146: 
+  147:     def forward(self, x, x_mark_enc=None, one_hot_x=None, device='cpu'):
+  148:         B, L, N = x.shape
+  149:         missing_mask = (x == -9997) | (x == -9998) | (x == -9999)
+  150:         if self.non_seq_len > 0:
+  151:             non_seq_enc_out = self.non_seq_enc(one_hot_x)
+  152:         else:
+  153:             non_seq_enc_out = None
+  154:         if x_mark_enc is not None and non_seq_enc_out is not None:
+  155:             x_mark_enc = torch.cat((x_mark_enc, non_seq_enc_out.view(B, -1, 1)), dim=2)
+  156: 
+  157:         # single variate feature
+  158:         a = []
+  159:         svf_out = []
+  160:         for b in range(B):
+  161:             aa = []
+  162:             for n in range(N):
+  163:                 bnx = x[b: b + 1, :, n: n + 1]
+  164:                 non_missing_mask = (bnx != -9997) & (bnx != -9998) & (bnx != -9999)
+  165:                 bnx = bnx[non_missing_mask]
+  166:                 if len(bnx) > 0:
+  167:                     aa.append(nn.functional.adaptive_avg_pool1d(bnx.reshape(1, 1, -1), self.compact_seq_len).reshape(
+  168:                         self.compact_seq_len))
+  169:                 else:
+  170:                     aa.append(torch.zeros((self.compact_seq_len,)).to(device))
+  171:             a.append(torch.stack(aa, dim=1))
+  172:         a = torch.stack(a, dim=0)
+  173:         for i, l in enumerate(self.svf):
+  174:             svf_out.append(l(a[:, :, i]))
+  175:         svf_enc = torch.stack(svf_out, dim=2)
+  176:         svf_enc[~missing_mask] = 0.0
+  177: 
+  178:         # cross-variate features
+  179:         b = x.clone()
+  180:         b[missing_mask] = np.nan
+  181:         means = torch.tile(torch.nanmean(b, dim=1).unsqueeze(1), (1, self.seq_len, 1))
+  182:         b[missing_mask] = means[missing_mask]
+  183:         b = torch.nan_to_num(b, nan=0.0)
+  184:         cvf_enc = self.cvf(b.permute(0, 2, 1)).permute(0, 2, 1)
+  185:         cvf_enc[~missing_mask] = 0.0
+  186: 
+  187:         # rnn features
+  188:         c = x.clone()
+  189:         c[missing_mask] = 0.0
+  190:         emb = torch.cat(((svf_enc + cvf_enc) / 2, c), dim=2)
+  191:         if x_mark_enc is not None:
+  192:             emb = torch.cat((emb, x_mark_enc), dim=2)
+  193:         enc, _ = self.rnn(emb)
+  194: 
+  195:         # projector
+  196:         out = []
+  197:         for i, l in enumerate(self.proj):
+  198:             out.append(l(enc).reshape(B, L))
+  199:         out = torch.stack(out, dim=2)
+  200: 
+  201:         return out
+  202: 
+  203: 
+
+=== MISSING-SENTINEL AND ZERO-FILL OPERATIONS ===
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/run.py:144-157 ---
+  144:             )
+  145:         self.proj = nn.ModuleList(proj)
+  146: 
+  147:     def forward(self, x, x_mark_enc=None, one_hot_x=None, device='cpu'):
+  148:         B, L, N = x.shape
+  149:         missing_mask = (x == -9997) | (x == -9998) | (x == -9999)
+  150:         if self.non_seq_len > 0:
+  151:             non_seq_enc_out = self.non_seq_enc(one_hot_x)
+  152:         else:
+  153:             non_seq_enc_out = None
+  154:         if x_mark_enc is not None and non_seq_enc_out is not None:
+  155:             x_mark_enc = torch.cat((x_mark_enc, non_seq_enc_out.view(B, -1, 1)), dim=2)
+  156: 
+  157:         # single variate feature
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/run.py:159-197 ---
+  159:         svf_out = []
+  160:         for b in range(B):
+  161:             aa = []
+  162:             for n in range(N):
+  163:                 bnx = x[b: b + 1, :, n: n + 1]
+  164:                 non_missing_mask = (bnx != -9997) & (bnx != -9998) & (bnx != -9999)
+  165:                 bnx = bnx[non_missing_mask]
+  166:                 if len(bnx) > 0:
+  167:                     aa.append(nn.functional.adaptive_avg_pool1d(bnx.reshape(1, 1, -1), self.compact_seq_len).reshape(
+  168:                         self.compact_seq_len))
+  169:                 else:
+  170:                     aa.append(torch.zeros((self.compact_seq_len,)).to(device))
+  171:             a.append(torch.stack(aa, dim=1))
+  172:         a = torch.stack(a, dim=0)
+  173:         for i, l in enumerate(self.svf):
+  174:             svf_out.append(l(a[:, :, i]))
+  175:         svf_enc = torch.stack(svf_out, dim=2)
+  176:         svf_enc[~missing_mask] = 0.0
+  177: 
+  178:         # cross-variate features
+  179:         b = x.clone()
+  180:         b[missing_mask] = np.nan
+  181:         means = torch.tile(torch.nanmean(b, dim=1).unsqueeze(1), (1, self.seq_len, 1))
+  182:         b[missing_mask] = means[missing_mask]
+  183:         b = torch.nan_to_num(b, nan=0.0)
+  184:         cvf_enc = self.cvf(b.permute(0, 2, 1)).permute(0, 2, 1)
+  185:         cvf_enc[~missing_mask] = 0.0
+  186: 
+  187:         # rnn features
+  188:         c = x.clone()
+  189:         c[missing_mask] = 0.0
+  190:         emb = torch.cat(((svf_enc + cvf_enc) / 2, c), dim=2)
+  191:         if x_mark_enc is not None:
+  192:             emb = torch.cat((emb, x_mark_enc), dim=2)
+  193:         enc, _ = self.rnn(emb)
+  194: 
+  195:         # projector
+  196:         out = []
+  197:         for i, l in enumerate(self.proj):
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/run.py:382-395 ---
+  382: 
+  383:         self.sample_indices = list(df_non_seq['sample_index'])
+  384:         self.df_non_seq = df_non_seq.copy()
+  385:         self.df_seq = df_seq.copy()
+  386: 
+  387:     def data_post_process(self, df_x, pad_value=-9998, pad_value2=-9997):
+  388:         mr = df_x.isna().mean()
+  389:         df_len = df_x.shape[0]
+  390:         r1 = np.random.random()
+  391: 
+  392:         if r1 < self.mr_last_5:
+  393:             # Method 1: Last 5-minute patch missing
+  394:             miss_len = min(int(df_len / 3), 300)
+  395: 
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/run.py:458-475 ---
+  458: 
+  459:         # apply manual missing for seq_data
+  460:         df_seq_x = df_seq[self.seq_cols]
+  461:         df_seq_x_1 = df_seq_x.copy()
+  462:         if self.seq_random_missing:
+  463:             df_seq_x_2 = self.data_post_process(df_seq_x_1.copy(), pad_value=-9998)
+  464:         else:
+  465:             df_seq_x_2 = df_seq_x_1.copy()
+  466:         df_seq_x_1 = df_seq_x_1.fillna(-9999)
+  467:         df_seq_x_2 = df_seq_x_2.fillna(-9999)
+  468:         x1_1 = df_seq_x_1.values[:self.seq_input_len]
+  469:         x1_2 = df_seq_x_2.values[:self.seq_input_len]
+  470: 
+  471:         # non_seq input
+  472:         x2 = []
+  473:         df_temp = df_non_seq[self.non_seq_cols]
+  474:         for col in self.non_seq_cols:
+  475:             v = df_temp[col].values[-1]
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/run.py:585-615 ---
+  585:         with torch.no_grad():
+  586:             for i, (batch_x1_1, batch_x1_2, batch_x2, batch_y, batch_x_mark, _) in enumerate(data_loader):
+  587:                 rpe_labels.extend(batch_y[:, 0].numpy())
+  588:                 psi_labels.extend(batch_y[:, 1].numpy())
+  589:                 batch_x1_2_copy = torch.tensor(batch_x1_2.numpy().copy())
+  590:                 manual_missing_mask = (batch_x1_2_copy == -9997) | (batch_x1_2_copy == -9998)
+  591:                 non_missing_mask = (batch_x1_2_copy != -9997) & (batch_x1_2_copy != -9998) & (batch_x1_2_copy != -9999)
+  592:                 batch_x1_1 = batch_x1_1.float().to(device)
+  593:                 batch_x1_2 = batch_x1_2.float().to(device)
+  594:                 batch_x_mark = batch_x_mark.float().to(device)
+  595:                 batch_x2 = batch_x2.float().to(device)
+  596: 
+  597:                 b, l, n = batch_x1_1.size()
+  598:                 mr_1 = len(batch_x1_2_copy[manual_missing_mask]) / (b * l * n)
+  599:                 mr_2 = len(batch_x1_2_copy[~non_missing_mask]) / (b * l * n)
+  600:                 manual_missing_rate.append(mr_1)
+  601:                 total_missing_rate.append(mr_2)
+  602: 
+  603:                 # batch_x1_2 is the main input: (batch_size, seq_len, feature_num) = (1, 900, 7), including {core_temp, acc_x, acc_y, acc_z, wbgt_humidity, wbgt_index}
+  604:                 # batch_x_mark is the time feature: (batch_size, seq_len, feature_num) = (1, 900, 3)
+  605:                 # one_hot_x is other features of workers: (batch_size, feature_num), e.g., 'worker_type1', 'age', 'gender', 'height', 'diseases', 'smoke', 'alcohol', etc.
+  606:                 reg_out = reg_model(batch_x1_2, x_mark_enc=batch_x_mark, one_hot_x=batch_x2[:, 0: configs['reg_non_seq_len']], device=device)
+  607:                 reg_out[non_missing_mask] = batch_x1_1[non_missing_mask]
+  608:                 rpe_pred, psi_pred = cla_model(reg_out, x_mark_enc=batch_x_mark, one_hot_x=batch_x2[:, 0: configs['cla_non_seq_len']], device=device)
+  609:                 if rpe_pred is not None:
+  610:                     rpe_preds.extend(rpe_pred.argmax(dim=1, keepdim=False).cpu().numpy())
+  611:                 if psi_pred is not None:
+  612:                     psi_preds.extend(psi_pred.argmax(dim=1, keepdim=False).cpu().numpy())
+  613: 
+  614:             # calculate precision/recall/f1-score
+  615:             rpe_prf = cal_prf_metrics(rpe_labels, rpe_preds)
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:9-22 ---
+    9:       models/trained_by_data_split_byid/reg_model.pth
+   10:       models/trained_by_data_split_byid/rpe_psi_cla_model.pth
+   11: 
+   12: Inputs to the prepared model:
+   13:   x_values:       float32 [1, 900, 6], missing positions replaced by 0
+   14:   missing_mask:   float32/bool [1, 900, 6], 1/True means missing
+   15:   x_mark:         float32 [1, 900, 3]
+   16:   worker_features:float32 [1, 30]
+   17: 
+   18: Outputs:
+   19:   rpe_logits: [1, 4]
+   20:   psi_logits: [1, 4]
+   21: 
+   22: The fixed-size masked compaction below reproduces the original operation:
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:70-83 ---
+   70: class StaticRegModel(Reg_Model):
+   71:     """
+   72:     Same layers/parameter names as Reg_Model, but with a static-shape forward.
+   73: 
+   74:     The constructor is inherited from Reg_Model, so trained state_dict keys
+   75:     remain compatible. missing_mask=True means that a sensor value is missing.
+   76:     """
+   77: 
+   78:     @staticmethod
+   79:     def masked_compact_adaptive_pool(x, valid, output_size=COMPACT_SEQ_LEN):
+   80:         """
+   81:         x, valid: [B, L, N]
+   82:         returns:  [B, output_size, N]
+   83: 
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:136-165 ---
+  136: 
+  137:         bin_size = torch.clamp(end - start, min=1).to(x.dtype)
+  138:         pooled = (end_sum - start_sum) / bin_size
+  139: 
+  140:         # The original implementation returns zeros for an all-missing channel.
+  141:         pooled = torch.where(
+  142:             (count > 0).unsqueeze(1),
+  143:             pooled,
+  144:             torch.zeros_like(pooled),
+  145:         )
+  146:         return pooled
+  147: 
+  148:     def forward(self, x, missing_mask, x_mark, worker_features):
+  149:         """
+  150:         Fixed deployment signature:
+  151:           x:               [1, 900, 6], missing positions set to zero
+  152:           missing_mask:    [1, 900, 6], True/1 means missing
+  153:           x_mark:          [1, 900, 3]
+  154:           worker_features: [1, 18]
+  155:         """
+  156:         missing_mask = missing_mask > 0.5
+  157:         valid = ~missing_mask
+  158:         batch = x.shape[0]
+  159: 
+  160:         # Non-sequential worker features: [B,18] -> [B,900,1].
+  161:         non_seq_enc_out = self.non_seq_enc(worker_features)
+  162:         time_and_worker = torch.cat(
+  163:             (x_mark, non_seq_enc_out.reshape(batch, SEQ_LEN, 1)),
+  164:             dim=2,
+  165:         )
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:173-205 ---
+  173:         svf_out = []
+  174:         for feature_index, linear in enumerate(self.svf):
+  175:             svf_out.append(linear(compacted_pool[:, :, feature_index]))
+  176: 
+  177:         svf_enc = torch.stack(svf_out, dim=2)            # [B,900,6]
+  178:         svf_enc = torch.where(
+  179:             missing_mask, svf_enc, torch.zeros_like(svf_enc)
+  180:         )
+  181: 
+  182:         # Cross-variate branch. Replace missing samples with the mean of
+  183:         # observed samples in that channel. All-missing channels become zero.
+  184:         valid_float = valid.to(x.dtype)
+  185:         channel_count = valid_float.sum(dim=1, keepdim=True)
+  186:         channel_sum = (x * valid_float).sum(dim=1, keepdim=True)
+  187:         channel_mean = channel_sum / torch.clamp(channel_count, min=1.0)
+  188:         filled = torch.where(missing_mask, channel_mean.expand_as(x), x)
+  189: 
+  190:         cvf_enc = self.cvf(filled.permute(0, 2, 1)).permute(0, 2, 1)
+  191:         cvf_enc = torch.where(
+  192:             missing_mask, cvf_enc, torch.zeros_like(cvf_enc)
+  193:         )
+  194: 
+  195:         # Original observed values are zeroed in this branch; reconstructed
+  196:         # features are used only at missing positions.
+  197:         observed_zeroed = torch.where(missing_mask, torch.zeros_like(x), x)
+  198:         embedding = torch.cat(
+  199:             ((svf_enc + cvf_enc) / 2.0, observed_zeroed),
+  200:             dim=2,
+  201:         )
+  202:         embedding = torch.cat((embedding, time_and_worker), dim=2)
+  203: 
+  204:         encoded, _ = self.rnn(embedding)
+  205: 
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:215-240 ---
+  215:     def __init__(self, reg_model, cla_model):
+  216:         super().__init__()
+  217:         self.reg_model = reg_model
+  218:         self.cla_model = cla_model
+  219: 
+  220:     def forward(self, x_values, missing_mask, x_mark, worker_features):
+  221:         # The input x_values must contain zero at missing positions. The
+  222:         # separate mask carries missingness, avoiding -999x values in INT8.
+  223:         mask = missing_mask > 0.5
+  224: 
+  225:         reg_prediction = self.reg_model(
+  226:             x_values,
+  227:             mask,
+  228:             x_mark,
+  229:             worker_features[:, :REG_WORKER_FEATURES],
+  230:         )
+  231: 
+  232:         restored_sequence = torch.where(mask, reg_prediction, x_values)
+  233: 
+  234:         rpe_logits, psi_logits = self.cla_model(
+  235:             restored_sequence,
+  236:             x_mark_enc=None,  # Cla_Model's original forward does not use it.
+  237:             one_hot_x=worker_features[:, :CLA_WORKER_FEATURES],
+  238:             device=x_values.device,
+  239:         )
+  240:         return rpe_logits, psi_logits
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:243-256 ---
+  243: def make_synthetic_test_inputs(device="cpu"):
+  244:     """Shape/functional smoke-test data; not suitable for quantization calibration."""
+  245:     torch.manual_seed(1234)
+  246:     x = torch.randn(1, SEQ_LEN, SEQ_FEATURES, device=device)
+  247:     mask = (torch.rand(1, SEQ_LEN, SEQ_FEATURES, device=device) < 0.30)
+  248:     x = torch.where(mask, torch.zeros_like(x), x)
+  249:     x_mark = torch.randn(1, SEQ_LEN, TIME_FEATURES, device=device)
+  250:     worker = torch.randn(1, CLA_WORKER_FEATURES, device=device)
+  251:     return x, mask.to(torch.float32), x_mark, worker
+  252: 
+  253: 
+  254: @torch.no_grad()
+  255: def validate_against_original(original_reg, cla_model, combined_model):
+  256:     """
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:261-290 ---
+  261:     """
+  262:     x_values, mask_float, x_mark, worker = make_synthetic_test_inputs()
+  263:     mask = mask_float > 0.5
+  264: 
+  265:     # Reconstruct the original run.py input representation.
+  266:     x_sentinel = torch.where(
+  267:         mask,
+  268:         torch.full_like(x_values, -9998.0),
+  269:         x_values,
+  270:     )
+  271: 
+  272:     original_reg.eval()
+  273:     cla_model.eval()
+  274:     combined_model.eval()
+  275: 
+  276:     old_reg_prediction = original_reg(
+  277:         x_sentinel,
+  278:         x_mark_enc=x_mark,
+  279:         one_hot_x=worker[:, :REG_WORKER_FEATURES],
+  280:         device="cpu",
+  281:     )
+  282:     old_restored = torch.where(mask, old_reg_prediction, x_values)
+  283:     old_rpe, old_psi = cla_model(
+  284:         old_restored,
+  285:         x_mark_enc=x_mark,
+  286:         one_hot_x=worker[:, :CLA_WORKER_FEATURES],
+  287:         device="cpu",
+  288:     )
+  289: 
+  290:     new_rpe, new_psi = combined_model(
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:315-328 ---
+  315:         export_params=True,
+  316:         opset_version=18,
+  317:         do_constant_folding=True,
+  318:         input_names=[
+  319:             "x_values",
+  320:             "missing_mask",
+  321:             "x_mark",
+  322:             "worker_features",
+  323:         ],
+  324:         output_names=["rpe_logits", "psi_logits"],
+  325:         dynamic_axes=None,   # no dynamic axes: fixed [1,900,...] interface
+  326:         verbose=False,
+  327:     )
+  328: 
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py:384-405 ---
+  384:         {
+  385:             "format": "heat_stress_static_combined_v1",
+  386:             "model_state_dict": combined.state_dict(),
+  387:             "input_shapes": {
+  388:                 "x_values": [1, 900, 6],
+  389:                 "missing_mask": [1, 900, 6],
+  390:                 "x_mark": [1, 900, 3],
+  391:                 "worker_features": [1, 30],
+  392:             },
+  393:             "output_shapes": {
+  394:                 "rpe_logits": [1, 4],
+  395:                 "psi_logits": [1, 4],
+  396:             },
+  397:             "missing_mask_semantics": "1/True means missing; x_values must be zero at missing positions",
+  398:             "notes": (
+  399:                 "Static masked compaction uses argsort/gather/cumsum. "
+  400:                 "Check downstream TFLite/TFLM/Vela operator support."
+  401:             ),
+  402:         },
+  403:         checkpoint_path,
+  404:     )
+  405:     print(f"Static combined checkpoint saved: {checkpoint_path.resolve()}")
+
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/oa_combine_models.py:87-107 ---
+   87:             device=x_reg.device,
+   88:         )
+   89: 
+   90:         # Match the original run.py behavior:
+   91:         # retain original values wherever x_reg is not a missing marker;
+   92:         # use regression predictions only at -9997/-9998/-9999 positions.
+   93:         missing_mask = (
+   94:             (x_reg == -9997)
+   95:             | (x_reg == -9998)
+   96:             | (x_reg == -9999)
+   97:         )
+   98:         restored_sequence = torch.where(
+   99:             missing_mask, reg_prediction, x_original
+  100:         )
+  101: 
+  102:         # Classification model uses all 30 encoded worker features.
+  103:         rpe_logits, psi_logits = self.cla_model(
+  104:             restored_sequence,
+  105:             x_mark_enc=x_mark,
+  106:             one_hot_x=worker_features[:, :30],
+  107:             device=x_reg.device,
