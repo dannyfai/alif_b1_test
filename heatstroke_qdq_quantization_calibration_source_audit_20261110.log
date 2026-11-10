@@ -1,0 +1,504 @@
+=== INT8 QUANTIZATION SCRIPT ===
+     1	#!/usr/bin/env python3
+     2	"""
+     3	Full-integer INT8 post-training quantization for the combined heat-stress model.
+     4	
+     5	Pipeline:
+     6	  fixed ONNX -> onnx2tf SavedModel -> TFLite INT8
+     7	  validation split -> representative calibration inputs
+     8	  test split -> INT8 evaluation and comparison with the FP32 TFLite baseline
+     9	
+    10	Run from:
+    11	  ~/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514
+    12	
+    13	This script does NOT modify the existing FP32 TFLite model.
+    14	"""
+    15	
+    16	import argparse
+    17	import os
+    18	import shutil
+    19	import subprocess
+    20	import sys
+    21	from pathlib import Path
+    22	
+    23	import numpy as np
+    24	import tensorflow as tf
+    25	from sklearn.metrics import (
+    26	    accuracy_score,
+    27	    classification_report,
+    28	    confusion_matrix,
+    29	    f1_score,
+    30	    precision_score,
+    31	    recall_score,
+    32	)
+    33	from torch.utils.data import DataLoader
+    34	
+    35	from run import Heat_Stress_Dataset
+    36	
+    37	
+    38	MISSING_VALUES = (-9997.0, -9998.0, -9999.0)
+    39	INPUT_NAMES = ("x_values", "missing_mask", "x_mark", "worker_features")
+    40	OUTPUT_NAMES = ("rpe_logits", "psi_logits")
+    41	CLASS_LABELS = [0, 1, 2, 3]
+    42	CLASS_NAMES = ["Class 0", "Class 1", "Class 2", "Class 3"]
+    43	
+    44	DEFAULT_ONNX = (
+    45	    "export/combined_static_model_gelu_tanh_int32_indices_fixed.onnx"
+    46	)
+    47	DEFAULT_FP32_TFLITE = (
+    48	    "export/combined_static_model_gelu_tanh_int32_indices_fp32.tflite"
+    49	)
+    50	DEFAULT_INT8_TFLITE = (
+    51	    "export/combined_static_model_gelu_tanh_int32_indices_int8.tflite"
+    52	)
+    53	
+    54	
+    55	def to_numpy(value):
+    56	    """Convert a torch tensor or array-like object to NumPy."""
+    57	    if hasattr(value, "detach"):
+    58	        return value.detach().cpu().numpy()
+    59	    return np.asarray(value)
+    60	
+    61	
+    62	def prepare_inputs(batch_x1_2, batch_x2, batch_x_mark):
+    63	    """
+    64	    Match evaluate_tflite.py exactly:
+    65	      x_values       = x1_2 with missing sentinels replaced by zero
+    66	      missing_mask   = 1 for -9997/-9998/-9999, otherwise 0
+    67	      x_mark         = time features from the dataset
+    68	      worker_features= 30 worker-level features from the dataset
+    69	    """
+    70	    x_reg = to_numpy(batch_x1_2).astype(np.float32, copy=True)
+    71	    worker_features = to_numpy(batch_x2).astype(np.float32, copy=True)
+    72	    x_mark = to_numpy(batch_x_mark).astype(np.float32, copy=True)
+    73	
+    74	    missing_mask = np.zeros(x_reg.shape, dtype=np.bool_)
+    75	    for sentinel in MISSING_VALUES:
+    76	        missing_mask |= (x_reg == sentinel)
+    77	
+    78	    x_values = np.where(missing_mask, 0.0, x_reg).astype(np.float32)
+    79	    missing_mask = missing_mask.astype(np.float32)
+    80	
+    81	    result = {
+    82	        "x_values": x_values,
+    83	        "missing_mask": missing_mask,
+    84	        "x_mark": x_mark,
+    85	        "worker_features": worker_features,
+    86	    }
+    87	
+    88	    expected_shapes = {
+    89	        "x_values": (1, 900, 6),
+    90	        "missing_mask": (1, 900, 6),
+    91	        "x_mark": (1, 900, 3),
+    92	        "worker_features": (1, 30),
+    93	    }
+    94	    for name, expected in expected_shapes.items():
+    95	        if tuple(result[name].shape) != expected:
+    96	            raise ValueError(
+    97	                f"{name} has shape {result[name].shape}; expected {expected}. "
+    98	                "Check the dataset configuration and model inputs."
+    99	            )
+   100	
+   101	    return result
+   102	
+   103	
+   104	def make_dataset(data_root, split_type, flag, random_missing=False):
+   105	    data_root_path = (
+   106	        str(data_root).rstrip("/")
+   107	        + "/"
+   108	        + str(split_type).strip("/")
+   109	        + "/"
+   110	    )
+   111	    return Heat_Stress_Dataset(
+   112	        data_root_path=data_root_path,
+   113	        flag=flag,
+   114	        seq_input_len=900,
+   115	        seq_pred_len=900,
+   116	        target=["rpe", "psi"],
+   117	        seq_random_missing=random_missing,
+   118	    )
+   119	
+   120	
+   121	def iter_model_samples(dataset, num_workers=0):
+   122	    loader = DataLoader(
+   123	        dataset,
+   124	        batch_size=1,
+   125	        shuffle=False,
+   126	        drop_last=False,
+   127	        num_workers=num_workers,
+   128	    )
+   129	    for batch in loader:
+   130	        if len(batch) != 6:
+   131	            raise RuntimeError(
+   132	                f"Expected 6 dataset outputs, received {len(batch)}."
+   133	            )
+   134	        _, batch_x1_2, batch_x2, batch_y, batch_x_mark, _ = batch
+   135	        inputs = prepare_inputs(batch_x1_2, batch_x2, batch_x_mark)
+   136	        labels = to_numpy(batch_y).reshape(-1)
+   137	        yield inputs, labels
+   138	
+   139	
+   140	def run_onnx2tf(onnx_path, output_dir, log_path):
+   141	    executable = shutil.which("onnx2tf")
+   142	    if executable is None:
+   143	        raise RuntimeError(
+   144	            "Cannot find the 'onnx2tf' command in PATH. Activate the same "
+   145	            "onnx2tflite_env used for your ONNX-to-TFLite conversion and "
+   146	            "install/activate onnx2tf there."
+   147	        )
+   148	
+   149	    output_dir.mkdir(parents=True, exist_ok=True)
+   150	    command = [
+   151	        executable,
+   152	        "-i", str(onnx_path.resolve()),
+   153	        "-o", str(output_dir.resolve()),
+   154	    ]
+   155	
+   156	    print("\nRunning ONNX -> TensorFlow SavedModel:")
+   157	    print(" ".join(command))
+   158	    print(f"Full onnx2tf log: {log_path}")
+   159	
+   160	    with log_path.open("w", encoding="utf-8") as log_file:
+   161	        completed = subprocess.run(
+   162	            command,
+   163	            stdout=log_file,
+   164	            stderr=subprocess.STDOUT,
+   165	            text=True,
+   166	            check=False,
+   167	        )
+   168	
+   169	    if completed.returncode != 0:
+   170	        raise RuntimeError(
+   171	            f"onnx2tf failed with exit code {completed.returncode}. "
+   172	            f"Inspect: {log_path}"
+   173	        )
+   174	
+   175	    candidates = list(output_dir.rglob("saved_model.pb"))
+   176	    if not candidates:
+   177	        raise RuntimeError(
+   178	            "onnx2tf completed, but no saved_model.pb was found under "
+   179	            f"{output_dir}. Inspect the log: {log_path}"
+   180	        )
+   181	
+   182	    # Prefer the shallowest SavedModel directory.
+   183	    candidates.sort(key=lambda p: len(p.parts))
+   184	    saved_model_dir = candidates[0].parent
+   185	    print("SavedModel directory:", saved_model_dir)
+   186	    return saved_model_dir
+   187	
+   188	
+   189	def resolve_signature_input_names(saved_model_dir):
+   190	    loaded = tf.saved_model.load(str(saved_model_dir))
+   191	    if "serving_default" not in loaded.signatures:
+   192	        raise RuntimeError(
+   193	            "SavedModel has no 'serving_default' signature. "
+   194	            f"Available signatures: {list(loaded.signatures.keys())}"
+   195	        )
+   196	
+   197	    signature = loaded.signatures["serving_default"]
+   198	    _, kwargs = signature.structured_input_signature
+   199	    if not kwargs:
+   200	        raise RuntimeError(
+   201	            "The SavedModel serving_default signature does not expose "
+   202	            "named keyword inputs; cannot safely map calibration tensors."
+   203	        )
+   204	
+   205	    available = list(kwargs.keys())
+   206	    mapping = {}
+   207	
+   208	    # Require explicit name matching. In particular, x_values and
+   209	    # missing_mask have the same shape, so shape-only matching is unsafe.
+   210	    for expected in INPUT_NAMES:
+   211	        exact = [name for name in available if name.lower() == expected.lower()]
+   212	        partial = [
+   213	            name for name in available
+   214	            if expected.lower() in name.lower()
+   215	        ]
+   216	        matches = exact if exact else partial
+   217	        if len(matches) != 1:
+   218	            raise RuntimeError(
+   219	                f"Cannot uniquely map model input '{expected}' to the "
+   220	                f"SavedModel signature. Signature inputs: {available}. "
+   221	                "Do not guess the order: inspect the SavedModel signature "
+   222	                "and adjust the mapping in resolve_signature_input_names()."
+   223	            )
+   224	        mapping[expected] = matches[0]
+   225	
+   226	    print("\nSavedModel signature input mapping:")
+   227	    for expected in INPUT_NAMES:
+   228	        spec = kwargs[mapping[expected]]
+   229	        print(
+   230	            f"  {expected:18s} -> {mapping[expected]} "
+   231	            f"shape={spec.shape}, dtype={spec.dtype}"
+   232	        )
+   233	    return mapping
+   234	
+   235	
+   236	def make_representative_dataset(dataset, signature_mapping, limit):
+   237	    def representative_dataset():
+   238	        count = 0
+   239	        for inputs, _ in iter_model_samples(dataset):
+   240	            sample = {}
+
+=== CALIBRATION DATA GENERATION ===
+     1	from pathlib import Path
+     2	import shutil
+     3	
+     4	import numpy as np
+     5	
+     6	from run import Heat_Stress_Dataset
+     7	
+     8	
+     9	# ------------------------------------------------------------
+    10	# Configuration
+    11	# ------------------------------------------------------------
+    12	
+    13	DATA_ROOT = "data/int8_calibration/"
+    14	OUTPUT_ROOT = Path("export/nxp_calibration")
+    15	
+    16	EXPECTED_SAMPLES = 394
+    17	
+    18	INPUT_SHAPES = {
+    19	    "x_values": (1, 900, 6),
+    20	    "missing_mask": (1, 900, 6),
+    21	    "x_mark": (1, 900, 3),
+    22	    "worker_features": (1, 30),
+    23	}
+    24	
+    25	MISSING_SENTINELS = [-9997.0, -9998.0, -9999.0]
+    26	
+    27	
+    28	# ------------------------------------------------------------
+    29	# Prepare dataset
+    30	# ------------------------------------------------------------
+    31	
+    32	print("=" * 72)
+    33	print("NXP ONNX QUANTIZATION CALIBRATION DATA PREPARATION")
+    34	print("=" * 72)
+    35	
+    36	dataset = Heat_Stress_Dataset(
+    37	    data_root_path=DATA_ROOT,
+    38	    flag="test",
+    39	    seq_input_len=900,
+    40	    seq_pred_len=900,
+    41	    target=["rpe", "psi"],
+    42	    seq_random_missing=False,
+    43	)
+    44	
+    45	print("Calibration dataset:", DATA_ROOT)
+    46	print("Number of samples:", len(dataset))
+    47	
+    48	if len(dataset) != EXPECTED_SAMPLES:
+    49	    raise RuntimeError(
+    50	        f"Expected {EXPECTED_SAMPLES} calibration samples, "
+    51	        f"but found {len(dataset)}."
+    52	    )
+    53	
+    54	
+    55	# ------------------------------------------------------------
+    56	# Prepare output directories
+    57	# ------------------------------------------------------------
+    58	
+    59	output_dirs = {}
+    60	
+    61	for input_name in INPUT_SHAPES:
+    62	    directory = OUTPUT_ROOT / input_name
+    63	    directory.mkdir(parents=True, exist_ok=True)
+    64	
+    65	    # Remove old calibration files to avoid mixing datasets.
+    66	    for old_file in directory.glob("*.npy"):
+    67	        old_file.unlink()
+    68	
+    69	    output_dirs[input_name] = directory
+    70	
+    71	
+    72	# ------------------------------------------------------------
+    73	# Convert dataset samples to ONNX inputs
+    74	# ------------------------------------------------------------
+    75	
+    76	missing_count = 0
+    77	total_sequence_elements = 0
+    78	
+    79	for index in range(len(dataset)):
+    80	
+    81	    # Dataset output:
+    82	    # x1_1, x1_2, x2, y, seq_x_mark, seq_y_mark
+    83	    sample = dataset[index]
+    84	
+    85	    x1_1 = np.asarray(sample[0], dtype=np.float32)
+    86	    x1_2 = np.asarray(sample[1], dtype=np.float32)
+    87	    x2 = np.asarray(sample[2], dtype=np.float32)
+    88	    seq_x_mark = np.asarray(sample[4], dtype=np.float32)
+    89	
+    90	    # Identify missing sequence elements.
+    91	    missing_mask = np.isin(
+    92	        x1_2,
+    93	        MISSING_SENTINELS
+    94	    ).astype(np.float32)
+    95	
+    96	    # Replace missing sequence values with zero.
+    97	    x_values = np.where(
+    98	        missing_mask > 0,
+    99	        0.0,
+   100	        x1_1
+   101	    ).astype(np.float32)
+   102	
+   103	    # Add batch dimension.
+   104	    inputs = {
+   105	        "x_values": x_values[np.newaxis, :, :],
+   106	        "missing_mask": missing_mask[np.newaxis, :, :],
+   107	        "x_mark": seq_x_mark[np.newaxis, :, :],
+   108	        "worker_features": x2[np.newaxis, :],
+   109	    }
+   110	
+   111	    # Validate shapes and values.
+   112	    for input_name, expected_shape in INPUT_SHAPES.items():
+   113	
+   114	        value = inputs[input_name]
+   115	
+   116	        if value.shape != expected_shape:
+   117	            raise ValueError(
+   118	                f"Sample {index}: {input_name} has shape "
+   119	                f"{value.shape}, expected {expected_shape}"
+   120	            )
+   121	
+   122	        if not np.all(np.isfinite(value)):
+   123	            raise ValueError(
+   124	                f"Sample {index}: {input_name} contains NaN or Inf."
+   125	            )
+   126	
+   127	    # Save all four inputs with exactly the same filename.
+   128	    filename = f"{index:06d}.npy"
+   129	
+   130	    for input_name, value in inputs.items():
+   131	        np.save(
+   132	            output_dirs[input_name] / filename,
+   133	            value,
+   134	            allow_pickle=False,
+   135	        )
+   136	
+   137	    missing_count += int(np.sum(missing_mask))
+   138	    total_sequence_elements += missing_mask.size
+   139	
+   140	    if (index + 1) % 50 == 0 or index + 1 == len(dataset):
+   141	        print(f"Processed {index + 1}/{len(dataset)} samples")
+   142	
+   143	
+   144	# ------------------------------------------------------------
+   145	# Verify calibration directories
+   146	# ------------------------------------------------------------
+   147	
+   148	print("\nChecking calibration files...")
+   149	
+   150	reference_files = None
+   151	
+   152	for input_name, directory in output_dirs.items():
+   153	
+   154	    files = [
+   155	        name for name in directory.iterdir()
+   156	        if name.suffix == ".npy"
+   157	    ]
+   158	
+   159	    if len(files) != EXPECTED_SAMPLES:
+   160	        raise RuntimeError(
+   161	            f"{input_name}: expected {EXPECTED_SAMPLES} files, "
+   162	            f"found {len(files)}"
+   163	        )
+   164	
+   165	    # NXP's reader uses os.listdir() without sorting.
+   166	    # Therefore, verify that all four directories enumerate
+   167	    # their files in exactly the same order.
+   168	    import os
+   169	    directory_order = [
+   170	        name for name in os.listdir(directory)
+   171	        if name.endswith(".npy")
+   172	    ]
+   173	
+   174	    if reference_files is None:
+   175	        reference_files = directory_order
+   176	    elif directory_order != reference_files:
+   177	        raise RuntimeError(
+   178	            "The .npy file enumeration order differs between "
+   179	            f"calibration directories. Mismatched directory: {input_name}"
+   180	        )
+   181	
+   182	    print(f"{input_name:20s}: {len(files)} files")
+   183	
+   184	
+   185	# ------------------------------------------------------------
+   186	# Summary
+   187	# ------------------------------------------------------------
+   188	
+   189	missing_rate = missing_count / total_sequence_elements
+   190	
+
+=== CALIBRATION DATA FILE INVENTORY ===
+13901986 bytes /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/data/int8_calibration/test_seq.feather
+82795 bytes /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/data/int8_calibration/test_non_seq.csv
+
+=== QDQ MODEL GENERATION AND GRAPH TRANSFORMATION SCRIPTS ===
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py ---
+7:  validation split -> representative calibration inputs
+45:    "export/combined_static_model_gelu_tanh_int32_indices_fixed.onnx"
+48:    "export/combined_static_model_gelu_tanh_int32_indices_fp32.tflite"
+51:    "export/combined_static_model_gelu_tanh_int32_indices_int8.tflite"
+202:            "named keyword inputs; cannot safely map calibration tensors."
+236:def make_representative_dataset(dataset, signature_mapping, limit):
+237:    def representative_dataset():
+258:    return representative_dataset
+264:    representative_dataset,
+267:    converter = tf.lite.TFLiteConverter.from_saved_model(
+271:    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+272:    converter.representative_dataset = representative_dataset
+273:    converter.target_spec.supported_ops = [
+276:    converter.inference_input_type = tf.int8
+277:    converter.inference_output_type = tf.int8
+281:    tflite_bytes = converter.convert()
+382:def quantize_input(value, detail):
+395:    quantized = np.rint(value / scales[0] + zero_points[0])
+397:    return np.clip(quantized, limits.min, limits.max).astype(dtype)
+400:def dequantize_output(value, detail):
+418:    axis = int(detail["quantization_parameters"]["quantized_dimension"])
+444:        value = quantize_input(inputs[name], detail)
+458:        dequantize_output(rpe_raw, output_map["rpe_logits"]),
+459:        dequantize_output(psi_raw, output_map["psi_logits"]),
+555:        "--calibration-samples",
+558:        help="Maximum number of validation samples used for calibration; 0 means all.",
+561:        "--calibration-random-missing",
+563:        help="Enable the dataset's synthetic missing-data augmentation during calibration.",
+598:    if args.calibration_samples < 0:
+599:        raise ValueError("--calibration-samples must be >= 0.")
+609:    # Use the worker-disjoint calibration dataset.
+611:    calibration_dataset = make_dataset(
+613:        "int8_calibration",
+615:        random_missing=args.calibration_random_missing,
+618:    print("Calibration dataset: data/int8_calibration")
+619:    print("Calibration samples:", len(calibration_dataset))
+621:    if len(calibration_dataset) != 394:
+623:            f"Expected 394 calibration samples, "
+624:            f"but found {len(calibration_dataset)}."
+637:    representative_dataset = make_representative_dataset(
+638:        calibration_dataset,
+640:        args.calibration_samples,
+646:        representative_dataset,
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/prepare_nxp_calibration.py ---
+13:DATA_ROOT = "data/int8_calibration/"
+14:OUTPUT_ROOT = Path("export/nxp_calibration")
+50:        f"Expected {EXPECTED_SAMPLES} calibration samples, "
+65:    # Remove old calibration files to avoid mixing datasets.
+145:# Verify calibration directories
+148:print("\nChecking calibration files...")
+179:            f"calibration directories. Mismatched directory: {input_name}"
+--- /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/a_prepare_static_model.py ---
+3:Prepare the Heat Stress Reg_Model + Cla_Model for fixed-shape export.
+29:  ONNX exportability does not guarantee that every operator is supported by
+244:    """Shape/functional smoke-test data; not suitable for quantization calibration."""
+307:def export_onnx(model, output_path: Path):
+311:    torch.onnx.export(
+315:        export_params=True,
+337:    print(f"ONNX exported: {output_path.resolve()}")
+350:        default=Path("./export"),
+383:    torch.save(
+409:        export_onnx(combined, onnx_path)
+
+=== AUDIT COMPLETE ===
