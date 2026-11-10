@@ -1,0 +1,526 @@
+
+======================== run.py ========================
+
+--- lines 5-22 ---
+    5: 
+    6: import random
+    7: import numpy as np
+    8: import pandas as pd
+    9: import torch
+   10: import torch.nn as nn
+   11: from torchsummary import summary
+   12: from torch.utils.data import Dataset, DataLoader
+   13: from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score, confusion_matrix
+   14: 
+   15: # new psi taxonomy
+   16: # psi 0-2 --> 0(easy), 3-4 --> 1(moderate), 5-6 --> 2(hard), 7-10 --> 3(really hard)
+   17: PSI_MAP = {
+   18:     -1: -1,  # ignore
+   19:     0: 0,
+   20:     1: 0,
+   21:     2: 0,
+   22:     3: 1,
+
+--- lines 80-99 ---
+   80:         8.: [0, 0, 0, 1],
+   81:         9.: [0, 0, 0, 1],
+   82:         10.: [0, 0, 0, 1]
+   83:     },
+   84: }
+   85: 
+   86: 
+   87: class Reg_Model(nn.Module):
+   88:     def __init__(self):
+   89:         super(Reg_Model, self).__init__()
+   90:         self.seq_len = 900
+   91:         # self.target_length = configs.seq_len
+   92:         self.non_seq_len = 18
+   93:         self.seq_feature_num = 6
+   94:         self.time_feature_num = 3
+   95:         self.hidden_dim1 = 256
+   96:         self.e_layers = 1
+   97:         self.dropout = 0.1
+   98:         self.batch_first = True
+   99:         self.rnn_type = 'BiLSTM'
+
+--- lines 336-361 ---
+  336: def time_features(dates):
+  337:     second_of_minute = SecondOfMinute()
+  338:     minute_of_hour = MinuteOfHour()
+  339:     hour_of_day = HourOfDay()
+  340:     return np.vstack([second_of_minute(dates), minute_of_hour(dates), hour_of_day(dates)])
+  341: 
+  342: 
+  343: class Heat_Stress_Dataset(Dataset):
+  344:     def __init__(self, data_root_path, flag='test', seq_input_len=900, seq_pred_len=900, target='psi', seq_random_missing=True):
+  345:         self.data_root_path = data_root_path
+  346:         assert flag in ['test', 'val']
+  347:         self.flag = flag
+  348:         self.seq_input_len = seq_input_len
+  349:         self.seq_pred_len = seq_pred_len
+  350:         self.target = target
+  351:         self.seq_random_missing = seq_random_missing
+  352:         self.mr_last_5 = 0.1
+  353:         self.mr_thr = 0.3
+  354: 
+  355:         self.seq_cols = [
+  356:             'cb_cbt',
+  357:             'wbgt_hum', 'wbgt_outdoor',
+  358:             'helmet_acc_x_mean', 'helmet_acc_y_mean', 'helmet_acc_z_mean',
+  359:         ]
+  360:         self.non_seq_cols = [
+  361:             'session', 'worker_type1', 'age', 'gender', 'height', 'diseases', 'smoke', 'alcohol',   # 18
+
+--- lines 420-447 ---
+  420:                     mask = random_mask & ~nan_mask
+  421:                     df_x.loc[mask, col] = pad_value
+  422: 
+  423:                 else:
+  424:                     # Method 3: Random patch missing
+  425:                     miss_len = int(df_len * self.mr_thr)
+  426: 
+  427:                     start = np.random.randint(10, df_len - miss_len)
+  428:                     end = min(start + miss_len, df_len)
+  429: 
+  430:                     miss_mask = np.zeros(df_len, dtype=bool)
+  431:                     miss_mask[start:end] = True
+  432: 
+  433:                     mask = miss_mask & ~nan_mask
+  434:                     df_x.loc[mask, col] = pad_value2
+  435: 
+  436:         return df_x
+  437:     def __getitem__(self, index):
+  438:         sample_index = self.sample_indices[index]
+  439:         df_non_seq = self.df_non_seq.query(f'sample_index == {sample_index}')
+  440:         start_time = df_non_seq['time'].values[0] - pd.Timedelta(seconds=self.seq_input_len)
+  441:         end_time = df_non_seq['time'].values[0] - pd.Timedelta(seconds=1)
+  442:         df_seq = self.df_seq.query(f"sample_index == {sample_index} and time >= '{start_time}' and time <= '{end_time}'")
+  443:         df_seq = df_seq.reset_index(drop=True)
+  444: 
+  445:         # set unreliable seq_data to nan
+  446:         missing_cols = df_non_seq['missing_col'].values[0]
+  447:         if pd.isna(missing_cols):
+
+--- lines 455-472 ---
+  455:         time_stamp = time_features(pd.to_datetime(df_seq['time'].values))
+  456:         seq_x_mark = time_stamp.transpose(1, 0)[:self.seq_input_len, :]
+  457:         seq_y_mark = seq_x_mark
+  458: 
+  459:         # apply manual missing for seq_data
+  460:         df_seq_x = df_seq[self.seq_cols]
+  461:         df_seq_x_1 = df_seq_x.copy()
+  462:         if self.seq_random_missing:
+  463:             df_seq_x_2 = self.data_post_process(df_seq_x_1.copy(), pad_value=-9998)
+  464:         else:
+  465:             df_seq_x_2 = df_seq_x_1.copy()
+  466:         df_seq_x_1 = df_seq_x_1.fillna(-9999)
+  467:         df_seq_x_2 = df_seq_x_2.fillna(-9999)
+  468:         x1_1 = df_seq_x_1.values[:self.seq_input_len]
+  469:         x1_2 = df_seq_x_2.values[:self.seq_input_len]
+  470: 
+  471:         # non_seq input
+  472:         x2 = []
+
+--- lines 482-527 ---
+  482:         x2 = np.asarray(x2)
+  483: 
+  484:         # targets
+  485:         y = df_non_seq[self.target].values[-1]
+  486: 
+  487:         return x1_1, x1_2, x2, y, seq_x_mark, seq_y_mark
+  488: 
+  489:     def __len__(self):
+  490:         return len(self.sample_indices)
+  491: 
+  492: 
+  493: def load_data(configs):
+  494:     data_set = Heat_Stress_Dataset(
+  495:         data_root_path=configs['data_root_path'],
+  496:         flag=configs['data_type'],
+  497:         seq_input_len=configs['seq_input_len'],
+  498:         seq_pred_len=configs['seq_pred_len'],
+  499:         target=configs['target'],
+  500:         seq_random_missing=configs['seq_random_missing']
+  501:     )
+  502:     print(f'\nSamples of the {configs["data_type"]} set: ', len(data_set))
+  503:     data_loader = DataLoader(
+  504:         data_set,
+  505:         batch_size=configs['batch_size'],
+  506:         shuffle=configs['shuffle'],
+  507:         num_workers=configs['num_workers'],
+  508:         drop_last=configs['drop_last'])
+  509:     return data_set, data_loader
+  510: 
+  511: 
+  512: def load_model(configs):
+  513:     reg_model = Reg_Model()
+  514:     cla_model = Cla_Model()
+  515:     reg_model.load_state_dict(torch.load(configs['model_root_path'] + 'reg_model.pth', map_location='cpu'))
+  516:     if isinstance(configs['target'], list) and 'rpe' in configs['target'] and 'psi' in configs['target']:
+  517:         cla_model.load_state_dict(torch.load(configs['model_root_path'] + 'rpe_psi_cla_model.pth', map_location='cpu'))
+  518:     else:
+  519:         print(f"Please set configs['target'] = ['rpe', 'psi']")
+  520:         exit()
+  521: 
+  522:     return reg_model, cla_model
+  523: 
+  524: 
+  525: def cal_prf_metrics(labels, preds, ignore_index=-1):
+  526:     labels = np.asarray(labels).flatten()
+  527:     preds = np.asarray(preds).flatten()
+
+--- lines 562-617 ---
+  562:         'psi_p': {},
+  563:         'psi_r': {},
+  564:         'psi_f1': {},
+  565:         'manual_missing_rate': {},
+  566:         'total_missing_rate': {},
+  567:     }
+  568:     print(f'Final cla_eval on {configs["data_type"]} set:')
+  569:     eval_times = configs['eval_times'] if configs['seq_random_missing'] else 1
+  570:     device = torch.device('cpu')
+  571:     reg_model.to(device)
+  572:     cla_model.to(device)
+  573:     reg_model.eval()
+  574:     cla_model.eval()
+  575:     for t in range(eval_times):
+  576:         random.seed(t)
+  577:         torch.manual_seed(t)
+  578:         np.random.seed(t)
+  579:         rpe_preds = []
+  580:         rpe_labels = []
+  581:         psi_preds = []
+  582:         psi_labels = []
+  583:         manual_missing_rate = []
+  584:         total_missing_rate = []
+  585:         with torch.no_grad():
+  586:             for i, (batch_x1_1, batch_x1_2, batch_x2, batch_y, batch_x_mark, _) in enumerate(data_loader):
+  587:                 rpe_labels.extend(batch_y[:, 0].numpy())
+  588:                 psi_labels.extend(batch_y[:, 1].numpy())
+  589:                 batch_x1_2_copy = torch.tensor(batch_x1_2.numpy().copy())
+  590:                 manual_missing_mask = (batch_x1_2_copy == -9997) | (batch_x1_2_copy == -9998)
+  591:                 non_missing_mask = (batch_x1_2_copy != -9997) & (batch_x1_2_copy != -9998) & (batch_x1_2_copy != -9999)
+  592:                 batch_x1_1 = batch_x1_1.float().to(device)
+  593:                 batch_x1_2 = batch_x1_2.float().to(device)
+  594:                 batch_x_mark = batch_x_mark.float().to(device)
+  595:                 batch_x2 = batch_x2.float().to(device)
+  596: 
+  597:                 b, l, n = batch_x1_1.size()
+  598:                 mr_1 = len(batch_x1_2_copy[manual_missing_mask]) / (b * l * n)
+  599:                 mr_2 = len(batch_x1_2_copy[~non_missing_mask]) / (b * l * n)
+  600:                 manual_missing_rate.append(mr_1)
+  601:                 total_missing_rate.append(mr_2)
+  602: 
+  603:                 # batch_x1_2 is the main input: (batch_size, seq_len, feature_num) = (1, 900, 7), including {core_temp, acc_x, acc_y, acc_z, wbgt_humidity, wbgt_index}
+  604:                 # batch_x_mark is the time feature: (batch_size, seq_len, feature_num) = (1, 900, 3)
+  605:                 # one_hot_x is other features of workers: (batch_size, feature_num), e.g., 'worker_type1', 'age', 'gender', 'height', 'diseases', 'smoke', 'alcohol', etc.
+  606:                 reg_out = reg_model(batch_x1_2, x_mark_enc=batch_x_mark, one_hot_x=batch_x2[:, 0: configs['reg_non_seq_len']], device=device)
+  607:                 reg_out[non_missing_mask] = batch_x1_1[non_missing_mask]
+  608:                 rpe_pred, psi_pred = cla_model(reg_out, x_mark_enc=batch_x_mark, one_hot_x=batch_x2[:, 0: configs['cla_non_seq_len']], device=device)
+  609:                 if rpe_pred is not None:
+  610:                     rpe_preds.extend(rpe_pred.argmax(dim=1, keepdim=False).cpu().numpy())
+  611:                 if psi_pred is not None:
+  612:                     psi_preds.extend(psi_pred.argmax(dim=1, keepdim=False).cpu().numpy())
+  613: 
+  614:             # calculate precision/recall/f1-score
+  615:             rpe_prf = cal_prf_metrics(rpe_labels, rpe_preds)
+  616:             psi_prf = cal_prf_metrics(psi_labels, psi_preds)
+  617:             final_metrics['rpe_p'][str(t)] = rpe_prf['weighted']['p']
+
+--- lines 661-683 ---
+  661:         'split_type': 'split_byid',  # ‘split_byid’ or 'split_random'
+  662:         'target': ['rpe', 'psi'],
+  663:         'data_type': 'test',  # or val
+  664:         'seq_input_len': 900,
+  665:         'seq_pred_len': 900,
+  666: 
+  667:         # eval
+  668:         'seq_random_missing': True,  # apply random missing for seq_data
+  669:         'batch_size': 1,
+  670:         'shuffle': False,
+  671:         'num_workers': 1,  # number of subprocesses used for data loading
+  672:         'drop_last': False,
+  673:         'eval_times': 5,  # number evaluation times, if seq_random_missing=False then eval_times=1
+  674: 
+  675:     }
+  676:     start(configs)
+  677: 
+  678:     # for std normalization：
+  679:     #   -non_seq_data:
+  680:     #       -cols: ['age', 'height']
+  681:     #       -Mean: [48.66638655, 1.68978571]
+  682:     #       -Std.: [1.14084428e+01, 9.61965572e-02]
+  683:     #   -seq_data:
+
+======================== ob_validate_combined.py ========================
+
+--- lines 1-39 ---
+    1: #!/usr/bin/env python3
+    2: """
+    3: Validate that CombinedModel produces the same predictions as the original
+    4: Reg_Model -> restore observed values -> Cla_Model pipeline in run.py.
+    5: 
+    6: Run from the directory containing run.py and combine_models.py:
+    7:     python validate_combined.py
+    8: 
+    9: Optional examples:
+   10:     python validate_combined.py --data-root ./data --split-type split_byid
+   11:     python validate_combined.py --data-type val --max-batches 20
+   12:     python validate_combined.py --device cpu --no-random-missing
+   13: 
+   14: The script compares:
+   15:   1. RPE logits
+   16:   2. PSI logits
+   17:   3. RPE and PSI predicted classes
+   18: 
+   19: It uses the same input batch for both paths, so random missing-data generation
+   20: does not make the two predictions incomparable.
+   21: """
+   22: 
+   23: import argparse
+   24: from pathlib import Path
+   25: 
+   26: import torch
+   27: from torch.utils.data import DataLoader
+   28: 
+   29: from run import Reg_Model, Cla_Model, Heat_Stress_Dataset
+   30: from a_combine_models import CombinedModel
+   31: 
+   32: 
+   33: def load_checkpoint(path: Path):
+   34:     """Load a state_dict or a combined checkpoint on CPU."""
+   35:     try:
+   36:         obj = torch.load(path, map_location="cpu", weights_only=True)
+   37:     except TypeError:
+   38:         obj = torch.load(path, map_location="cpu")
+   39: 
+
+--- lines 90-109 ---
+   90:     parser.add_argument("--batch-size", type=int, default=1)
+   91:     parser.add_argument("--num-workers", type=int, default=0)
+   92:     parser.add_argument("--max-batches", type=int, default=0,
+   93:                         help="0 means validate the entire dataset")
+   94:     parser.add_argument("--atol", type=float, default=1e-6)
+   95:     parser.add_argument("--rtol", type=float, default=1e-5)
+   96:     parser.add_argument(
+   97:         "--no-random-missing",
+   98:         action="store_true",
+   99:         help="Disable artificial random missing-value injection in the dataset",
+  100:     )
+  101:     args = parser.parse_args()
+  102: 
+  103:     device = torch.device(args.device)
+  104:     if device.type == "cuda" and not torch.cuda.is_available():
+  105:         raise RuntimeError("CUDA was requested but is not available")
+  106: 
+  107:     model_dir = args.model_dir or (
+  108:         Path("./models") / f"trained_by_data_{args.split_type}"
+  109:     )
+
+--- lines 112-156 ---
+  112:     combined_path = model_dir / "combined_model.pth"
+  113: 
+  114:     for p in (reg_path, cla_path, combined_path):
+  115:         if not p.is_file():
+  116:             raise FileNotFoundError(f"Required file not found: {p}")
+  117: 
+  118:     # Load the original two models as the reference implementation.
+  119:     reg_reference = Reg_Model()
+  120:     cla_reference = Cla_Model()
+  121:     reg_state, _ = load_checkpoint(reg_path)
+  122:     cla_state, _ = load_checkpoint(cla_path)
+  123:     reg_reference.load_state_dict(reg_state, strict=True)
+  124:     cla_reference.load_state_dict(cla_state, strict=True)
+  125: 
+  126:     # Reconstruct the combined model and load the generated combined weights.
+  127:     combined_state, metadata = load_checkpoint(combined_path)
+  128:     combined = CombinedModel(Reg_Model(), Cla_Model())
+  129:     combined.load_state_dict(combined_state, strict=True)
+  130: 
+  131:     reg_reference.to(device).eval()
+  132:     cla_reference.to(device).eval()
+  133:     combined.to(device).eval()
+  134: 
+  135:     # Dataset configuration mirrors run.py. The actual same batch is fed to
+  136:     # both paths, even when seq_random_missing=True.
+  137:     data_dir = args.data_root / args.split_type
+  138:     dataset = Heat_Stress_Dataset(
+  139:         data_root_path=str(data_dir) + "/",
+  140:         flag=args.data_type,
+  141:         seq_input_len=900,
+  142:         seq_pred_len=900,
+  143:         target=["rpe", "psi"],
+  144:         seq_random_missing=not args.no_random_missing,
+  145:     )
+  146:     loader = DataLoader(
+  147:         dataset,
+  148:         batch_size=args.batch_size,
+  149:         shuffle=False,
+  150:         num_workers=args.num_workers,
+  151:         drop_last=False,
+  152:     )
+  153: 
+  154:     print(f"Device:       {device}")
+  155:     print(f"Dataset:      {data_dir} ({args.data_type})")
+  156:     print(f"Model folder: {model_dir}")
+
+--- lines 162-191 ---
+  162:     max_rpe_diff = 0.0
+  163:     max_psi_diff = 0.0
+  164:     rpe_class_matches = 0
+  165:     psi_class_matches = 0
+  166: 
+  167:     with torch.inference_mode():
+  168:         for batch_index, (
+  169:             batch_x1_1,
+  170:             batch_x1_2,
+  171:             batch_x2,
+  172:             _batch_y,
+  173:             batch_x_mark,
+  174:             _,
+  175:         ) in enumerate(loader):
+  176: 
+  177:             if args.max_batches and batch_index >= args.max_batches:
+  178:                 break
+  179: 
+  180:             x_original = batch_x1_1.float().to(device)
+  181:             x_reg = batch_x1_2.float().to(device)
+  182:             x_mark = batch_x_mark.float().to(device)
+  183:             worker_features = batch_x2.float().to(device)
+  184: 
+  185:             # Original run.py pipeline.
+  186:             reg_out = reg_reference(
+  187:                 x_reg,
+  188:                 x_mark_enc=x_mark,
+  189:                 one_hot_x=worker_features[:, :18],
+  190:                 device=device,
+  191:             )
+
+======================== compare_onnx_tflite_dataset.py ========================
+
+--- lines 8-25 ---
+    8: 
+    9: import numpy as np
+   10: import pandas as pd
+   11: import torch
+   12: import onnxruntime as ort
+   13: import tensorflow as tf
+   14: 
+   15: from torch.utils.data import DataLoader
+   16: from sklearn.metrics import (
+   17:     accuracy_score,
+   18:     precision_recall_fscore_support,
+   19:     classification_report,
+   20:     confusion_matrix,
+   21: )
+   22: 
+   23: from run import Heat_Stress_Dataset
+   24: 
+   25: 
+
+--- lines 71-88 ---
+   71:     parser.add_argument(
+   72:         "--seq-pred-len",
+   73:         type=int,
+   74:         default=900,
+   75:     )
+   76: 
+   77:     parser.add_argument(
+   78:         "--no-random-missing",
+   79:         action="store_true",
+   80:     )
+   81: 
+   82:     parser.add_argument(
+   83:         "--seed",
+   84:         type=int,
+   85:         default=0,
+   86:     )
+   87: 
+   88:     parser.add_argument(
+
+--- lines 127-168 ---
+  127: # ============================================================
+  128: # Missing-value preprocessing
+  129: # ============================================================
+  130: 
+  131: def prepare_model_inputs(batch):
+  132:     """
+  133:     Dataset output:
+  134:         batch_x1_1
+  135:         batch_x1_2
+  136:         batch_x2
+  137:         batch_y
+  138:         batch_x_mark
+  139:         additional_data
+  140: 
+  141:     The preprocessing below follows evaluate_onnx.py and
+  142:     evaluate_tflite.py.
+  143:     """
+  144: 
+  145:     (
+  146:         batch_x1_1,
+  147:         batch_x1_2,
+  148:         batch_x2,
+  149:         batch_y,
+  150:         batch_x_mark,
+  151:         _,
+  152:     ) = batch
+  153: 
+  154:     x_original = to_numpy(batch_x1_1).astype(
+  155:         np.float32, copy=True
+  156:     )
+  157: 
+  158:     x_reg = to_numpy(batch_x1_2).astype(
+  159:         np.float32, copy=True
+  160:     )
+  161: 
+  162:     worker_features = to_numpy(batch_x2).astype(
+  163:         np.float32, copy=True
+  164:     )
+  165: 
+  166:     x_mark = to_numpy(batch_x_mark).astype(
+  167:         np.float32, copy=True
+  168:     )
+
+--- lines 285-305 ---
+  285: 
+  286:     dataset = Heat_Stress_Dataset(
+  287:         data_root_path=data_root_path,
+  288:         flag=args.data_type,
+  289:         seq_input_len=args.seq_input_len,
+  290:         seq_pred_len=args.seq_pred_len,
+  291:         target=["rpe", "psi"],
+  292:         seq_random_missing=not args.no_random_missing,
+  293:     )
+  294: 
+  295:     loader = DataLoader(
+  296:         dataset,
+  297:         batch_size=1,
+  298:         shuffle=False,
+  299:         num_workers=args.num_workers,
+  300:         drop_last=False,
+  301:     )
+  302: 
+  303:     return dataset, loader
+  304: 
+  305: 
+
+--- lines 878-895 ---
+  878: 
+  879:     print("=" * 65)
+  880:     print("SAMPLE-BY-SAMPLE FP32 ONNX vs TFLITE VALIDATION")
+  881:     print("=" * 65)
+  882: 
+  883:     print("ONNX model:", onnx_path)
+  884:     print("TFLite model:", tflite_path)
+  885:     print("Random missing:", not args.no_random_missing)
+  886:     print("Seed:", args.seed)
+  887: 
+  888:     # Step 1: Load dataset.
+  889:     _, loader = load_dataset(args)
+  890: 
+  891:     # Step 2: Build every sample's inputs only once.
+  892:     input_samples, rpe_labels, psi_labels = (
+  893:         collect_samples(loader)
+  894:     )
+  895: 
