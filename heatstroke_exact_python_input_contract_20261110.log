@@ -1,0 +1,405 @@
+=== EVALUATE_TFLITE INPUT PREPARATION ===
+   285	        )
+   286	
+   287	    return interpreter, input_map, output_map
+   288	
+   289	
+   290	# ============================================================
+   291	# Prepare TFLite input tensors
+   292	# ============================================================
+   293	
+   294	def prepare_inputs(
+   295	    batch_x1_2,
+   296	    batch_x2,
+   297	    batch_x_mark,
+   298	):
+   299	    """
+   300	    Prepare the four inputs expected by the combined model.
+   301	
+   302	    x_values:
+   303	        Masked sequence with missing sentinel values replaced by 0.
+   304	
+   305	    missing_mask:
+   306	        1 = missing value
+   307	        0 = available value
+   308	
+   309	    x_mark:
+   310	        Temporal/calendar features.
+   311	
+   312	    worker_features:
+   313	        30 worker-level features.
+   314	    """
+   315	
+   316	    x_reg = to_numpy(batch_x1_2).astype(
+   317	        np.float32,
+   318	        copy=True,
+   319	    )
+   320	
+   321	    worker_features = to_numpy(batch_x2).astype(
+   322	        np.float32,
+   323	        copy=True,
+   324	    )
+   325	
+   326	    x_mark = to_numpy(batch_x_mark).astype(
+   327	        np.float32,
+   328	        copy=True,
+   329	    )
+   330	
+   331	    # Identify all missing-value sentinel positions.
+   332	    missing_mask = np.zeros(
+   333	        x_reg.shape,
+   334	        dtype=np.bool_,
+   335	    )
+   336	
+   337	    for missing_value in MISSING_VALUES:
+   338	        missing_mask |= (x_reg == missing_value)
+   339	
+   340	    # Replace missing values with zero.
+   341	    x_values = np.where(
+   342	        missing_mask,
+   343	        0.0,
+   344	        x_reg,
+   345	    ).astype(np.float32)
+   346	
+   347	    # Convert mask to float32.
+   348	    missing_mask = missing_mask.astype(np.float32)
+   349	
+   350	    return {
+   351	        "x_values": x_values,
+   352	        "missing_mask": missing_mask,
+   353	        "x_mark": x_mark,
+   354	        "worker_features": worker_features,
+   355	    }, missing_mask
+   356	
+   357	
+   358	# ============================================================
+   359	# TFLite inference
+   360	# ============================================================
+   361	
+   362	def run_tflite_inference(
+   363	    interpreter,
+   364	    input_map,
+   365	    output_map,
+
+=== DATASET FEATURE CONSTRUCTION ===
+   344	    def __init__(self, data_root_path, flag='test', seq_input_len=900, seq_pred_len=900, target='psi', seq_random_missing=True):
+   345	        self.data_root_path = data_root_path
+   346	        assert flag in ['test', 'val']
+   347	        self.flag = flag
+   348	        self.seq_input_len = seq_input_len
+   349	        self.seq_pred_len = seq_pred_len
+   350	        self.target = target
+   351	        self.seq_random_missing = seq_random_missing
+   352	        self.mr_last_5 = 0.1
+   353	        self.mr_thr = 0.3
+   354	
+   355	        self.seq_cols = [
+   356	            'cb_cbt',
+   357	            'wbgt_hum', 'wbgt_outdoor',
+   358	            'helmet_acc_x_mean', 'helmet_acc_y_mean', 'helmet_acc_z_mean',
+   359	        ]
+   360	        self.non_seq_cols = [
+   361	            'session', 'worker_type1', 'age', 'gender', 'height', 'diseases', 'smoke', 'alcohol',   # 18
+   362	            'prev_rpe_0', 'prev_rpe_1', 'prev_rpe_2',                                               # 30
+   363	        ]
+   364	        self.one_hot_cols = [
+   365	            'prev_rpe_0', 'prev_rpe_1', 'prev_rpe_2',
+   366	            'worker_type1', 'diseases', 'smoke', 'alcohol',
+   367	        ]
+   368	        self.__read_data__()
+   369	
+   370	    def __read_data__(self):
+   371	        df_seq = pd.read_feather(self.data_root_path + f'{self.flag}_seq.feather')
+   372	        df_non_seq = pd.read_csv(self.data_root_path + f'{self.flag}_non_seq.csv')
+   373	        df_non_seq['time'] = pd.to_datetime(df_non_seq['time'])
+   374	
+   375	        # convert rpe/psi(0-10) to new categories: [0, 1, 2, 3]
+   376	        if 'psi' in self.target:
+   377	            # df_non_seq = df_non_seq[~df_non_seq['psi'].isna()]
+   378	            df_non_seq['psi'] = df_non_seq['psi'].fillna(-1)
+   379	            df_non_seq['psi'] = df_non_seq['psi'].map(PSI_MAP)
+   380	        if 'rpe' in self.target:
+   381	            df_non_seq['rpe'] = df_non_seq['rpe'].map(RPE_MAP)
+   382	
+   383	        self.sample_indices = list(df_non_seq['sample_index'])
+   384	        self.df_non_seq = df_non_seq.copy()
+   385	        self.df_seq = df_seq.copy()
+   386	
+   387	    def data_post_process(self, df_x, pad_value=-9998, pad_value2=-9997):
+   388	        mr = df_x.isna().mean()
+   389	        df_len = df_x.shape[0]
+   390	        r1 = np.random.random()
+   391	
+   392	        if r1 < self.mr_last_5:
+   393	            # Method 1: Last 5-minute patch missing
+   394	            miss_len = min(int(df_len / 3), 300)
+   395	
+   396	            miss_mask = np.zeros(df_len, dtype=bool)
+   397	            miss_mask[df_len - miss_len:] = True
+   398	
+   399	            for col in df_x.columns:
+   400	                if mr[col] == 0.:
+   401	                    nan_mask = df_x[col].isna().to_numpy()
+   402	                    mask = miss_mask & ~nan_mask
+   403	
+   404	                    # Use .loc to avoid chained assignment
+   405	                    df_x.loc[mask, col] = pad_value
+   406	
+   407	        else:
+   408	            for col in df_x.columns:
+   409	                nan_mask = df_x[col].isna().to_numpy()
+   410	                r2 = np.random.random()
+   411	
+   412	                if r2 < 0.5:
+   413	                    # Method 2: Random missing
+   414	                    random_mask = np.random.choice(
+   415	                        [True, False],
+   416	                        size=df_len,
+   417	                        p=[self.mr_thr, 1 - self.mr_thr]
+   418	                    )
+   419	
+   420	                    mask = random_mask & ~nan_mask
+   421	                    df_x.loc[mask, col] = pad_value
+   422	
+   423	                else:
+   424	                    # Method 3: Random patch missing
+   425	                    miss_len = int(df_len * self.mr_thr)
+   426	
+   427	                    start = np.random.randint(10, df_len - miss_len)
+   428	                    end = min(start + miss_len, df_len)
+   429	
+   430	                    miss_mask = np.zeros(df_len, dtype=bool)
+   431	                    miss_mask[start:end] = True
+   432	
+   433	                    mask = miss_mask & ~nan_mask
+   434	                    df_x.loc[mask, col] = pad_value2
+   435	
+   436	        return df_x
+   437	    def __getitem__(self, index):
+   438	        sample_index = self.sample_indices[index]
+   439	        df_non_seq = self.df_non_seq.query(f'sample_index == {sample_index}')
+   440	        start_time = df_non_seq['time'].values[0] - pd.Timedelta(seconds=self.seq_input_len)
+   441	        end_time = df_non_seq['time'].values[0] - pd.Timedelta(seconds=1)
+   442	        df_seq = self.df_seq.query(f"sample_index == {sample_index} and time >= '{start_time}' and time <= '{end_time}'")
+   443	        df_seq = df_seq.reset_index(drop=True)
+   444	
+   445	        # set unreliable seq_data to nan
+   446	        missing_cols = df_non_seq['missing_col'].values[0]
+   447	        if pd.isna(missing_cols):
+   448	            missing_cols = []
+   449	        else:
+   450	            missing_cols = missing_cols.split(';')
+   451	        for c in missing_cols:
+   452	            df_seq[c] = np.nan
+   453	
+   454	        # time features
+   455	        time_stamp = time_features(pd.to_datetime(df_seq['time'].values))
+   456	        seq_x_mark = time_stamp.transpose(1, 0)[:self.seq_input_len, :]
+   457	        seq_y_mark = seq_x_mark
+   458	
+   459	        # apply manual missing for seq_data
+   460	        df_seq_x = df_seq[self.seq_cols]
+   461	        df_seq_x_1 = df_seq_x.copy()
+   462	        if self.seq_random_missing:
+   463	            df_seq_x_2 = self.data_post_process(df_seq_x_1.copy(), pad_value=-9998)
+   464	        else:
+   465	            df_seq_x_2 = df_seq_x_1.copy()
+   466	        df_seq_x_1 = df_seq_x_1.fillna(-9999)
+   467	        df_seq_x_2 = df_seq_x_2.fillna(-9999)
+   468	        x1_1 = df_seq_x_1.values[:self.seq_input_len]
+   469	        x1_2 = df_seq_x_2.values[:self.seq_input_len]
+   470	
+   471	        # non_seq input
+   472	        x2 = []
+   473	        df_temp = df_non_seq[self.non_seq_cols]
+   474	        for col in self.non_seq_cols:
+   475	            v = df_temp[col].values[-1]
+   476	            if col in self.one_hot_cols:
+   477	                if 'prev' in col:
+   478	                    col = 'prev_rpe_rpt'
+   479	                x2 += ONE_HOT_MAP[col][v]
+   480	            else:
+   481	                x2.append(v)
+   482	        x2 = np.asarray(x2)
+   483	
+   484	        # targets
+   485	        y = df_non_seq[self.target].values[-1]
+   486	
+   487	        return x1_1, x1_2, x2, y, seq_x_mark, seq_y_mark
+   488	
+   489	    def __len__(self):
+   490	        return len(self.sample_indices)
+
+=== ORIGINAL TWO-STAGE MODEL INPUT FLOW ===
+   580	        rpe_labels = []
+   581	        psi_preds = []
+   582	        psi_labels = []
+   583	        manual_missing_rate = []
+   584	        total_missing_rate = []
+   585	        with torch.no_grad():
+   586	            for i, (batch_x1_1, batch_x1_2, batch_x2, batch_y, batch_x_mark, _) in enumerate(data_loader):
+   587	                rpe_labels.extend(batch_y[:, 0].numpy())
+   588	                psi_labels.extend(batch_y[:, 1].numpy())
+   589	                batch_x1_2_copy = torch.tensor(batch_x1_2.numpy().copy())
+   590	                manual_missing_mask = (batch_x1_2_copy == -9997) | (batch_x1_2_copy == -9998)
+   591	                non_missing_mask = (batch_x1_2_copy != -9997) & (batch_x1_2_copy != -9998) & (batch_x1_2_copy != -9999)
+   592	                batch_x1_1 = batch_x1_1.float().to(device)
+   593	                batch_x1_2 = batch_x1_2.float().to(device)
+   594	                batch_x_mark = batch_x_mark.float().to(device)
+   595	                batch_x2 = batch_x2.float().to(device)
+   596	
+   597	                b, l, n = batch_x1_1.size()
+   598	                mr_1 = len(batch_x1_2_copy[manual_missing_mask]) / (b * l * n)
+   599	                mr_2 = len(batch_x1_2_copy[~non_missing_mask]) / (b * l * n)
+   600	                manual_missing_rate.append(mr_1)
+   601	                total_missing_rate.append(mr_2)
+   602	
+   603	                # batch_x1_2 is the main input: (batch_size, seq_len, feature_num) = (1, 900, 7), including {core_temp, acc_x, acc_y, acc_z, wbgt_humidity, wbgt_index}
+   604	                # batch_x_mark is the time feature: (batch_size, seq_len, feature_num) = (1, 900, 3)
+   605	                # one_hot_x is other features of workers: (batch_size, feature_num), e.g., 'worker_type1', 'age', 'gender', 'height', 'diseases', 'smoke', 'alcohol', etc.
+   606	                reg_out = reg_model(batch_x1_2, x_mark_enc=batch_x_mark, one_hot_x=batch_x2[:, 0: configs['reg_non_seq_len']], device=device)
+   607	                reg_out[non_missing_mask] = batch_x1_1[non_missing_mask]
+   608	                rpe_pred, psi_pred = cla_model(reg_out, x_mark_enc=batch_x_mark, one_hot_x=batch_x2[:, 0: configs['cla_non_seq_len']], device=device)
+   609	                if rpe_pred is not None:
+   610	                    rpe_preds.extend(rpe_pred.argmax(dim=1, keepdim=False).cpu().numpy())
+   611	                if psi_pred is not None:
+   612	                    psi_preds.extend(psi_pred.argmax(dim=1, keepdim=False).cpu().numpy())
+   613	
+   614	            # calculate precision/recall/f1-score
+   615	            rpe_prf = cal_prf_metrics(rpe_labels, rpe_preds)
+
+=== COMBINED MODEL INPUT MAPPING ===
+   155	    )
+   156	
+   157	(
+   158	    x_original,
+   159	    x_reg,
+   160	    worker_features,
+   161	    y,
+   162	    x_mark,
+   163	    y_mark,
+   164	) = dataset[SAMPLE_INDEX]
+   165	
+   166	
+   167	# Convert dataset values to NumPy.
+   168	
+   169	x_original = to_numpy(x_original).astype(np.float32)
+   170	x_reg = to_numpy(x_reg).astype(np.float32)
+   171	worker_features = to_numpy(worker_features).astype(np.float32)
+   172	x_mark = to_numpy(x_mark).astype(np.float32)
+   173	
+   174	
+   175	# Add batch dimension if necessary.
+   176	
+   177	if x_original.ndim == 2:
+   178	    x_original = x_original[np.newaxis, ...]
+   179	
+   180	if x_reg.ndim == 2:
+   181	    x_reg = x_reg[np.newaxis, ...]
+   182	
+   183	if worker_features.ndim == 1:
+   184	    worker_features = worker_features[np.newaxis, ...]
+   185	
+   186	if x_mark.ndim == 2:
+   187	    x_mark = x_mark[np.newaxis, ...]
+   188	
+   189	
+   190	print("\nSample information:")
+   191	print("Sample index     :", SAMPLE_INDEX)
+   192	print("x_original      :", x_original.shape)
+   193	print("x_reg           :", x_reg.shape)
+   194	print("worker_features :", worker_features.shape)
+   195	print("x_mark          :", x_mark.shape)
+   196	
+   197	
+   198	# ============================================================
+   199	# 2. Prepare model inputs
+   200	# ============================================================
+   201	
+   202	# Identify missing values from the regression input.
+   203	
+   204	missing_mask = np.zeros(
+   205	    x_reg.shape,
+   206	    dtype=bool,
+   207	)
+   208	
+   209	for sentinel in (-9997.0, -9998.0, -9999.0):
+   210	    missing_mask |= (x_reg == sentinel)
+   211	
+   212	
+   213	# The combined model receives:
+   214	#
+   215	# x_values:
+   216	#     Original sequence with missing values replaced by zero.
+   217	#
+   218	# missing_mask:
+   219	#     1 = missing, 0 = observed.
+   220	
+   221	x_values = np.where(
+   222	    missing_mask,
+   223	    0.0,
+   224	    x_original,
+   225	).astype(np.float32)
+   226	
+   227	missing_mask = missing_mask.astype(np.float32)
+   228	
+   229	
+   230	inputs = {
+   231	    "x_values": x_values,
+   232	    "missing_mask": missing_mask,
+   233	    "x_mark": x_mark,
+   234	    "worker_features": worker_features,
+   235	}
+   236	
+   237	
+   238	print("\nModel input information:")
+   239	
+   240	for name, value in inputs.items():
+
+=== CALIBRATION INPUT CONSTRUCTION ===
+    70	
+    71	
+    72	# ------------------------------------------------------------
+    73	# Convert dataset samples to ONNX inputs
+    74	# ------------------------------------------------------------
+    75	
+    76	missing_count = 0
+    77	total_sequence_elements = 0
+    78	
+    79	for index in range(len(dataset)):
+    80	
+    81	    # Dataset output:
+    82	    # x1_1, x1_2, x2, y, seq_x_mark, seq_y_mark
+    83	    sample = dataset[index]
+    84	
+    85	    x1_1 = np.asarray(sample[0], dtype=np.float32)
+    86	    x1_2 = np.asarray(sample[1], dtype=np.float32)
+    87	    x2 = np.asarray(sample[2], dtype=np.float32)
+    88	    seq_x_mark = np.asarray(sample[4], dtype=np.float32)
+    89	
+    90	    # Identify missing sequence elements.
+    91	    missing_mask = np.isin(
+    92	        x1_2,
+    93	        MISSING_SENTINELS
+    94	    ).astype(np.float32)
+    95	
+    96	    # Replace missing sequence values with zero.
+    97	    x_values = np.where(
+    98	        missing_mask > 0,
+    99	        0.0,
+   100	        x1_1
+   101	    ).astype(np.float32)
+   102	
+   103	    # Add batch dimension.
+   104	    inputs = {
+   105	        "x_values": x_values[np.newaxis, :, :],
+   106	        "missing_mask": missing_mask[np.newaxis, :, :],
+   107	        "x_mark": seq_x_mark[np.newaxis, :, :],
+   108	        "worker_features": x2[np.newaxis, :],
+   109	    }
+   110	
+   111	    # Validate shapes and values.
+   112	    for input_name, expected_shape in INPUT_SHAPES.items():
+   113	
+   114	        value = inputs[input_name]
+   115	
