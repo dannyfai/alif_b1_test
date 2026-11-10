@@ -1,0 +1,710 @@
+=== STATIC MODEL IMPLEMENTATION ===
+     1	#!/usr/bin/env python3
+     2	"""
+     3	Prepare the Heat Stress Reg_Model + Cla_Model for fixed-shape export.
+     4	
+     5	Requirements:
+     6	  - Keep this file beside the original run.py.
+     7	  - run.py must define Reg_Model and Cla_Model.
+     8	  - Checkpoints:
+     9	      models/trained_by_data_split_byid/reg_model.pth
+    10	      models/trained_by_data_split_byid/rpe_psi_cla_model.pth
+    11	
+    12	Inputs to the prepared model:
+    13	  x_values:       float32 [1, 900, 6], missing positions replaced by 0
+    14	  missing_mask:   float32/bool [1, 900, 6], 1/True means missing
+    15	  x_mark:         float32 [1, 900, 3]
+    16	  worker_features:float32 [1, 30]
+    17	
+    18	Outputs:
+    19	  rpe_logits: [1, 4]
+    20	  psi_logits: [1, 4]
+    21	
+    22	The fixed-size masked compaction below reproduces the original operation:
+    23	  select observed values in chronological order, then adaptive_avg_pool1d
+    24	  from the observed count to 1800 samples.
+    25	It uses fixed tensor dimensions, sorting/gathering, and prefix sums instead
+    26	of boolean indexing and variable-length tensors.
+    27	
+    28	Note:
+    29	  ONNX exportability does not guarantee that every operator is supported by
+    30	  TFLite Micro or mapped to Ethos-U55. In particular, SORT/TopK and LSTM
+    31	  support must be checked in the actual ONNX->TFLite->Vela toolchain.
+    32	"""
+    33	
+    34	import argparse
+    35	from pathlib import Path
+    36	
+    37	import torch
+    38	import torch.nn as nn
+    39	
+    40	# Import the exact trained architectures from the supplied original run.py.
+    41	from run import Reg_Model, Cla_Model
+    42	
+    43	
+    44	SEQ_LEN = 900
+    45	SEQ_FEATURES = 6
+    46	TIME_FEATURES = 3
+    47	REG_WORKER_FEATURES = 18
+    48	CLA_WORKER_FEATURES = 30
+    49	COMPACT_SEQ_LEN = SEQ_LEN * 2
+    50	
+    51	
+    52	def load_state_dict_compat(path: Path):
+    53	    """Load either a raw state_dict or a common wrapped checkpoint."""
+    54	    try:
+    55	        obj = torch.load(path, map_location="cpu", weights_only=True)
+    56	    except TypeError:
+    57	        obj = torch.load(path, map_location="cpu")
+    58	
+    59	    if isinstance(obj, dict):
+    60	        if "model_state_dict" in obj:
+    61	            obj = obj["model_state_dict"]
+    62	        elif "state_dict" in obj:
+    63	            obj = obj["state_dict"]
+    64	
+    65	    if not isinstance(obj, dict):
+    66	        raise TypeError(f"{path} does not contain a state_dict")
+    67	    return obj
+    68	
+    69	
+    70	class StaticRegModel(Reg_Model):
+    71	    """
+    72	    Same layers/parameter names as Reg_Model, but with a static-shape forward.
+    73	
+    74	    The constructor is inherited from Reg_Model, so trained state_dict keys
+    75	    remain compatible. missing_mask=True means that a sensor value is missing.
+    76	    """
+    77	
+    78	    @staticmethod
+    79	    def masked_compact_adaptive_pool(x, valid, output_size=COMPACT_SEQ_LEN):
+    80	        """
+    81	        x, valid: [B, L, N]
+    82	        returns:  [B, output_size, N]
+    83	
+    84	        For each channel, valid samples are compacted in chronological order.
+    85	        The output is mathematically equivalent to adaptive_avg_pool1d over
+    86	        that compacted variable-length sequence, including the all-missing
+    87	        case (which returns zeros).
+    88	
+    89	        All intermediate tensor dimensions are fixed by B, L, N, output_size.
+    90	        """
+    91	        batch, length, channels = x.shape
+    92	
+    93	        # Unique sort keys preserve chronological order:
+    94	        # valid positions get keys [0, L-1], missing positions [L, 2L-1].
+    95	        positions = torch.arange(
+    96	            length, device=x.device, dtype=torch.int64
+    97	        ).view(1, length, 1).expand(batch, length, channels)
+    98	
+    99	        sort_keys = positions + (~valid).to(torch.int64) * length
+   100	        order = torch.argsort(sort_keys, dim=1)
+   101	        compacted = torch.gather(x, dim=1, index=order)
+   102	
+   103	        count = valid.to(torch.int32).sum(dim=1)       # [B, N]
+   104	        safe_count = torch.clamp(count, min=1)         # avoid divide by zero
+   105	
+   106	        # Prefix sums allow each adaptive-pooling bin to be calculated using
+   107	        # two gathers. PyTorch adaptive pooling uses:
+   108	        # start = floor(i * input_len / output_len)
+   109	        # end   = ceil((i+1) * input_len / output_len)
+   110	        prefix = torch.cat(
+   111	            (
+   112	                torch.zeros(
+   113	                    (batch, 1, channels),
+   114	                    dtype=x.dtype,
+   115	                    device=x.device,
+   116	                ),
+   117	                torch.cumsum(compacted, dim=1),
+   118	            ),
+   119	            dim=1,
+   120	        )                                               # [B, L+1, N]
+   121	
+   122	        out_index = torch.arange(
+   123	            output_size, device=x.device, dtype=torch.int32
+   124	        ).view(1, output_size, 1)
+   125	
+   126	        start = (out_index * safe_count.unsqueeze(1)) // output_size
+   127	        end_numerator = (out_index + 1) * safe_count.unsqueeze(1)
+   128	        end = (end_numerator + output_size - 1) // output_size
+   129	
+   130	        start_sum = torch.gather(
+   131	            prefix, 1, start.to(torch.int64).expand(batch, output_size, channels)
+   132	        )
+   133	        end_sum = torch.gather(
+   134	            prefix, 1, end.to(torch.int64).expand(batch, output_size, channels)
+   135	        )
+   136	
+   137	        bin_size = torch.clamp(end - start, min=1).to(x.dtype)
+   138	        pooled = (end_sum - start_sum) / bin_size
+   139	
+   140	        # The original implementation returns zeros for an all-missing channel.
+   141	        pooled = torch.where(
+   142	            (count > 0).unsqueeze(1),
+   143	            pooled,
+   144	            torch.zeros_like(pooled),
+   145	        )
+   146	        return pooled
+   147	
+   148	    def forward(self, x, missing_mask, x_mark, worker_features):
+   149	        """
+   150	        Fixed deployment signature:
+   151	          x:               [1, 900, 6], missing positions set to zero
+   152	          missing_mask:    [1, 900, 6], True/1 means missing
+   153	          x_mark:          [1, 900, 3]
+   154	          worker_features: [1, 18]
+   155	        """
+   156	        missing_mask = missing_mask > 0.5
+   157	        valid = ~missing_mask
+   158	        batch = x.shape[0]
+   159	
+   160	        # Non-sequential worker features: [B,18] -> [B,900,1].
+   161	        non_seq_enc_out = self.non_seq_enc(worker_features)
+   162	        time_and_worker = torch.cat(
+   163	            (x_mark, non_seq_enc_out.reshape(batch, SEQ_LEN, 1)),
+   164	            dim=2,
+   165	        )
+   166	
+   167	        # Single-variate feature branch. This reproduces the original
+   168	        # valid-value compaction + adaptive_avg_pool1d(..., 1800) operation.
+   169	        compacted_pool = self.masked_compact_adaptive_pool(
+   170	            x, valid, COMPACT_SEQ_LEN
+   171	        )
+   172	
+   173	        svf_out = []
+   174	        for feature_index, linear in enumerate(self.svf):
+   175	            svf_out.append(linear(compacted_pool[:, :, feature_index]))
+   176	
+   177	        svf_enc = torch.stack(svf_out, dim=2)            # [B,900,6]
+   178	        svf_enc = torch.where(
+   179	            missing_mask, svf_enc, torch.zeros_like(svf_enc)
+   180	        )
+   181	
+   182	        # Cross-variate branch. Replace missing samples with the mean of
+   183	        # observed samples in that channel. All-missing channels become zero.
+   184	        valid_float = valid.to(x.dtype)
+   185	        channel_count = valid_float.sum(dim=1, keepdim=True)
+   186	        channel_sum = (x * valid_float).sum(dim=1, keepdim=True)
+   187	        channel_mean = channel_sum / torch.clamp(channel_count, min=1.0)
+   188	        filled = torch.where(missing_mask, channel_mean.expand_as(x), x)
+   189	
+   190	        cvf_enc = self.cvf(filled.permute(0, 2, 1)).permute(0, 2, 1)
+   191	        cvf_enc = torch.where(
+   192	            missing_mask, cvf_enc, torch.zeros_like(cvf_enc)
+   193	        )
+   194	
+   195	        # Original observed values are zeroed in this branch; reconstructed
+   196	        # features are used only at missing positions.
+   197	        observed_zeroed = torch.where(missing_mask, torch.zeros_like(x), x)
+   198	        embedding = torch.cat(
+   199	            ((svf_enc + cvf_enc) / 2.0, observed_zeroed),
+   200	            dim=2,
+   201	        )
+   202	        embedding = torch.cat((embedding, time_and_worker), dim=2)
+   203	
+   204	        encoded, _ = self.rnn(embedding)
+   205	
+   206	        projected = []
+   207	        for projector in self.proj:
+   208	            projected.append(projector(encoded).reshape(batch, SEQ_LEN))
+   209	        return torch.stack(projected, dim=2)             # [B,900,6]
+   210	
+   211	
+   212	class StaticCombinedModel(nn.Module):
+   213	    """One end-to-end model: static regression -> restore -> classification."""
+   214	
+   215	    def __init__(self, reg_model, cla_model):
+   216	        super().__init__()
+   217	        self.reg_model = reg_model
+   218	        self.cla_model = cla_model
+   219	
+   220	    def forward(self, x_values, missing_mask, x_mark, worker_features):
+
+=== STATIC MODEL EQUIVALENCE / CHECKPOINT LOADING ===
+   250	    worker = torch.randn(1, CLA_WORKER_FEATURES, device=device)
+   251	    return x, mask.to(torch.float32), x_mark, worker
+   252	
+   253	
+   254	@torch.no_grad()
+   255	def validate_against_original(original_reg, cla_model, combined_model):
+   256	    """
+   257	    Compare the refactored regression + combined outputs with the original
+   258	    sentinel-based run.py behavior on synthetic test inputs.
+   259	
+   260	    For final validation, repeat this using real preprocessed validation samples.
+   261	    """
+   262	    x_values, mask_float, x_mark, worker = make_synthetic_test_inputs()
+   263	    mask = mask_float > 0.5
+   264	
+   265	    # Reconstruct the original run.py input representation.
+   266	    x_sentinel = torch.where(
+   267	        mask,
+   268	        torch.full_like(x_values, -9998.0),
+   269	        x_values,
+   270	    )
+   271	
+   272	    original_reg.eval()
+   273	    cla_model.eval()
+   274	    combined_model.eval()
+   275	
+   276	    old_reg_prediction = original_reg(
+   277	        x_sentinel,
+   278	        x_mark_enc=x_mark,
+   279	        one_hot_x=worker[:, :REG_WORKER_FEATURES],
+   280	        device="cpu",
+   281	    )
+   282	    old_restored = torch.where(mask, old_reg_prediction, x_values)
+   283	    old_rpe, old_psi = cla_model(
+   284	        old_restored,
+   285	        x_mark_enc=x_mark,
+   286	        one_hot_x=worker[:, :CLA_WORKER_FEATURES],
+   287	        device="cpu",
+   288	    )
+   289	
+   290	    new_rpe, new_psi = combined_model(
+   291	        x_values, mask_float, x_mark, worker
+   292	    )
+   293	
+   294	    torch.testing.assert_close(
+   295	        new_rpe, old_rpe, rtol=1e-3, atol=1e-3,
+   296	        msg="RPE logits differ from original pipeline",
+   297	    )
+   298	    torch.testing.assert_close(
+   299	        new_psi, old_psi, rtol=1e-3, atol=1e-3,
+   300	        msg="PSI logits differ from original pipeline",
+   301	    )
+   302	    print("Synthetic equivalence test passed.")
+   303	    print("RPE max abs error:", (new_rpe - old_rpe).abs().max().item())
+   304	    print("PSI max abs error:", (new_psi - old_psi).abs().max().item())
+   305	
+   306	
+   307	def export_onnx(model, output_path: Path):
+   308	    model.eval()
+   309	    example_inputs = make_synthetic_test_inputs()
+   310	
+   311	    torch.onnx.export(
+   312	        model,
+   313	        example_inputs,
+   314	        str(output_path),
+   315	        export_params=True,
+   316	        opset_version=18,
+   317	        do_constant_folding=True,
+   318	        input_names=[
+   319	            "x_values",
+   320	            "missing_mask",
+   321	            "x_mark",
+   322	            "worker_features",
+   323	        ],
+   324	        output_names=["rpe_logits", "psi_logits"],
+   325	        dynamic_axes=None,   # no dynamic axes: fixed [1,900,...] interface
+   326	        verbose=False,
+   327	    )
+   328	
+   329	    try:
+   330	        import onnx
+   331	        onnx_model = onnx.load(str(output_path))
+   332	        onnx.checker.check_model(onnx_model)
+   333	        print("ONNX checker: passed")
+   334	    except ImportError:
+   335	        print("onnx package not installed; skipped ONNX checker.")
+   336	
+   337	    print(f"ONNX exported: {output_path.resolve()}")
+   338	
+   339	
+   340	def main():
+   341	    parser = argparse.ArgumentParser()
+   342	    parser.add_argument(
+   343	        "--model-dir",
+   344	        type=Path,
+   345	        default=Path("./models/trained_by_data_split_byid"),
+   346	    )
+   347	    parser.add_argument(
+   348	        "--output-dir",
+   349	        type=Path,
+   350	        default=Path("./export"),
+   351	    )
+   352	    parser.add_argument("--skip-onnx", action="store_true")
+   353	    parser.add_argument("--skip-validation", action="store_true")
+   354	    args = parser.parse_args()
+   355	
+   356	    torch.set_grad_enabled(False)
+   357	
+   358	    reg_path = args.model_dir / "reg_model.pth"
+   359	    cla_path = args.model_dir / "rpe_psi_cla_model.pth"
+   360	    if not reg_path.is_file():
+   361	        raise FileNotFoundError(reg_path)
+   362	    if not cla_path.is_file():
+   363	        raise FileNotFoundError(cla_path)
+   364	
+   365	    args.output_dir.mkdir(parents=True, exist_ok=True)
+   366	
+   367	    # Instantiate exact original architectures and load trained parameters.
+   368	    original_reg = Reg_Model().cpu().eval()
+   369	    cla_model = Cla_Model().cpu().eval()
+   370	    original_reg.load_state_dict(load_state_dict_compat(reg_path), strict=True)
+   371	    cla_model.load_state_dict(load_state_dict_compat(cla_path), strict=True)
+   372	
+   373	    # Same Reg_Model parameters and names, but with static-shape forward.
+   374	    static_reg = StaticRegModel().cpu().eval()
+   375	    static_reg.load_state_dict(original_reg.state_dict(), strict=True)
+   376	
+   377	    combined = StaticCombinedModel(static_reg, cla_model).cpu().eval()
+   378	
+   379	    if not args.skip_validation:
+   380	        validate_against_original(original_reg, cla_model, combined)
+   381	
+   382	    checkpoint_path = args.output_dir / "combined_static_model.pth"
+   383	    torch.save(
+   384	        {
+   385	            "format": "heat_stress_static_combined_v1",
+   386	            "model_state_dict": combined.state_dict(),
+   387	            "input_shapes": {
+   388	                "x_values": [1, 900, 6],
+   389	                "missing_mask": [1, 900, 6],
+   390	                "x_mark": [1, 900, 3],
+   391	                "worker_features": [1, 30],
+   392	            },
+   393	            "output_shapes": {
+   394	                "rpe_logits": [1, 4],
+   395	                "psi_logits": [1, 4],
+   396	            },
+   397	            "missing_mask_semantics": "1/True means missing; x_values must be zero at missing positions",
+   398	            "notes": (
+   399	                "Static masked compaction uses argsort/gather/cumsum. "
+   400	                "Check downstream TFLite/TFLM/Vela operator support."
+   401	            ),
+   402	        },
+   403	        checkpoint_path,
+   404	    )
+   405	    print(f"Static combined checkpoint saved: {checkpoint_path.resolve()}")
+   406	
+   407	    if not args.skip_onnx:
+   408	        onnx_path = args.output_dir / "combined_static_model.onnx"
+   409	        export_onnx(combined, onnx_path)
+   410	
+   411	
+   412	if __name__ == "__main__":
+   413	    main()
+
+=== REAL DATASET COMBINED VALIDATOR ===
+     1	#!/usr/bin/env python3
+     2	"""
+     3	Validate that CombinedModel produces the same predictions as the original
+     4	Reg_Model -> restore observed values -> Cla_Model pipeline in run.py.
+     5	
+     6	Run from the directory containing run.py and combine_models.py:
+     7	    python validate_combined.py
+     8	
+     9	Optional examples:
+    10	    python validate_combined.py --data-root ./data --split-type split_byid
+    11	    python validate_combined.py --data-type val --max-batches 20
+    12	    python validate_combined.py --device cpu --no-random-missing
+    13	
+    14	The script compares:
+    15	  1. RPE logits
+    16	  2. PSI logits
+    17	  3. RPE and PSI predicted classes
+    18	
+    19	It uses the same input batch for both paths, so random missing-data generation
+    20	does not make the two predictions incomparable.
+    21	"""
+    22	
+    23	import argparse
+    24	from pathlib import Path
+    25	
+    26	import torch
+    27	from torch.utils.data import DataLoader
+    28	
+    29	from run import Reg_Model, Cla_Model, Heat_Stress_Dataset
+    30	from a_combine_models import CombinedModel
+    31	
+    32	
+    33	def load_checkpoint(path: Path):
+    34	    """Load a state_dict or a combined checkpoint on CPU."""
+    35	    try:
+    36	        obj = torch.load(path, map_location="cpu", weights_only=True)
+    37	    except TypeError:
+    38	        obj = torch.load(path, map_location="cpu")
+    39	
+    40	    if isinstance(obj, dict):
+    41	        if "model_state_dict" in obj:
+    42	            return obj["model_state_dict"], obj
+    43	        if "state_dict" in obj:
+    44	            return obj["state_dict"], obj
+    45	
+    46	    return obj, {}
+    47	
+    48	
+    49	def max_abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
+    50	    if a.shape != b.shape:
+    51	        raise ValueError(f"Output shape mismatch: {tuple(a.shape)} vs {tuple(b.shape)}")
+    52	    if a.numel() == 0:
+    53	        return 0.0
+    54	    return (a - b).abs().max().item()
+    55	
+    56	
+    57	def compare_outputs(name, reference, combined, atol, rtol):
+    58	    if reference is None or combined is None:
+    59	        if reference is not combined:
+    60	            raise AssertionError(
+    61	                f"{name}: one model returned None while the other returned a tensor"
+    62	            )
+    63	        print(f"{name}: both outputs are None")
+    64	        return 0.0
+    65	
+    66	    if reference.shape != combined.shape:
+    67	        raise AssertionError(
+    68	            f"{name}: shape mismatch: {tuple(reference.shape)} "
+    69	            f"vs {tuple(combined.shape)}"
+    70	        )
+    71	
+    72	    diff = max_abs_diff(reference, combined)
+    73	    passed = torch.allclose(reference, combined, atol=atol, rtol=rtol)
+    74	    print(
+    75	        f"{name}: max_abs_diff={diff:.9g}, "
+    76	        f"allclose(atol={atol}, rtol={rtol})={passed}"
+    77	    )
+    78	    if not passed:
+    79	        raise AssertionError(f"{name} does not match")
+    80	    return diff
+    81	
+    82	
+    83	def main():
+    84	    parser = argparse.ArgumentParser()
+    85	    parser.add_argument("--data-root", type=Path, default=Path("./data"))
+    86	    parser.add_argument("--model-dir", type=Path, default=None)
+    87	    parser.add_argument("--split-type", default="split_byid")
+    88	    parser.add_argument("--data-type", choices=["test", "val"], default="test")
+    89	    parser.add_argument("--device", default="cpu")
+    90	    parser.add_argument("--batch-size", type=int, default=1)
+    91	    parser.add_argument("--num-workers", type=int, default=0)
+    92	    parser.add_argument("--max-batches", type=int, default=0,
+    93	                        help="0 means validate the entire dataset")
+    94	    parser.add_argument("--atol", type=float, default=1e-6)
+    95	    parser.add_argument("--rtol", type=float, default=1e-5)
+    96	    parser.add_argument(
+    97	        "--no-random-missing",
+    98	        action="store_true",
+    99	        help="Disable artificial random missing-value injection in the dataset",
+   100	    )
+   101	    args = parser.parse_args()
+   102	
+   103	    device = torch.device(args.device)
+   104	    if device.type == "cuda" and not torch.cuda.is_available():
+   105	        raise RuntimeError("CUDA was requested but is not available")
+   106	
+   107	    model_dir = args.model_dir or (
+   108	        Path("./models") / f"trained_by_data_{args.split_type}"
+   109	    )
+   110	    reg_path = model_dir / "reg_model.pth"
+   111	    cla_path = model_dir / "rpe_psi_cla_model.pth"
+   112	    combined_path = model_dir / "combined_model.pth"
+   113	
+   114	    for p in (reg_path, cla_path, combined_path):
+   115	        if not p.is_file():
+   116	            raise FileNotFoundError(f"Required file not found: {p}")
+   117	
+   118	    # Load the original two models as the reference implementation.
+   119	    reg_reference = Reg_Model()
+   120	    cla_reference = Cla_Model()
+   121	    reg_state, _ = load_checkpoint(reg_path)
+   122	    cla_state, _ = load_checkpoint(cla_path)
+   123	    reg_reference.load_state_dict(reg_state, strict=True)
+   124	    cla_reference.load_state_dict(cla_state, strict=True)
+   125	
+   126	    # Reconstruct the combined model and load the generated combined weights.
+   127	    combined_state, metadata = load_checkpoint(combined_path)
+   128	    combined = CombinedModel(Reg_Model(), Cla_Model())
+   129	    combined.load_state_dict(combined_state, strict=True)
+   130	
+   131	    reg_reference.to(device).eval()
+   132	    cla_reference.to(device).eval()
+   133	    combined.to(device).eval()
+   134	
+   135	    # Dataset configuration mirrors run.py. The actual same batch is fed to
+   136	    # both paths, even when seq_random_missing=True.
+   137	    data_dir = args.data_root / args.split_type
+   138	    dataset = Heat_Stress_Dataset(
+   139	        data_root_path=str(data_dir) + "/",
+   140	        flag=args.data_type,
+   141	        seq_input_len=900,
+   142	        seq_pred_len=900,
+   143	        target=["rpe", "psi"],
+   144	        seq_random_missing=not args.no_random_missing,
+   145	    )
+   146	    loader = DataLoader(
+   147	        dataset,
+   148	        batch_size=args.batch_size,
+   149	        shuffle=False,
+   150	        num_workers=args.num_workers,
+   151	        drop_last=False,
+   152	    )
+   153	
+   154	    print(f"Device:       {device}")
+   155	    print(f"Dataset:      {data_dir} ({args.data_type})")
+   156	    print(f"Model folder: {model_dir}")
+   157	    print(f"Combined:     {combined_path}")
+   158	    if metadata:
+   159	        print(f"Checkpoint format: {metadata.get('format', 'not specified')}")
+   160	
+   161	    total = 0
+   162	    max_rpe_diff = 0.0
+   163	    max_psi_diff = 0.0
+   164	    rpe_class_matches = 0
+   165	    psi_class_matches = 0
+   166	
+   167	    with torch.inference_mode():
+   168	        for batch_index, (
+   169	            batch_x1_1,
+   170	            batch_x1_2,
+   171	            batch_x2,
+   172	            _batch_y,
+   173	            batch_x_mark,
+   174	            _,
+   175	        ) in enumerate(loader):
+   176	
+   177	            if args.max_batches and batch_index >= args.max_batches:
+   178	                break
+   179	
+   180	            x_original = batch_x1_1.float().to(device)
+   181	            x_reg = batch_x1_2.float().to(device)
+   182	            x_mark = batch_x_mark.float().to(device)
+   183	            worker_features = batch_x2.float().to(device)
+   184	
+   185	            # Original run.py pipeline.
+   186	            reg_out = reg_reference(
+   187	                x_reg,
+   188	                x_mark_enc=x_mark,
+   189	                one_hot_x=worker_features[:, :18],
+   190	                device=device,
+   191	            )
+   192	
+   193	            # Match run.py's exact restoration operation.
+   194	            non_missing_mask = (
+   195	                (x_reg != -9997)
+   196	                & (x_reg != -9998)
+   197	                & (x_reg != -9999)
+   198	            )
+   199	            reg_out = reg_out.clone()
+   200	            reg_out[non_missing_mask] = x_original[non_missing_mask]
+   201	
+   202	            reference_rpe, reference_psi = cla_reference(
+   203	                reg_out,
+   204	                x_mark_enc=x_mark,
+   205	                one_hot_x=worker_features[:, :30],
+   206	                device=device,
+   207	            )
+   208	
+   209	            # Combined pipeline.
+   210	            combined_rpe, combined_psi = combined(
+   211	                x_original,
+   212	                x_reg,
+   213	                x_mark,
+   214	                worker_features,
+   215	            )
+   216	
+   217	            rpe_diff = compare_outputs(
+   218	                f"Batch {batch_index} RPE",
+   219	                reference_rpe,
+   220	                combined_rpe,
+   221	                args.atol,
+   222	                args.rtol,
+   223	            )
+   224	            psi_diff = compare_outputs(
+   225	                f"Batch {batch_index} PSI",
+   226	                reference_psi,
+   227	                combined_psi,
+   228	                args.atol,
+   229	                args.rtol,
+   230	            )
+   231	
+   232	            max_rpe_diff = max(max_rpe_diff, rpe_diff)
+   233	            max_psi_diff = max(max_psi_diff, psi_diff)
+   234	
+   235	            if reference_rpe is not None:
+
+=== FOUR-INPUT DATASET PREPARATION ===
+   127	# ============================================================
+   128	# Missing-value preprocessing
+   129	# ============================================================
+   130	
+   131	def prepare_model_inputs(batch):
+   132	    """
+   133	    Dataset output:
+   134	        batch_x1_1
+   135	        batch_x1_2
+   136	        batch_x2
+   137	        batch_y
+   138	        batch_x_mark
+   139	        additional_data
+   140	
+   141	    The preprocessing below follows evaluate_onnx.py and
+   142	    evaluate_tflite.py.
+   143	    """
+   144	
+   145	    (
+   146	        batch_x1_1,
+   147	        batch_x1_2,
+   148	        batch_x2,
+   149	        batch_y,
+   150	        batch_x_mark,
+   151	        _,
+   152	    ) = batch
+   153	
+   154	    x_original = to_numpy(batch_x1_1).astype(
+   155	        np.float32, copy=True
+   156	    )
+   157	
+   158	    x_reg = to_numpy(batch_x1_2).astype(
+   159	        np.float32, copy=True
+   160	    )
+   161	
+   162	    worker_features = to_numpy(batch_x2).astype(
+   163	        np.float32, copy=True
+   164	    )
+   165	
+   166	    x_mark = to_numpy(batch_x_mark).astype(
+   167	        np.float32, copy=True
+   168	    )
+   169	
+   170	    labels = to_numpy(batch_y).copy()
+   171	
+   172	    # Missing-value markers are stored in x_reg.
+   173	    missing_mask = np.zeros(
+   174	        x_reg.shape,
+   175	        dtype=bool,
+   176	    )
+   177	
+   178	    for sentinel in (-9997.0, -9998.0, -9999.0):
+   179	        missing_mask |= (x_reg == sentinel)
+   180	
+   181	    # Replace missing values in the original input with zero.
+   182	    x_values = np.where(
+   183	        missing_mask,
+   184	        0.0,
+   185	        x_original,
+   186	    ).astype(np.float32)
+   187	
+   188	    missing_mask_float = missing_mask.astype(
+   189	        np.float32
+   190	    )
+   191	
+   192	    return {
+   193	        "x_values": x_values,
+   194	        "missing_mask": missing_mask_float,
+   195	        "x_mark": x_mark,
+   196	        "worker_features": worker_features,
+   197	    }, labels
+   198	
+   199	
+   200	# ============================================================
+   201	# TFLite tensor-name matching
+   202	# ============================================================
+   203	
+   204	def normalize_tensor_name(name):
+   205	    return str(name).lower().replace(":0", "")
+   206	
+   207	
+   208	def find_tensor_detail(details, expected_name):
+   209	    """
+   210	    Match a TFLite tensor by its input/output name.
