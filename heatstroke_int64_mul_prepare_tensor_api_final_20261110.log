@@ -1,0 +1,262 @@
+=== EXISTING CAST PREPARE ===
+70-    const FromT* source = micro::GetTensorData<FromT>(input);
+71-    ToT* destination = micro::GetTensorData<ToT>(output);
+72-
+73-    if (count != 0U && (source == nullptr || destination == nullptr)) {
+74-        MicroPrintf("Heatstroke CAST: null tensor data pointer.");
+75-        return kTfLiteError;
+76-    }
+77-
+78-    for (size_t i = 0U; i < count; ++i) {
+79-        destination[i] = static_cast<ToT>(source[i]);
+80-    }
+81-
+82-    return kTfLiteOk;
+83-}
+84-
+85:TfLiteStatus HeatstrokeCastPrepare(
+86-    TfLiteContext* context,
+87-    TfLiteNode* node)
+88-{
+89-    if (node == nullptr ||
+90-        node->inputs == nullptr ||
+91-        node->outputs == nullptr ||
+92-        node->inputs->size != 1 ||
+93-        node->outputs->size != 1 ||
+94-        node->builtin_data == nullptr) {
+95-        MicroPrintf("Heatstroke CAST: invalid node or parameters.");
+96-        return kTfLiteError;
+97-    }
+98-
+99-    return kTfLiteOk;
+100-}
+101-
+102-TfLiteStatus HeatstrokeCastEval(
+103-    TfLiteContext* context,
+104-    TfLiteNode* node)
+105-{
+106-    if (context == nullptr || node == nullptr ||
+107-        node->builtin_data == nullptr) {
+108-        return kTfLiteError;
+109-    }
+110-
+111-    const TfLiteEvalTensor* input =
+112-        micro::GetEvalInput(context, node, 0);
+113-    TfLiteEvalTensor* output =
+114-        micro::GetEvalOutput(context, node, 0);
+115-
+116-    if (input == nullptr || output == nullptr) {
+117-        MicroPrintf("Heatstroke CAST: missing input or output.");
+118-        return kTfLiteError;
+119-    }
+120-
+121-    const auto* params =
+122-        static_cast<const TfLiteCastParams*>(node->builtin_data);
+123-
+124-    if (params->in_data_type != input->type ||
+125-        params->out_data_type != output->type) {
+126-        MicroPrintf("Heatstroke CAST: FlatBuffer type contract mismatch.");
+127-        return kTfLiteError;
+128-    }
+129-
+130-    if (!SameShape(input->dims, output->dims)) {
+131-        MicroPrintf("Heatstroke CAST: input/output shapes differ.");
+132-        return kTfLiteError;
+133-    }
+134-
+135-    size_t count = 0U;
+136-    if (!GetElementCount(input->dims, &count)) {
+137-        MicroPrintf("Heatstroke CAST: invalid tensor dimensions.");
+138-        return kTfLiteError;
+139-    }
+140-
+141-    // These are the six conversion combinations found in this model.
+142-    switch (input->type) {
+143-        case kTfLiteBool:
+144-            if (output->type == kTfLiteFloat32) {
+145-                return CopyCast<bool, float>(input, output, count);
+146-            }
+147-            if (output->type == kTfLiteInt64) {
+148-                return CopyCast<bool, int64_t>(input, output, count);
+149-            }
+150-            break;
+--
+365-    }
+366-
+367-    const TfLiteEvalTensor* axis =
+368-        micro::GetEvalInput(context, node, 1);
+369-
+370-    return HeatstrokeSumInt64Eval(
+371-        context, node, input, axis, output);
+372-}
+373-
+374-}  // namespace
+375-
+376-TFLMRegistration RegisterHeatstrokeCastKernel()
+377-{
+378-    return micro::RegisterOp(
+379-        nullptr,
+380:        HeatstrokeCastPrepare,
+381-        HeatstrokeCastEval);
+382-}
+383-
+384-TFLMRegistration RegisterHeatstrokeSumKernel()
+385-{
+386-    return micro::RegisterOp(
+387-        HeatstrokeSumInit,
+388-        HeatstrokeSumPrepare,
+389-        HeatstrokeSumEval);
+390-}
+391-
+392-}  // namespace tflite
+
+=== EXISTING SUM PREPARE ===
+217-    if (context == nullptr ||
+218-        context->AllocatePersistentBuffer == nullptr) {
+219-        return nullptr;
+220-    }
+221-
+222-    void* storage = context->AllocatePersistentBuffer(
+223-        context, sizeof(OpDataReduce));
+224-
+225-    if (storage == nullptr) {
+226-        return nullptr;
+227-    }
+228-
+229-    return new (storage) OpDataReduce{};
+230-}
+231-
+232:TfLiteStatus HeatstrokeSumPrepare(
+233-    TfLiteContext* context,
+234-    TfLiteNode* node)
+235-{
+236-    if (node == nullptr || node->user_data == nullptr) {
+237-        MicroPrintf("Heatstroke SUM: missing operator data.");
+238-        return kTfLiteError;
+239-    }
+240-
+241-    // Retain the stock preparation path for FP32 and quantized SUM.
+242-    // INT64 does not require its quantized scratch buffer.
+243-    return PrepareMeanOrSumHelper(
+244-        context,
+245-        node,
+246-        static_cast<OpDataReduce*>(node->user_data));
+247-}
+248-
+249-TfLiteStatus HeatstrokeSumInt64Eval(
+250-    TfLiteContext* context,
+251-    TfLiteNode* node,
+252-    const TfLiteEvalTensor* input,
+253-    const TfLiteEvalTensor* axis,
+254-    TfLiteEvalTensor* output)
+255-{
+256-    if (input == nullptr || axis == nullptr || output == nullptr ||
+257-        input->dims == nullptr || axis->dims == nullptr ||
+258-        output->dims == nullptr) {
+259-        return kTfLiteError;
+260-    }
+261-
+262-    if (output->type != kTfLiteInt64 ||
+263-        axis->type != kTfLiteInt32 ||
+264-        input->dims->size != 3) {
+265-        MicroPrintf("Heatstroke SUM INT64: unsupported tensor contract.");
+266-        return kTfLiteError;
+267-    }
+268-
+269-    size_t axis_count = 0U;
+270-    if (!GetElementCount(axis->dims, &axis_count) || axis_count != 1U) {
+271-        MicroPrintf("Heatstroke SUM INT64: expected one reduction axis.");
+272-        return kTfLiteError;
+273-    }
+274-
+275-    const int* axis_values = micro::GetTensorData<int>(axis);
+276-    if (axis_values == nullptr) {
+277-        return kTfLiteError;
+278-    }
+279-
+280-    int normalized_axis = axis_values[0];
+281-    if (normalized_axis < 0) {
+282-        normalized_axis += input->dims->size;
+283-    }
+284-
+285-    // This is the model's channel-wise valid-sample count:
+286-    // input [1,900,6], reduction axis 1, output [1,6].
+287-    if (normalized_axis != 1 ||
+288-        input->dims->data[0] != 1 ||
+289-        input->dims->data[1] != 900 ||
+290-        input->dims->data[2] != 6) {
+291-        MicroPrintf("Heatstroke SUM INT64: unexpected input shape or axis.");
+292-        return kTfLiteError;
+293-    }
+294-
+295-    const auto* params =
+296-        static_cast<const TfLiteReducerParams*>(node->builtin_data);
+297-
+298-    if (params == nullptr || params->keep_dims) {
+299-        MicroPrintf("Heatstroke SUM INT64: expected keep_dims=false.");
+300-        return kTfLiteError;
+301-    }
+302-
+303-    if (output->dims->size != 2 ||
+304-        output->dims->data[0] != 1 ||
+305-        output->dims->data[1] != 6) {
+306-        MicroPrintf("Heatstroke SUM INT64: unexpected output shape.");
+307-        return kTfLiteError;
+308-    }
+309-
+310-    const int64_t* source = micro::GetTensorData<int64_t>(input);
+311-    int64_t* destination = micro::GetTensorData<int64_t>(output);
+312-
+313-    if (source == nullptr || destination == nullptr) {
+314-        return kTfLiteError;
+315-    }
+316-
+317-    // Input is produced by CAST from a Boolean validity mask.
+318-    // Validate the expected 0/1 domain before counting it.
+319-    for (size_t i = 0U; i < 5400U; ++i) {
+320-        if (source[i] != 0 && source[i] != 1) {
+321-            MicroPrintf(
+322-                "Heatstroke SUM INT64: mask value is not Boolean.");
+--
+373-
+374-}  // namespace
+375-
+376-TFLMRegistration RegisterHeatstrokeCastKernel()
+377-{
+378-    return micro::RegisterOp(
+379-        nullptr,
+380-        HeatstrokeCastPrepare,
+381-        HeatstrokeCastEval);
+382-}
+383-
+384-TFLMRegistration RegisterHeatstrokeSumKernel()
+385-{
+386-    return micro::RegisterOp(
+387-        HeatstrokeSumInit,
+388:        HeatstrokeSumPrepare,
+389-        HeatstrokeSumEval);
+390-}
+391-
+392-}  // namespace tflite
+
+=== FULL TENSOR ACCESSOR DECLARATIONS ===
+
+=== EVAL TENSOR ACCESSOR DECLARATIONS ===
+64-                                      const TfLiteNode* node, int index);
+65-
+66-// Returns the TfLiteEvalTensor struct for a given input index in a node.
+67:const TfLiteEvalTensor* GetEvalInput(const TfLiteContext* context,
+68-                                     const TfLiteNode* node, int index);
+69-
+70-// Returns the TfLiteEvalTensor struct for a given output index in a node.
+71:TfLiteEvalTensor* GetEvalOutput(const TfLiteContext* context,
+72-                                const TfLiteNode* node, int index);
+73-
+74-// Returns data for a TfLiteEvalTensor struct that are expected to exist.
+75-template <typename T>
+76-T* GetTensorData(TfLiteEvalTensor* tensor) {
+77-  TFLITE_DCHECK(tensor != nullptr);
+78-  return reinterpret_cast<T*>(tensor->data.raw);
+79-}
+
+=== MUL PARAMETER STRUCTURE ===
