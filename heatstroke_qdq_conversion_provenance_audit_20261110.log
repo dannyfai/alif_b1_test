@@ -1,0 +1,286 @@
+=== QDQ PRE-VELA ARTIFACT IDENTITY ===
+275f6468499bdf146d6f1889d01d866a80277416e6f686e5be9f1fa07184408f  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp.tflite
+
+=== QUANTIZATION SCRIPT: REPRESENTATIVE DATASET ===
+   236	def make_representative_dataset(dataset, signature_mapping, limit):
+   237	    def representative_dataset():
+   238	        count = 0
+   239	        for inputs, _ in iter_model_samples(dataset):
+   240	            sample = {}
+   241	            for expected_name in INPUT_NAMES:
+   242	                signature_name = signature_mapping[expected_name]
+   243	                sample[signature_name] = inputs[expected_name].astype(
+   244	                    np.float32, copy=False
+   245	                )
+   246	            yield sample
+   247	            count += 1
+   248	            if limit > 0 and count >= limit:
+   249	                break
+   250	
+   251	        if count == 0:
+   252	            raise RuntimeError(
+   253	                "No representative samples were produced from the "
+   254	                "validation dataset."
+   255	            )
+   256	        print(f"Representative samples supplied: {count}")
+   257	
+   258	    return representative_dataset
+   259	
+   260	
+   261	def convert_savedmodel_to_int8(
+   262	    saved_model_dir,
+   263	    signature_mapping,
+   264	    representative_dataset,
+   265	    output_path,
+   266	):
+   267	    converter = tf.lite.TFLiteConverter.from_saved_model(
+   268	        str(saved_model_dir),
+   269	        signature_keys=["serving_default"],
+   270	    )
+   271	    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+   272	    converter.representative_dataset = representative_dataset
+   273	    converter.target_spec.supported_ops = [
+   274	        tf.lite.OpsSet.TFLITE_BUILTINS_INT8
+   275	    ]
+   276	    converter.inference_input_type = tf.int8
+   277	    converter.inference_output_type = tf.int8
+   278	    converter.allow_custom_ops = False
+   279	
+   280	    print("\nConverting SavedModel to full-integer INT8 TFLite...")
+   281	    tflite_bytes = converter.convert()
+   282	
+   283	    output_path.parent.mkdir(parents=True, exist_ok=True)
+   284	    output_path.write_bytes(tflite_bytes)
+   285	    print("INT8 TFLite saved:", output_path)
+   286	
+   287	
+   288	def quantization_parameters(detail):
+   289	    params = detail.get("quantization_parameters", {})
+   290	    scales = np.asarray(params.get("scales", []), dtype=np.float32)
+
+=== QUANTIZATION SCRIPT: CLI DEFAULTS AND MAIN PIPELINE ===
+   530	    print("=" * 78)
+   531	    report_metrics(rpe_true, rpe_pred, "RPE")
+   532	
+   533	    valid_psi = psi_true != -1
+   534	    print(f"\nPSI labels ignored because label == -1: {np.count_nonzero(~valid_psi)}")
+   535	    report_metrics(psi_true[valid_psi], psi_pred[valid_psi], "PSI")
+   536	
+   537	    return {
+   538	        "rpe_true": rpe_true,
+   539	        "rpe_pred": rpe_pred,
+   540	        "psi_true": psi_true,
+   541	        "psi_pred": psi_pred,
+   542	    }
+   543	
+   544	
+   545	def main():
+   546	    parser = argparse.ArgumentParser(
+   547	        description="Quantize the combined heat-stress ONNX model to full INT8 TFLite."
+   548	    )
+   549	    parser.add_argument("--onnx", default=DEFAULT_ONNX)
+   550	    parser.add_argument("--fp32-model", default=DEFAULT_FP32_TFLITE)
+   551	    parser.add_argument("--output", default=DEFAULT_INT8_TFLITE)
+   552	    parser.add_argument("--data-root", default="./data")
+   553	    parser.add_argument("--split-type", default="split_byid")
+   554	    parser.add_argument(
+   555	        "--calibration-samples",
+   556	        type=int,
+   557	        default=300,
+   558	        help="Maximum number of validation samples used for calibration; 0 means all.",
+   559	    )
+   560	    parser.add_argument(
+   561	        "--calibration-random-missing",
+   562	        action="store_true",
+   563	        help="Enable the dataset's synthetic missing-data augmentation during calibration.",
+   564	    )
+   565	    parser.add_argument(
+   566	        "--test-random-missing",
+   567	        action="store_true",
+   568	        help="Enable synthetic missing-data augmentation during test evaluation.",
+   569	    )
+   570	    parser.add_argument(
+   571	        "--skip-fp32-evaluation",
+   572	        action="store_true",
+   573	        help="Do not evaluate the FP32 baseline; INT8 evaluation still runs.",
+   574	    )
+   575	    parser.add_argument(
+   576	        "--overwrite",
+   577	        action="store_true",
+   578	        help="Allow overwriting the INT8 output file.",
+   579	    )
+   580	    parser.add_argument("--num-workers", type=int, default=0)
+   581	    args = parser.parse_args()
+   582	
+   583	    onnx_path = Path(args.onnx)
+   584	    fp32_path = Path(args.fp32_model)
+   585	    output_path = Path(args.output)
+   586	
+   587	    if not onnx_path.is_file():
+   588	        raise FileNotFoundError(f"Fixed ONNX model not found: {onnx_path}")
+   589	    if not fp32_path.is_file() and not args.skip_fp32_evaluation:
+   590	        raise FileNotFoundError(
+   591	            f"FP32 baseline not found: {fp32_path}. "
+   592	            "Use --skip-fp32-evaluation if you only want INT8 evaluation."
+   593	        )
+   594	    if output_path.exists() and not args.overwrite:
+   595	        raise FileExistsError(
+   596	            f"{output_path} already exists. Use --overwrite to replace it."
+   597	        )
+   598	    if args.calibration_samples < 0:
+   599	        raise ValueError("--calibration-samples must be >= 0.")
+   600	
+   601	    print("=" * 78)
+   602	    print("HEAT-STRESS FULL-INTEGER INT8 QUANTIZATION")
+   603	    print("=" * 78)
+   604	    print("ONNX source:       ", onnx_path)
+   605	    print("FP32 baseline:     ", fp32_path)
+   606	    print("INT8 output:       ", output_path)
+   607	    print("Dataset directory:", Path(args.data_root) / args.split_type)
+   608	
+   609	    # Use the worker-disjoint calibration dataset.
+   610	    # The original split_byid/test remains reserved for final evaluation.
+   611	    calibration_dataset = make_dataset(
+   612	        args.data_root,
+   613	        "int8_calibration",
+   614	        flag="test",
+   615	        random_missing=args.calibration_random_missing,
+   616	    )
+   617	
+   618	    print("Calibration dataset: data/int8_calibration")
+   619	    print("Calibration samples:", len(calibration_dataset))
+   620	
+   621	    if len(calibration_dataset) != 394:
+   622	        raise ValueError(
+   623	            f"Expected 394 calibration samples, "
+   624	            f"but found {len(calibration_dataset)}."
+   625	        )
+   626	
+   627	    saved_model_output = output_path.parent / "onnx2tf_int8_savedmodel"
+   628	    onnx2tf_log = output_path.parent / "onnx2tf_int8_conversion.log"
+   629	    if saved_model_output.exists():
+   630	        shutil.rmtree(saved_model_output)
+   631	
+   632	    saved_model_dir = run_onnx2tf(
+   633	        onnx_path, saved_model_output, onnx2tf_log
+   634	    )
+   635	    signature_mapping = resolve_signature_input_names(saved_model_dir)
+   636	
+   637	    representative_dataset = make_representative_dataset(
+   638	        calibration_dataset,
+   639	        signature_mapping,
+   640	        args.calibration_samples,
+   641	    )
+   642	
+   643	    convert_savedmodel_to_int8(
+   644	        saved_model_dir,
+   645	        signature_mapping,
+   646	        representative_dataset,
+   647	        output_path,
+   648	    )
+   649	
+   650	    # Verify that all four external inputs and both outputs are INT8.
+   651	    inspect_int8_model(output_path)
+   652	
+   653	    # Evaluate using the same deterministic test split by default.
+   654	    test_dataset = make_dataset(
+   655	        args.data_root,
+   656	        args.split_type,
+   657	        flag="test",
+   658	        random_missing=args.test_random_missing,
+   659	    )
+   660	    print("\nTest samples:", len(test_dataset))
+   661	
+   662	    int8_results = evaluate_model(
+   663	        output_path, test_dataset, "INT8 TFLite"
+   664	    )
+   665	
+   666	    if not args.skip_fp32_evaluation:
+   667	        fp32_results = evaluate_model(
+   668	            fp32_path, test_dataset, "FP32 TFLite"
+   669	        )
+   670	
+   671	        print("\n" + "=" * 78)
+   672	        print("INT8 VS FP32 PREDICTION AGREEMENT")
+   673	        print("=" * 78)
+   674	        rpe_agreement = np.mean(
+   675	            int8_results["rpe_pred"] == fp32_results["rpe_pred"]
+
+=== QDQ MODEL GENERATION SOURCE SEARCH (PYTHON / SHELL ONLY) ===
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_layernorm_operands.py:20:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/bypass_conv0_output_qdq.py:10:     "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/bypass_conv0_output_qdq.py:15:     "qdq_both_variance_eps_preprocess_fp32_v2_"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/setup.sh:5: source ~/onnx2tflite_env/bin/activate
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/prepare_nxp_calibration.py:14: OUTPUT_ROOT = Path("export/nxp_calibration")
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/inspect_conv_qdq_variant.py:6:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/diagnose_div1_nan.py:14: CALIB_DIR = "export/nxp_calibration"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/inspect_clamp_quantization.py:9: CAL = "export/nxp_calibration"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_layernorm_squared_qdq.py:20:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/inspect_sum2_range.py:7: CAL_DIR = "export/nxp_calibration"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/inspect_sum2_distribution.py:9: CALIB_DIR = "export/nxp_calibration"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/create_first_layernorm_qdq_variants.py:11:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/c_convert.sh:1: onnx2tflite \
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/inspect_expand3_qparams.py:6:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/capture_conv0_output_quantization.py:19:     "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/bypass_conv1_output_qdq.py:9:     "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/bypass_conv1_output_qdq.py:14:     "qdq_both_variance_eps_preprocess_fp32_v2_conv1_output_bypass.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/compare_sum2_fp32_qdq.py:16: CALIB_DIR = "export/nxp_calibration"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_conv0_operands_validation_fixed.py:20:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_conv0_operands_preprocess_fp32_v2.py:20:     "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_conv0_operands.py:20:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/validate_clamp2_fp32.py:16: CAL = "export/nxp_calibration"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:6:   fixed ONNX -> onnx2tf SavedModel -> TFLite INT8
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:140: def run_onnx2tf(onnx_path, output_dir, log_path):
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:141:     executable = shutil.which("onnx2tf")
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:144:             "Cannot find the 'onnx2tf' command in PATH. Activate the same "
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:145:             "onnx2tflite_env used for your ONNX-to-TFLite conversion and "
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:146:             "install/activate onnx2tf there."
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:158:     print(f"Full onnx2tf log: {log_path}")
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:171:             f"onnx2tf failed with exit code {completed.returncode}. "
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:178:             "onnx2tf completed, but no saved_model.pb was found under "
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:236: def make_representative_dataset(dataset, signature_mapping, limit):
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:237:     def representative_dataset():
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:258:     return representative_dataset
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:264:     representative_dataset,
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:272:     converter.representative_dataset = representative_dataset
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:627:     saved_model_output = output_path.parent / "onnx2tf_int8_savedmodel"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:628:     onnx2tf_log = output_path.parent / "onnx2tf_int8_conversion.log"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:632:     saved_model_dir = run_onnx2tf(
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:633:         onnx_path, saved_model_output, onnx2tf_log
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:637:     representative_dataset = make_representative_dataset(
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:646:         representative_dataset,
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/quantize_tflite_int8.py:687:     print("onnx2tf log:", onnx2tf_log)
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_layernorm_variance_qdq.py:20:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/compare_clamp_fp32_qdq.py:9: CAL = "export/nxp_calibration"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/inspect_dynamic_gather_indices.py:8: CAL_DIR = "export/nxp_calibration"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/convert_onnx_to_tflite.py:3: Convert the fixed-shape combined ONNX model to TFLite using NXP ONNX2TFLite.
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/convert_onnx_to_tflite.py:18:     p.add_argument("--converter", default="onnx2tflite",
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/convert_onnx_to_tflite.py:19:                    help="onnx2tflite executable")
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/create_preprocess_fp32_variant.py:8:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/create_preprocess_fp32_variant.py:13:     "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/capture_conv1_output_quantization.py:19:     "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/evaluate_first_layernorm_qdq_variants.py:23:         "export/layernorm_variance_eps_variants/qdq_both_variance_eps_fp32.onnx",
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/evaluate_layernorm_variance_eps_isolation.py:24:     "QDQ_BOTH": "export/layernorm_variance_eps_variants/qdq_both_variance_eps_fp32.onnx",
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_conv_operands.py:20:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_layernorm_centered_qdq.py:20:     "qdq_both_variance_eps_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/expose_psi_layernorm_input_int8_live.py:6: SRC = "export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/expose_psi_layernorm_full_tflite.py:7:     "export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/repair_cumsum_concat_mixed_dtype.py:6:     "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/repair_cumsum_concat_mixed_dtype.py:11:     "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/inspect_psi_hidden_graph.py:7:     "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/inspect_psi_hidden_graph.py:10:     "export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/expose_psi_layernorm_tflite.py:7:     "export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/inspect_tflite_model.py:10:     "qdq_both_variance_eps_preprocess_fp32_v2_gather_nonnegative.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/validate_tflite_vs_onnx.py:14:     "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/validate_tflite_vs_onnx.py:19:     "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/validate_tflite_vs_onnx.py:28:         "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/inspect_psi_layernorm_quantize_boundary.py:4: PATH = "export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/compare_psi_layernorm_live.py:15:     "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/compare_psi_gelu_live.py:15:     "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/inspect_final_head_sample.py:11:     "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/inspect_final_head_sample.py:14:     "export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/inspect_psi_layernorm_raw.py:5:     "export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/compare_psi_layernorm_gelu.py:10:     "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx"
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/compare_psi_layernorm_gelu.py:13:     "export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite"
+Source matches: 75
+SOURCE-ONLY SEARCH COMPLETE
