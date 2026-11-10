@@ -1,0 +1,689 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794290272.946243  174502 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794290272.946441  174502 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794290272.975996  174502 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794290273.762169  174502 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794290273.762520  174502 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+=== ACTUAL KERNEL SOURCE FILES ===
+batch_matmul.cc
+batch_matmul_common.cc
+batch_matmul_test.cc
+broadcast_args.cc
+broadcast_args_test.cc
+broadcast_to.cc
+broadcast_to_test.cc
+cast.cc
+cast_test.cc
+cmsis_nn/batch_matmul.cc
+cmsis_nn/maximum_minimum.cc
+cmsis_nn/mul.cc
+cumsum.cc
+cumsum_test.cc
+floor.cc
+floor_div.cc
+floor_div_test.cc
+floor_mod.cc
+floor_mod_test.cc
+floor_test.cc
+gather.cc
+gather_nd.cc
+gather_nd_test.cc
+gather_test.cc
+maximum_minimum.cc
+maximum_minimum_test.cc
+mul.cc
+mul_common.cc
+mul_test.cc
+reduce.cc
+reduce_common.cc
+reduce_test.cc
+split.cc
+split_test.cc
+split_v.cc
+split_v_test.cc
+sub.cc
+sub_common.cc
+sub_test.cc
+xtensa/reduce.cc
+xtensa/reduce_vision.cc
+xtensa/sub.cc
+
+=== FIND SUM REGISTRATION / IMPLEMENTATION ===
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cumsum.cc ---
+   56:       micro_context->AllocateTempInputTensor(node, kAxisTensor);
+   57: 
+   58:   TF_LITE_ENSURE(context,
+   59:                  input->type == kTfLiteFloat32 || input->type == kTfLiteInt8);
+   60:   TF_LITE_ENSURE_EQ(context, axis->type, kTfLiteInt32);
+   61: 
+   62:   TF_LITE_ENSURE_EQ(context, NumElements(axis), 1);
+   63: 
+   64:   TF_LITE_ENSURE(context, NumDimensions(input) >= 1);
+   65: 
+   66:   TfLiteTensor* output =
+  107: TfLiteStatus CumSumPrepare(TfLiteContext* context, TfLiteNode* node) {
+  108:   return CalculateOpData(context, node);
+  109: }
+  110: 
+  111: TfLiteStatus CumSumEval(TfLiteContext* context, TfLiteNode* node) {
+  112:   const TfLiteEvalTensor* input =
+  113:       tflite::micro::GetEvalInput(context, node, kInputTensor);
+  114:   const TfLiteEvalTensor* axis_tensor =
+  115:       tflite::micro::GetEvalInput(context, node, kAxisTensor);
+  116: 
+  117:   TfLiteEvalTensor* output =
+  168: 
+  169: }  // namespace
+  170: 
+  171: TFLMRegistration Register_CUMSUM() {
+  172:   return tflite::micro::RegisterOp(nullptr, CumSumPrepare, CumSumEval);
+  173: }
+  174: 
+  175: }  // namespace tflite
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc ---
+   66: TFLMRegistration Register_REDUCE_MAX() {
+   67:   return tflite::micro::RegisterOp(InitReduce, PrepareMax, EvalMax);
+   68: }
+   69: 
+   70: TFLMRegistration Register_SUM() {
+   71:   return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalSum);
+   72: }
+   73: 
+   74: }  // namespace tflite
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc ---
+   49: 
+   50:   // Validate axis type
+   51:   TfLiteTensor* axis = micro_context->AllocateTempInputTensor(node, 1);
+   52:   TF_LITE_ENSURE(context, axis != nullptr);
+   53:   TF_LITE_ENSURE_TYPES_EQ(context, axis->type, kTfLiteInt32);
+   54: 
+   55:   if (input->type == kTfLiteInt8) {
+   56:     TfLiteTensor* output = micro_context->AllocateTempOutputTensor(node, 0);
+   57:     const double real_multiplier = static_cast<double>(input->params.scale) /
+   58:                                    static_cast<double>(output->params.scale);
+   59:     QuantizeMultiplier(real_multiplier, multiplier, shift);
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_test.cc ---
+  570:   TfLiteReducerParams params = {false};
+  571: 
+  572:   tflite::testing::TestReduceOpFloat(
+  573:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  574:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  575: }
+  576: 
+  577: TF_LITE_MICRO_TEST(SumFloatFlatten2NonReduceDims) {
+  578:   int input_shape[] = {3, 4, 3, 2};
+  579:   int output_shape[] = {1, 12};
+  580:   int axis_shape[] = {1, 1};
+  589:   TfLiteReducerParams params = {false};
+  590: 
+  591:   tflite::testing::TestReduceOpFloat(
+  592:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  593:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  594: }
+  595: 
+  596: TF_LITE_MICRO_TEST(SumFloatFlatten2MiddleDims) {
+  597:   int input_shape[] = {4, 2, 2, 3, 2};
+  598:   int output_shape[] = {2, 2, 2};
+  599:   int axis_shape[] = {1, 2};
+  607:   TfLiteReducerParams params = {false};
+  608: 
+  609:   tflite::testing::TestReduceOpFloat(
+  610:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  611:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  612: }
+  613: 
+  614: TF_LITE_MICRO_TEST(SumFloat2DKeepDims) {
+  615:   float output_data[tflite::testing::kOutputElements2D];
+  616: 
+  617:   TfLiteReducerParams params = {true};
+  619:   tflite::testing::TestReduceOpFloat(
+  620:       tflite::testing::kInputShape2D, tflite::testing::kInputData2D,
+  621:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  622:       tflite::testing::kOutputShape2D, output_data,
+  623:       tflite::testing::kGoldenDataSum2D, tflite::Register_SUM(), &params);
+  624: }
+  625: 
+  626: TF_LITE_MICRO_TEST(SumInt82DKeepDims) {
+  627:   int8_t expected_output_data_quant[tflite::testing::kOutputElements2D];
+  628:   int8_t output_data_quant[tflite::testing::kOutputElements2D];
+  629:   int8_t input_data_quant[tflite::testing::kInputElements2D];
+  642:       input_data_quant, input_scale, input_zero_point,
+  643:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  644:       tflite::testing::kOutputShape2D, tflite::testing::kGoldenDataSum2D,
+  645:       output_data_quant, expected_output_data_quant, output_scale,
+  646:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  647: }
+  648: 
+  649: TF_LITE_MICRO_TEST(SumInt162DKeepDims) {
+  650:   int16_t expected_output_data_quant[tflite::testing::kOutputElements2D];
+  651:   int16_t output_data_quant[tflite::testing::kOutputElements2D];
+  652:   int16_t input_data_quant[tflite::testing::kInputElements2D];
+  665:       input_data_quant, input_scale, input_zero_point,
+  666:       tflite::testing::kAxisShape2D, tflite::testing::kAxisData2D,
+  667:       tflite::testing::kOutputShape2D, tflite::testing::kGoldenDataSum2D,
+  668:       output_data_quant, expected_output_data_quant, output_scale,
+  669:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  670: }
+  671: 
+  672: TF_LITE_MICRO_TEST(SumFloat3DKeepDims) {
+  673:   float output_data[tflite::testing::kOutputElements3D];
+  674: 
+  675:   TfLiteReducerParams params = {true};
+  677:   tflite::testing::TestReduceOpFloat(
+  678:       tflite::testing::kInputShape3D, tflite::testing::kInputData3D,
+  679:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  680:       tflite::testing::kOutputShape3D, output_data,
+  681:       tflite::testing::kGoldenDataSum3D, tflite::Register_SUM(), &params);
+  682: }
+  683: 
+  684: TF_LITE_MICRO_TEST(SumInt83DKeepDims) {
+  685:   int8_t expected_output_data_quant[tflite::testing::kOutputElements3D];
+  686:   int8_t output_data_quant[tflite::testing::kOutputElements3D];
+  687:   int8_t input_data_quant[tflite::testing::kInputElements3D];
+  700:       input_data_quant, input_scale, input_zero_point,
+  701:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  702:       tflite::testing::kOutputShape3D, tflite::testing::kGoldenDataSum3D,
+  703:       output_data_quant, expected_output_data_quant, output_scale,
+  704:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  705: }
+  706: 
+  707: TF_LITE_MICRO_TEST(SumInt163DKeepDims) {
+  708:   int16_t expected_output_data_quant[tflite::testing::kOutputElements3D];
+  709:   int16_t output_data_quant[tflite::testing::kOutputElements3D];
+  710:   int16_t input_data_quant[tflite::testing::kInputElements3D];
+  723:       input_data_quant, input_scale, input_zero_point,
+  724:       tflite::testing::kAxisShape3D, tflite::testing::kAxisData3D,
+  725:       tflite::testing::kOutputShape3D, tflite::testing::kGoldenDataSum3D,
+  726:       output_data_quant, expected_output_data_quant, output_scale,
+  727:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  728: }
+  729: 
+  730: TF_LITE_MICRO_TEST(SumFloat4DKeepDims) {
+  731:   float output_data[tflite::testing::kOutputElements4D];
+  732: 
+  733:   TfLiteReducerParams params = {
+  737:   tflite::testing::TestReduceOpFloat(
+  738:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+  739:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  740:       tflite::testing::kOutputShape4D, output_data,
+  741:       tflite::testing::kGoldenDataSum4D, tflite::Register_SUM(), &params);
+  742: }
+  743: 
+  744: TF_LITE_MICRO_TEST(SumInt84DKeepDims) {
+  745:   int8_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+  746:   int8_t output_data_quant[tflite::testing::kOutputElements4D];
+  747:   int8_t input_data_quant[tflite::testing::kInputElements4D];
+  760:       input_data_quant, input_scale, input_zero_point,
+  761:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  762:       tflite::testing::kOutputShape4D, tflite::testing::kGoldenDataSum4D,
+  763:       output_data_quant, expected_output_data_quant, output_scale,
+  764:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  765: }
+  766: 
+  767: TF_LITE_MICRO_TEST(SumInt164DKeepDims) {
+  768:   int16_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+  769:   int16_t output_data_quant[tflite::testing::kOutputElements4D];
+  770:   int16_t input_data_quant[tflite::testing::kInputElements4D];
+  783:       input_data_quant, input_scale, input_zero_point,
+  784:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  785:       tflite::testing::kOutputShape4D, tflite::testing::kGoldenDataSum4D,
+  786:       output_data_quant, expected_output_data_quant, output_scale,
+  787:       output_zero_point, tflite::Register_SUM(), &params, 1.0);
+  788: }
+  789: 
+  790: TF_LITE_MICRO_TEST(SumFloat4DWithoutKeepDims) {
+  791:   int kOutputShape4D[] = {2, 2, 2};
+  792:   float output_data[tflite::testing::kOutputElements4D];
+  793:   TfLiteReducerParams params = {
+  797:   tflite::testing::TestReduceOpFloat(
+  798:       tflite::testing::kInputShape4D, tflite::testing::kInputData4D,
+  799:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  800:       kOutputShape4D, output_data, tflite::testing::kGoldenDataSum4D,
+  801:       tflite::Register_SUM(), &params);
+  802: }
+  803: 
+  804: TF_LITE_MICRO_TEST(SumInt84DWithoutKeepDims) {
+  805:   int8_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+  806:   int8_t output_data_quant[tflite::testing::kOutputElements4D];
+  807:   int8_t input_data_quant[tflite::testing::kInputElements4D];
+  820:       input_data_quant, input_scale, input_zero_point,
+  821:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  822:       kOutputShape4D, tflite::testing::kGoldenDataSum4D, output_data_quant,
+  823:       expected_output_data_quant, output_scale, output_zero_point,
+  824:       tflite::Register_SUM(), &params, 1.0);
+  825: }
+  826: 
+  827: TF_LITE_MICRO_TEST(SumInt164DWithoutKeepDims) {
+  828:   int16_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+  829:   int16_t output_data_quant[tflite::testing::kOutputElements4D];
+  830:   int16_t input_data_quant[tflite::testing::kInputElements4D];
+  843:       input_data_quant, input_scale, input_zero_point,
+  844:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  845:       kOutputShape4D, tflite::testing::kGoldenDataSum4D, output_data_quant,
+  846:       expected_output_data_quant, output_scale, output_zero_point,
+  847:       tflite::Register_SUM(), &params, 1.0);
+  848: }
+  849: 
+  850: TF_LITE_MICRO_TEST(SumInt164DWithoutKeepDimsDifferentScaleAndZeroPoint) {
+  851:   int16_t expected_output_data_quant[tflite::testing::kOutputElements4D];
+  852:   int16_t output_data_quant[tflite::testing::kOutputElements4D];
+  853:   int16_t input_data_quant[tflite::testing::kInputElements4D];
+  866:       input_data_quant, input_scale, input_zero_point,
+  867:       tflite::testing::kAxisShape4D, tflite::testing::kAxisData4D,
+  868:       kOutputShape4D, tflite::testing::kGoldenDataSum4D, output_data_quant,
+  869:       expected_output_data_quant, output_scale, output_zero_point,
+  870:       tflite::Register_SUM(), &params, 1.0);
+  871: }
+  872: 
+  873: TF_LITE_MICRO_TEST(SumFloatSize1) {
+  874:   int input_shape[] = {1, 1};
+  875:   int output_shape[] = {1, 1};
+  876:   int axis_shape[] = {1, 1};
+  882:   TfLiteReducerParams params = {false};
+  883: 
+  884:   tflite::testing::TestReduceOpFloat(
+  885:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  886:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  887: }
+  888: 
+  889: TF_LITE_MICRO_TEST(SumFloat2DRedundantDims) {
+  890:   int input_shape[] = {3, 1, 2, 4};
+  891:   int output_shape[] = {2, 1, 4};
+  892:   int axis_shape[] = {1, 1};
+  898:   TfLiteReducerParams params = {false};
+  899: 
+  900:   tflite::testing::TestReduceOpFloat(
+  901:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  902:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  903: }
+  904: 
+  905: TF_LITE_MICRO_TEST(SumFloatScalar) {
+  906:   int input_shape[] = {1, 1};
+  907:   int output_shape[] = {1, 1};
+  908:   int axis_shape[] = {1, 0};
+  914:   TfLiteReducerParams params = {false};
+  915: 
+  916:   tflite::testing::TestReduceOpFloat(
+  917:       input_shape, input_data, axis_shape, axis_data, output_shape,
+  918:       actual_output_data, expected_output, tflite::Register_SUM(), &params);
+  919: }
+  920: 
+  921: TF_LITE_MICRO_TESTS_END
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce.cc ---
+   79:     case kTfLiteInt8: {
+   80:       TF_LITE_ENSURE_EQ(context, static_cast<double>(op_data->input_scale),
+   81:                         static_cast<double>(op_data->output_scale));
+   82:       TF_LITE_ENSURE_EQ(context, op_data->input_zp, op_data->output_zp);
+   83:       ReduceEvalVision(*op_data_xtensa, input, output);
+   84:       break;
+   85:     }
+   86:     default: {
+   87:       // Use the reference EvalMax for all other cases.
+   88:       return EvalMaxHelper(context, node, op_data);
+   89:     }
+  109:   return tflite::micro::RegisterOp(XtensaInitReduce, XtensaPrepareMax,
+  110:                                    XtensaEvalMax);
+  111: }
+  112: 
+  113: TFLMRegistration Register_SUM() {
+  114:   return tflite::micro::RegisterOp(XtensaInitReduce, XtensaPrepareMeanOrSum,
+  115:                                    XtensaEvalSum);
+  116: }
+  117: 
+  118: }  // namespace tflite
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/reduce_vision.cc ---
+  142:   micro_context->DeallocateTempTfLiteTensor(axis);
+  143:   return kTfLiteOk;
+  144: }
+  145: 
+  146: TfLiteStatus ReduceEvalVision(const XtensaReduceOpData& data,
+  147:                               const TfLiteEvalTensor* input,
+  148:                               TfLiteEvalTensor* output) {
+  149:   const uint32_t input_size = NumElements(input->dims);
+  150:   const uint32_t output_size = NumElements(output->dims);
+  151: 
+  152:   xiReduce(data.p_context, data.context_size,
+SUM/reduce source files inspected: 6
+
+=== CHECK EXACT OPERATOR TENSOR TYPES ===
+
+Operator #21: CAST (version 1)
+  IN : 14:bitwise_not:BOOL:[1, 900, 6]
+  OUT: 31:convert_element_type_default_1:INT64:[1, 900, 6]
+
+Operator #22: SUM (version 1)
+  IN : 31:convert_element_type_default_1:INT64:[1, 900, 6]
+  IN : 32:axes:INT32:[1]
+  OUT: 33:sum_1:INT64:[1, 6]
+
+Operator #23: MAXIMUM (version 1)
+  IN : 33:sum_1:INT64:[1, 6]
+  IN : 34:val_39:INT64:[]
+  OUT: 35:clamp:INT64:[1, 6]
+
+Operator #24: RESHAPE (version 1)
+  IN : 35:clamp:INT64:[1, 6]
+  IN : 36:new_shape:INT32:[3]
+  OUT: 37:unsqueeze:INT64:[1, 1, 6]
+
+Operator #25: MUL (version 1)
+  IN : 38:convert_element_type_default_2:INT64:[1, 1800, 1]
+  IN : 37:unsqueeze:INT64:[1, 1, 6]
+  OUT: 39:mul_1:INT64:[1, 1800, 6]
+
+Operator #26: FLOOR_MOD (version 1)
+  IN : 39:mul_1:INT64:[1, 1800, 6]
+  IN : 40:val_46:INT64:[]
+  OUT: 41:val_60:INT64:[1, 1800, 6]
+
+Operator #27: CAST (version 1)
+  IN : 41:val_60:INT64:[1, 1800, 6]
+  OUT: 42:val_61:BOOL:[1, 1800, 6]
+
+Operator #28: CAST (version 1)
+  IN : 39:mul_1:INT64:[1, 1800, 6]
+  OUT: 43:node_Div_64_input_0_int32:INT32:[1, 1800, 6]
+
+Operator #30: CAST (version 1)
+  IN : 44:node_Sign_56_output_int32:INT32:[1, 1800, 6]
+  OUT: 45:val_56:INT64:[1, 1800, 6]
+
+Operator #34: CAST (version 1)
+  IN : 48:val_62:BOOL:[1, 1800, 6]
+  OUT: 49:val_63:INT64:[1, 1800, 6]
+
+Operator #36: CAST (version 1)
+  IN : 51:node_Div_64_output_int32:INT32:[1, 1800, 6]
+  OUT: 52:val_64:INT64:[1, 1800, 6]
+
+Operator #37: SUB (version 1)
+  IN : 52:val_64:INT64:[1, 1800, 6]
+  IN : 49:val_63:INT64:[1, 1800, 6]
+  OUT: 53:floor_divide:INT64:[1, 1800, 6]
+
+Operator #38: MUL (version 1)
+  IN : 54:convert_element_type_default_3:INT64:[1, 1800, 1]
+  IN : 37:unsqueeze:INT64:[1, 1, 6]
+  OUT: 55:mul_2:INT64:[1, 1800, 6]
+
+Operator #40: SUB (version 1)
+  IN : 56:add_2:INT64:[1, 1800, 6]
+  IN : 34:val_39:INT64:[]
+  OUT: 57:sub:INT64:[1, 1800, 6]
+
+Operator #41: FLOOR_MOD (version 1)
+  IN : 57:sub:INT64:[1, 1800, 6]
+  IN : 40:val_46:INT64:[]
+  OUT: 58:val_69:INT64:[1, 1800, 6]
+
+Operator #42: CAST (version 1)
+  IN : 58:val_69:INT64:[1, 1800, 6]
+  OUT: 59:val_70:BOOL:[1, 1800, 6]
+
+Operator #43: CAST (version 1)
+  IN : 57:sub:INT64:[1, 1800, 6]
+  OUT: 60:node_Div_73_input_0_int32:INT32:[1, 1800, 6]
+
+Operator #45: CAST (version 1)
+  IN : 61:node_Sign_65_output_int32:INT32:[1, 1800, 6]
+  OUT: 62:val_65:INT64:[1, 1800, 6]
+
+Operator #49: CAST (version 1)
+  IN : 65:val_71:BOOL:[1, 1800, 6]
+  OUT: 66:val_72:INT64:[1, 1800, 6]
+
+Operator #51: CAST (version 1)
+  IN : 67:node_Div_73_output_int32:INT32:[1, 1800, 6]
+  OUT: 68:val_73:INT64:[1, 1800, 6]
+
+Operator #52: SUB (version 1)
+  IN : 68:val_73:INT64:[1, 1800, 6]
+  IN : 66:val_72:INT64:[1, 1800, 6]
+  OUT: 69:floor_divide_1:INT64:[1, 1800, 6]
+
+Operator #53: SUB (version 1)
+  IN : 69:floor_divide_1:INT64:[1, 1800, 6]
+  IN : 53:floor_divide:INT64:[1, 1800, 6]
+  OUT: 70:sub_1:INT64:[1, 1800, 6]
+
+Operator #54: MAXIMUM (version 1)
+  IN : 70:sub_1:INT64:[1, 1800, 6]
+  IN : 34:val_39:INT64:[]
+  OUT: 71:clamp_1:INT64:[1, 1800, 6]
+
+Operator #55: CAST (version 1)
+  IN : 71:clamp_1:INT64:[1, 1800, 6]
+  OUT: 72:_to_copy_2:FLOAT32:[1, 1800, 6]
+
+Operator #56: SPLIT_V (version 1)
+  IN : 53:floor_divide:INT64:[1, 1800, 6]
+  IN : 73:node_gather_1_split_sizes:INT64:[6]
+  IN : 74:split_dim_1:INT32:[]
+  OUT: 75:node_gather_1_index_ch0:INT64:[1, 1800, 1]
+  OUT: 76:node_gather_1_index_ch1:INT64:[1, 1800, 1]
+  OUT: 77:node_gather_1_index_ch2:INT64:[1, 1800, 1]
+  OUT: 78:node_gather_1_index_ch3:INT64:[1, 1800, 1]
+  OUT: 79:node_gather_1_index_ch4:INT64:[1, 1800, 1]
+  OUT: 80:node_gather_1_index_ch5:INT64:[1, 1800, 1]
+
+Operator #57: RESHAPE (version 1)
+  IN : 75:node_gather_1_index_ch0:INT64:[1, 1800, 1]
+  IN : 81:new_shape:INT32:[1]
+  OUT: 82:node_gather_1_indices_1d_0:INT64:[1800]
+
+Operator #59: CAST (version 1)
+  IN : 83:bitwise_not_1:BOOL:[1, 900, 6]
+  OUT: 84:_to_copy:INT64:[1, 900, 6]
+
+Operator #60: MUL (version 1)
+  IN : 84:_to_copy:INT64:[1, 900, 6]
+  IN : 85:val_19:INT64:[]
+  OUT: 86:mul:INT64:[1, 900, 6]
+
+Operator #62: CAST (version 1)
+  IN : 88:add:INT64:[1, 900, 6]
+  OUT: 89:topk_input_float32:FLOAT32:[1, 900, 6]
+
+Operator #65: RESHAPE (version 1)
+  IN : 76:node_gather_1_index_ch1:INT64:[1, 1800, 1]
+  IN : 92:new_shape:INT32:[1]
+  OUT: 93:node_gather_1_indices_1d_1:INT64:[1800]
+
+Operator #66: RESHAPE (version 1)
+  IN : 77:node_gather_1_index_ch2:INT64:[1, 1800, 1]
+  IN : 94:new_shape:INT32:[1]
+  OUT: 95:node_gather_1_indices_1d_2:INT64:[1800]
+
+Operator #67: RESHAPE (version 1)
+  IN : 78:node_gather_1_index_ch3:INT64:[1, 1800, 1]
+  IN : 96:new_shape:INT32:[1]
+  OUT: 97:node_gather_1_indices_1d_3:INT64:[1800]
+
+Operator #68: RESHAPE (version 1)
+  IN : 79:node_gather_1_index_ch4:INT64:[1, 1800, 1]
+  IN : 98:new_shape:INT32:[1]
+  OUT: 99:node_gather_1_indices_1d_4:INT64:[1800]
+
+Operator #69: RESHAPE (version 1)
+  IN : 80:node_gather_1_index_ch5:INT64:[1, 1800, 1]
+  IN : 100:new_shape:INT32:[1]
+  OUT: 101:node_gather_1_indices_1d_5:INT64:[1800]
+
+Operator #70: SPLIT_V (version 1)
+  IN : 69:floor_divide_1:INT64:[1, 1800, 6]
+  IN : 102:node_gather_2_split_sizes:INT64:[6]
+  IN : 103:split_dim_2:INT32:[]
+  OUT: 104:node_gather_2_index_ch0:INT64:[1, 1800, 1]
+  OUT: 105:node_gather_2_index_ch1:INT64:[1, 1800, 1]
+  OUT: 106:node_gather_2_index_ch2:INT64:[1, 1800, 1]
+  OUT: 107:node_gather_2_index_ch3:INT64:[1, 1800, 1]
+  OUT: 108:node_gather_2_index_ch4:INT64:[1, 1800, 1]
+  OUT: 109:node_gather_2_index_ch5:INT64:[1, 1800, 1]
+
+Operator #71: RESHAPE (version 1)
+  IN : 104:node_gather_2_index_ch0:INT64:[1, 1800, 1]
+  IN : 110:new_shape:INT32:[1]
+  OUT: 111:node_gather_2_indices_1d_0:INT64:[1800]
+
+Operator #72: RESHAPE (version 1)
+  IN : 105:node_gather_2_index_ch1:INT64:[1, 1800, 1]
+  IN : 112:new_shape:INT32:[1]
+  OUT: 113:node_gather_2_indices_1d_1:INT64:[1800]
+
+Operator #73: RESHAPE (version 1)
+  IN : 106:node_gather_2_index_ch2:INT64:[1, 1800, 1]
+  IN : 114:new_shape:INT32:[1]
+  OUT: 115:node_gather_2_indices_1d_2:INT64:[1800]
+
+Operator #74: RESHAPE (version 1)
+  IN : 107:node_gather_2_index_ch3:INT64:[1, 1800, 1]
+  IN : 116:new_shape:INT32:[1]
+  OUT: 117:node_gather_2_indices_1d_3:INT64:[1800]
+
+Operator #75: RESHAPE (version 1)
+  IN : 108:node_gather_2_index_ch4:INT64:[1, 1800, 1]
+  IN : 118:new_shape:INT32:[1]
+  OUT: 119:node_gather_2_indices_1d_4:INT64:[1800]
+
+Operator #76: RESHAPE (version 1)
+  IN : 109:node_gather_2_index_ch5:INT64:[1, 1800, 1]
+  IN : 120:new_shape:INT32:[1]
+  OUT: 121:node_gather_2_indices_1d_5:INT64:[1800]
+
+Operator #106: SPLIT_V (version 1)
+  IN : 171:getitem_1_casted:INT32:[1, 900, 6]
+  IN : 172:node_gather_split_sizes:INT64:[6]
+  IN : 173:split_dim_0:INT32:[]
+  OUT: 174:node_gather_index_ch0:INT32:[1, 900, 1]
+  OUT: 175:node_gather_index_ch1:INT32:[1, 900, 1]
+  OUT: 176:node_gather_index_ch2:INT32:[1, 900, 1]
+  OUT: 177:node_gather_index_ch3:INT32:[1, 900, 1]
+  OUT: 178:node_gather_index_ch4:INT32:[1, 900, 1]
+  OUT: 179:node_gather_index_ch5:INT32:[1, 900, 1]
+
+Operator #125: GATHER (version 1)
+  IN : 213:node_gather_1_data_1d_0_DequantizeLinear_Output:INT8:[901]
+  IN : 82:node_gather_1_indices_1d_0:INT64:[1800]
+  OUT: 214:node_gather_1_gather_0_DequantizeLinear_Output:INT8:[1800]
+
+Operator #127: GATHER (version 1)
+  IN : 216:node_gather_1_data_1d_1_DequantizeLinear_Output:INT8:[901]
+  IN : 93:node_gather_1_indices_1d_1:INT64:[1800]
+  OUT: 217:node_gather_1_gather_1_DequantizeLinear_Output:INT8:[1800]
+
+Operator #129: GATHER (version 1)
+  IN : 219:node_gather_1_data_1d_2_DequantizeLinear_Output:INT8:[901]
+  IN : 95:node_gather_1_indices_1d_2:INT64:[1800]
+  OUT: 220:node_gather_1_gather_2_DequantizeLinear_Output:INT8:[1800]
+
+Operator #131: GATHER (version 1)
+  IN : 222:node_gather_1_data_1d_3_DequantizeLinear_Output:INT8:[901]
+  IN : 97:node_gather_1_indices_1d_3:INT64:[1800]
+  OUT: 223:node_gather_1_gather_3_DequantizeLinear_Output:INT8:[1800]
+
+Operator #133: GATHER (version 1)
+  IN : 225:node_gather_1_data_1d_4_DequantizeLinear_Output:INT8:[901]
+  IN : 99:node_gather_1_indices_1d_4:INT64:[1800]
+  OUT: 226:node_gather_1_gather_4_DequantizeLinear_Output:INT8:[1800]
+
+Operator #135: GATHER (version 1)
+  IN : 228:node_gather_1_data_1d_5_DequantizeLinear_Output:INT8:[901]
+  IN : 101:node_gather_1_indices_1d_5:INT64:[1800]
+  OUT: 229:node_gather_1_gather_5_DequantizeLinear_Output:INT8:[1800]
+
+Operator #137: GATHER (version 1)
+  IN : 231:node_gather_2_data_1d_0_DequantizeLinear_Output:INT8:[901]
+  IN : 111:node_gather_2_indices_1d_0:INT64:[1800]
+  OUT: 232:node_gather_2_gather_0_DequantizeLinear_Output:INT8:[1800]
+
+Operator #139: GATHER (version 1)
+  IN : 234:node_gather_2_data_1d_1_DequantizeLinear_Output:INT8:[901]
+  IN : 113:node_gather_2_indices_1d_1:INT64:[1800]
+  OUT: 235:node_gather_2_gather_1_DequantizeLinear_Output:INT8:[1800]
+
+Operator #141: GATHER (version 1)
+  IN : 237:node_gather_2_data_1d_2_DequantizeLinear_Output:INT8:[901]
+  IN : 115:node_gather_2_indices_1d_2:INT64:[1800]
+  OUT: 238:node_gather_2_gather_2_DequantizeLinear_Output:INT8:[1800]
+
+Operator #143: GATHER (version 1)
+  IN : 240:node_gather_2_data_1d_3_DequantizeLinear_Output:INT8:[901]
+  IN : 117:node_gather_2_indices_1d_3:INT64:[1800]
+  OUT: 241:node_gather_2_gather_3_DequantizeLinear_Output:INT8:[1800]
+
+Operator #145: GATHER (version 1)
+  IN : 243:node_gather_2_data_1d_4_DequantizeLinear_Output:INT8:[901]
+  IN : 119:node_gather_2_indices_1d_4:INT64:[1800]
+  OUT: 244:node_gather_2_gather_4_DequantizeLinear_Output:INT8:[1800]
+
+Operator #147: GATHER (version 1)
+  IN : 246:node_gather_2_data_1d_5_DequantizeLinear_Output:INT8:[901]
+  IN : 121:node_gather_2_indices_1d_5:INT64:[1800]
+  OUT: 247:node_gather_2_gather_5_DequantizeLinear_Output:INT8:[1800]
+
+Operator #153: GATHER (version 1)
+  IN : 254:where_DequantizeLinear_Output_6:INT8:[1, 1800, 6]
+  IN : 122:val_1:INT64:[]
+  OUT: 255:select_DequantizeLinear_Output:INT8:[1, 1800]
+
+Operator #155: GATHER (version 1)
+  IN : 254:where_DequantizeLinear_Output_6:INT8:[1, 1800, 6]
+  IN : 34:val_39:INT64:[]
+  OUT: 257:select_1_DequantizeLinear_Output:INT8:[1, 1800]
+
+Operator #157: GATHER (version 1)
+  IN : 254:where_DequantizeLinear_Output_6:INT8:[1, 1800, 6]
+  IN : 259:val_89:INT64:[]
+  OUT: 260:select_2_DequantizeLinear_Output:INT8:[1, 1800]
+
+Operator #159: GATHER (version 1)
+  IN : 254:where_DequantizeLinear_Output_6:INT8:[1, 1800, 6]
+  IN : 262:val_90:INT64:[]
+  OUT: 263:select_3_DequantizeLinear_Output:INT8:[1, 1800]
+
+Operator #161: GATHER (version 1)
+  IN : 254:where_DequantizeLinear_Output_6:INT8:[1, 1800, 6]
+  IN : 265:val_91:INT64:[]
+  OUT: 266:select_4_DequantizeLinear_Output:INT8:[1, 1800]
+
+Operator #163: GATHER (version 1)
+  IN : 254:where_DequantizeLinear_Output_6:INT8:[1, 1800, 6]
+  IN : 268:val_92:INT64:[]
+  OUT: 269:select_5_DequantizeLinear_Output:INT8:[1, 1800]
+
+=== COMPILED REDUCE / SUM KERNEL SOURCES ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/batch_matmul.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/broadcast_args.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/broadcast_to.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cast.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cumsum.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/floor_mod.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/mul.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/split_v.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/sub.cc
+/home/user/sdk-alif/modules/lib/cmsis-dsp/Source/StatisticsFunctions/arm_logsumexp_dot_prod_f32.c
+/home/user/sdk-alif/modules/lib/cmsis-dsp/Source/StatisticsFunctions/arm_logsumexp_f32.c
+/home/user/sdk-alif/modules/lib/cmsis-dsp/Source/StatisticsFunctions/arm_logsumexp_dot_prod_f16.c
+/home/user/sdk-alif/modules/lib/cmsis-dsp/Source/StatisticsFunctions/arm_logsumexp_f16.c
+Matching compiled source entries: 15
+
+=== APPLICATION SUM / INT64 REGISTRATIONS ===
+  619:     HS_ADD_REQUIRED(AddCast);
+  625:     HS_ADD_REQUIRED(AddFloorMod);
+  647:     HS_ADD_REQUIRED(AddMaximum);
+  649:     HS_ADD_REQUIRED(AddMul);
+  656:     HS_ADD_REQUIRED(AddSplitV);
+  659:     HS_ADD_REQUIRED(AddSub);
+  660:     HS_ADD_REQUIRED(AddSum);
+
+=== AUDIT COMPLETE ===
