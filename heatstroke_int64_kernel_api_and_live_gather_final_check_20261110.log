@@ -1,0 +1,870 @@
+=== LIVE APPLICATION SOURCE ===
+
+=== /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc ===
+
+--- lines 147-179 ---
+  147: 
+  148: namespace tflite {
+  149: namespace {
+  150: 
+  151: constexpr int kHsGatherInput = 0;
+  152: constexpr int kHsGatherIndices = 1;
+  153: constexpr int kHsGatherOutput = 0;
+  154: 
+  155: bool HeatstrokeGatherCheckedMultiply(
+  156:     size_t a, size_t b, size_t* result)
+  157: {
+  158:     if (result == nullptr ||
+  159:         (b != 0U &&
+  160:          a > (std::numeric_limits<size_t>::max)() / b)) {
+  161:         return false;
+  162:     }
+  163: 
+  164:     *result = a * b;
+  165:     return true;
+  166: }
+  167: 
+  168: template <typename InputT, typename IndexT>
+  169: TfLiteStatus HeatstrokeGatherCopy(
+  170:     const TfLiteGatherParams* params,
+  171:     const TfLiteEvalTensor* input,
+  172:     const TfLiteEvalTensor* indices,
+  173:     TfLiteEvalTensor* output)
+  174: {
+  175:     if (params == nullptr || input == nullptr ||
+  176:         indices == nullptr || output == nullptr ||
+  177:         input->dims == nullptr || indices->dims == nullptr ||
+  178:         output->dims == nullptr) {
+  179:         MicroPrintf("Heatstroke GATHER received invalid tensor metadata.");
+
+--- lines 238-270 ---
+  238:     const int axis_size = input_dims->data[axis];
+  239: 
+  240:     size_t batch_size = 1U;
+  241:     size_t outer_size = 1U;
+  242:     size_t inner_size = 1U;
+  243:     size_t coord_size = 1U;
+  244: 
+  245:     for (int i = 0; i < batch_dims; ++i) {
+  246:         if (!HeatstrokeGatherCheckedMultiply(
+  247:                 batch_size,
+  248:                 static_cast<size_t>(input_dims->data[i]),
+  249:                 &batch_size)) {
+  250:             MicroPrintf("Heatstroke GATHER batch size overflow.");
+  251:             return kTfLiteError;
+  252:         }
+  253:     }
+  254: 
+  255:     for (int i = batch_dims; i < axis; ++i) {
+  256:         if (!HeatstrokeGatherCheckedMultiply(
+  257:                 outer_size,
+  258:                 static_cast<size_t>(input_dims->data[i]),
+  259:                 &outer_size)) {
+  260:             MicroPrintf("Heatstroke GATHER outer size overflow.");
+  261:             return kTfLiteError;
+  262:         }
+  263:     }
+  264: 
+  265:     for (int i = axis + 1; i < input_rank; ++i) {
+  266:         if (!HeatstrokeGatherCheckedMultiply(
+  267:                 inner_size,
+  268:                 static_cast<size_t>(input_dims->data[i]),
+  269:                 &inner_size)) {
+  270:             MicroPrintf("Heatstroke GATHER inner size overflow.");
+
+--- lines 282-314 ---
+  282:         }
+  283:     }
+  284: 
+  285:     size_t input_elements = batch_size;
+  286:     size_t output_elements = batch_size;
+  287:     size_t index_count = 0U;
+  288:     size_t copy_bytes = 0U;
+  289: 
+  290:     if (!HeatstrokeGatherCheckedMultiply(
+  291:             input_elements, outer_size, &input_elements) ||
+  292:         !HeatstrokeGatherCheckedMultiply(
+  293:             input_elements, static_cast<size_t>(axis_size),
+  294:             &input_elements) ||
+  295:         !HeatstrokeGatherCheckedMultiply(
+  296:             input_elements, inner_size, &input_elements) ||
+  297:         !HeatstrokeGatherCheckedMultiply(
+  298:             output_elements, outer_size, &output_elements) ||
+  299:         !HeatstrokeGatherCheckedMultiply(
+  300:             output_elements, coord_size, &output_elements) ||
+  301:         !HeatstrokeGatherCheckedMultiply(
+  302:             output_elements, inner_size, &output_elements) ||
+  303:         !HeatstrokeGatherCheckedMultiply(
+  304:             batch_size, coord_size, &index_count) ||
+  305:         !HeatstrokeGatherCheckedMultiply(
+  306:             inner_size, sizeof(InputT), &copy_bytes)) {
+  307:         MicroPrintf("Heatstroke GATHER tensor size overflow.");
+  308:         return kTfLiteError;
+  309:     }
+  310: 
+  311:     const InputT* input_data =
+  312:         tflite::micro::GetTensorData<InputT>(input);
+  313: 
+  314:     const IndexT* index_data =
+
+--- lines 358-390 ---
+  358:                     copy_bytes);
+  359:             }
+  360:         }
+  361:     }
+  362: 
+  363:     return kTfLiteOk;
+  364: }
+  365: 
+  366: TfLiteStatus HeatstrokeGatherPrepare(
+  367:     TfLiteContext* context,
+  368:     TfLiteNode* node)
+  369: {
+  370:     if (context == nullptr || node == nullptr ||
+  371:         node->builtin_data == nullptr) {
+  372:         return kTfLiteError;
+  373:     }
+  374: 
+  375:     TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
+  376:     TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
+  377: 
+  378:     MicroContext* micro_context = GetMicroContext(context);
+  379: 
+  380:     TfLiteTensor* input =
+  381:         micro_context->AllocateTempInputTensor(node, kHsGatherInput);
+  382:     TF_LITE_ENSURE(context, input != nullptr);
+  383: 
+  384:     TfLiteTensor* indices =
+  385:         micro_context->AllocateTempInputTensor(node, kHsGatherIndices);
+  386:     TF_LITE_ENSURE(context, indices != nullptr);
+  387: 
+  388:     TfLiteTensor* output =
+  389:         micro_context->AllocateTempOutputTensor(node, kHsGatherOutput);
+  390:     TF_LITE_ENSURE(context, output != nullptr);
+
+--- lines 484-516 ---
+  484: 
+  485:     micro_context->DeallocateTempTfLiteTensor(input);
+  486:     micro_context->DeallocateTempTfLiteTensor(indices);
+  487:     micro_context->DeallocateTempTfLiteTensor(output);
+  488: 
+  489:     return kTfLiteOk;
+  490: }
+  491: 
+  492: TfLiteStatus HeatstrokeGatherEval(
+  493:     TfLiteContext* context,
+  494:     TfLiteNode* node)
+  495: {
+  496:     if (context == nullptr || node == nullptr ||
+  497:         node->builtin_data == nullptr) {
+  498:         return kTfLiteError;
+  499:     }
+  500: 
+  501:     const TfLiteGatherParams* params =
+  502:         reinterpret_cast<const TfLiteGatherParams*>(node->builtin_data);
+  503: 
+  504:     const TfLiteEvalTensor* input =
+  505:         tflite::micro::GetEvalInput(
+  506:             context, node, kHsGatherInput);
+  507: 
+  508:     const TfLiteEvalTensor* indices =
+  509:         tflite::micro::GetEvalInput(
+  510:             context, node, kHsGatherIndices);
+  511: 
+  512:     TfLiteEvalTensor* output =
+  513:         tflite::micro::GetEvalOutput(
+  514:             context, node, kHsGatherOutput);
+  515: 
+  516:     if (input == nullptr || indices == nullptr || output == nullptr) {
+
+--- lines 520-552 ---
+  520: 
+  521:     if (indices->type == kTfLiteInt32) {
+  522:         switch (input->type) {
+  523:             case kTfLiteFloat32:
+  524:                 return HeatstrokeGatherCopy<float, int32_t>(
+  525:                     params, input, indices, output);
+  526: 
+  527:             case kTfLiteInt8:
+  528:                 return HeatstrokeGatherCopy<int8_t, int32_t>(
+  529:                     params, input, indices, output);
+  530: 
+  531:             default:
+  532:                 break;
+  533:         }
+  534:     } else if (indices->type == kTfLiteInt64) {
+  535:         switch (input->type) {
+  536:             case kTfLiteFloat32:
+  537:                 return HeatstrokeGatherCopy<float, int64_t>(
+  538:                     params, input, indices, output);
+  539: 
+  540:             case kTfLiteInt8:
+  541:                 return HeatstrokeGatherCopy<int8_t, int64_t>(
+  542:                     params, input, indices, output);
+  543: 
+  544:             default:
+  545:                 break;
+  546:         }
+  547:     }
+  548: 
+  549:     MicroPrintf(
+  550:         "Heatstroke GATHER unsupported data/index type combination: "
+  551:         "data=%s indices=%s.",
+  552:         TfLiteTypeGetName(input->type),
+
+--- lines 556-588 ---
+  556: }
+  557: 
+  558: }  // namespace
+  559: 
+  560: TFLMRegistration RegisterHeatstrokeGatherKernel()
+  561: {
+  562:     return micro::RegisterOp(
+  563:         nullptr,
+  564:         HeatstrokeGatherPrepare,
+  565:         HeatstrokeGatherEval);
+  566: }
+  567: 
+  568: }  // namespace tflite
+  569: 
+  570: namespace tflite {
+  571: TFLMRegistration
+  572: RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+  573: }
+  574: 
+  575: /*
+  576:  * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+  577:  * Keep its existing parser and implementation unchanged.
+  578:  */
+  579: #if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+  580: namespace tflite {
+  581: TFLMRegistration RegisterHeatstrokeLayerNormQuantize();
+  582: }
+  583: #endif
+  584: 
+  585: TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+  586:     const tflite::Operator* op,
+  587:     tflite::ErrorReporter* error_reporter,
+  588:     tflite::BuiltinDataAllocator* allocator,
+
+--- lines 625-657 ---
+  625:     HS_ADD_REQUIRED(AddFloorMod);
+  626:     /*
+  627:      * Application-local GATHER replacement supporting INT32 and INT64
+  628:      * indices. It reuses the existing output tensor and allocates no
+  629:      * index-conversion or scratch buffer.
+  630:      */
+  631:     {
+  632:         const TFLMRegistration registration =
+  633:             tflite::RegisterHeatstrokeGatherKernel();
+  634: 
+  635:         if (this->m_opResolver.AddBuiltin(
+  636:                 tflite::BuiltinOperator_GATHER,
+  637:                 registration,
+  638:                 tflite::ParseGather) != kTfLiteOk) {
+  639:             printf_err(
+  640:                 "Failed to register heat-stress INT64 GATHER.\n");
+  641:             return false;
+  642:         }
+  643:     }
+  644:     HS_ADD_REQUIRED(AddGreater);
+  645:     HS_ADD_REQUIRED(AddLogicalAnd);
+  646:     HS_ADD_REQUIRED(AddLogicalNot);
+  647:     HS_ADD_REQUIRED(AddMaximum);
+  648:     HS_ADD_REQUIRED(AddMean);
+  649:     HS_ADD_REQUIRED(AddMul);
+  650:     HS_ADD_REQUIRED(AddNeg);
+  651:     HS_ADD_REQUIRED(AddQuantize);
+  652:     HS_ADD_REQUIRED(AddReshape);
+  653:     HS_ADD_REQUIRED(AddRsqrt);
+  654:     HS_ADD_REQUIRED(AddSelectV2);
+  655:     HS_ADD_REQUIRED(AddSoftmax);
+  656:     HS_ADD_REQUIRED(AddSplitV);
+  657:     HS_ADD_REQUIRED(AddSqrt);
+
+--- lines 664-696 ---
+  664: 
+  665:     /*
+  666:      * Custom SIGN registration under the built-in SIGN opcode.
+  667:      */
+  668:     {
+  669:         const TFLMRegistration registration =
+  670:             RegisterHeatstrokeSignKernel();
+  671: 
+  672:         if (this->m_opResolver.AddBuiltin(
+  673:                 tflite::BuiltinOperator_SIGN,
+  674:                 registration,
+  675:                 ParseHeatstrokeSign) != kTfLiteOk) {
+  676:             printf_err("Failed to register heat-stress SIGN.\n");
+  677:             return false;
+  678:         }
+  679:     }
+  680: 
+  681:     /*
+  682:      * Select the application-local BiLSTM implementation.
+  683:      * Experimental mode is opt-in and paired with the repaired model.
+  684:      */
+  685:     {
+  686: #if defined(HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+  687:         const TFLMRegistration registration =
+  688:             tflite::RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+  689: #else
+  690:         const TFLMRegistration registration =
+  691:             tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+  692: #endif
+  693: 
+  694:         if (this->m_opResolver.AddBuiltin(
+  695:                 tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+  696:                 registration,
+
+=== APPLICATION MODEL HEADER ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp
+    1: #ifndef POLYU_MODEL1_HPP
+    2: #define POLYU_MODEL1_HPP
+    3: 
+    4: #include "mlek/fwk/tflm/TflmModel.hpp"
+    5: 
+    6: namespace arm::app::asr {
+    7: extern const int g_FrameLength;
+    8: extern const int g_FrameStride;
+    9: extern const float g_ScoreThreshold;
+   10: extern const int g_ctxLen;
+   11: } // namespace arm::app::asr
+   12: 
+   13: namespace arm::app::fwk::tflm {
+   14: 
+   15: class PolyUModel1 : public TflmModel {
+   16: 
+   17: public:
+   18:     /* Indices for the expected model - based on input and output tensor shapes */
+   19:     static constexpr uint32_t ms_inputRowsIdx  = 1;
+   20:     static constexpr uint32_t ms_inputColsIdx  = 2;
+   21:     static constexpr uint32_t ms_outputRowsIdx = 2;
+   22:     static constexpr uint32_t ms_outputColsIdx = 3;
+   23: 
+   24:     /* Model specific constants. */
+   25:     static constexpr uint32_t ms_blankTokenIdx   = 28;
+   26:     static constexpr uint32_t ms_numMfccFeatures = 13;
+   27: 
+   28: protected:
+   29:     /** @brief   Gets the reference to op resolver interface class. */
+   30:     const tflite::MicroOpResolver& GetOpResolver() override;
+   31: 
+   32:     /** @brief   Adds operations to the op resolver instance. */
+   33:     bool EnlistOperations() override;
+   34: 
+   35: private:
+   36:     /* Maximum number of individual operations that can be enlisted. */
+   37:     #if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+   38:     static constexpr int ms_maxOpCnt = 33;
+   39: #else
+   40:     static constexpr int ms_maxOpCnt = 32;
+   41: #endif
+   42: 
+   43:     /* A mutable op resolver instance. */
+   44:     tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+   45: };
+   46: 
+   47: } /* namespace arm::app::fwk::tflm */
+   48: 
+   49: #endif /* POLYU_MODEL1_HPP */
+
+=== RESOLVER BUILTIN METHODS ===
+
+=== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h ===
+
+--- lines 188-202 ---
+  188:   }
+  189: 
+  190:   TfLiteStatus AddCast() {
+  191:     return AddBuiltin(BuiltinOperator_CAST, Register_CAST(), ParseCast);
+  192:   }
+  193: 
+  194:   TfLiteStatus AddCeil() {
+  195:     return AddBuiltin(BuiltinOperator_CEIL, Register_CEIL(), ParseCeil);
+  196:   }
+  197: 
+  198:   TfLiteStatus AddCircularBuffer() {
+  199:     return AddCustom("CIRCULAR_BUFFER", tflite::Register_CIRCULAR_BUFFER());
+  200:   }
+  201: 
+  202:   TfLiteStatus AddConcatenation() {
+
+--- lines 333-347 ---
+  333:   }
+  334: 
+  335:   TfLiteStatus AddFloorMod() {
+  336:     return AddBuiltin(BuiltinOperator_FLOOR_MOD, tflite::Register_FLOOR_MOD(),
+  337:                       ParseFloorMod);
+  338:   }
+  339: 
+  340:   TfLiteStatus AddFramer() {
+  341:     // TODO(b/286250473): change back name to "Framer" and remove namespace
+  342:     return AddCustom("SignalFramer", tflite::tflm_signal::Register_FRAMER());
+  343:   }
+  344: 
+  345:   TfLiteStatus AddFullyConnected(
+  346:       const TFLMRegistration& registration = Register_FULLY_CONNECTED()) {
+  347:     return AddBuiltin(BuiltinOperator_FULLY_CONNECTED, registration,
+
+--- lines 461-475 ---
+  461:   }
+  462: 
+  463:   TfLiteStatus AddMul(const TFLMRegistration& registration = Register_MUL()) {
+  464:     return AddBuiltin(BuiltinOperator_MUL, registration, ParseMul);
+  465:   }
+  466: 
+  467:   TfLiteStatus AddNeg() {
+  468:     return AddBuiltin(BuiltinOperator_NEG, Register_NEG(), ParseNeg);
+  469:   }
+  470: 
+  471:   TfLiteStatus AddNotEqual() {
+  472:     return AddBuiltin(BuiltinOperator_NOT_EQUAL, Register_NOT_EQUAL(),
+  473:                       ParseNotEqual);
+  474:   }
+  475: 
+
+--- lines 593-607 ---
+  593:   }
+  594: 
+  595:   TfLiteStatus AddSplitV() {
+  596:     return AddBuiltin(BuiltinOperator_SPLIT_V, Register_SPLIT_V(), ParseSplitV);
+  597:   }
+  598: 
+  599:   TfLiteStatus AddSqueeze() {
+  600:     return AddBuiltin(BuiltinOperator_SQUEEZE, Register_SQUEEZE(),
+  601:                       ParseSqueeze);
+  602:   }
+  603: 
+  604:   TfLiteStatus AddSqrt() {
+  605:     return AddBuiltin(BuiltinOperator_SQRT, Register_SQRT(), ParseSqrt);
+  606:   }
+  607: 
+
+--- lines 626-640 ---
+  626:   }
+  627: 
+  628:   TfLiteStatus AddSub() {
+  629:     return AddBuiltin(BuiltinOperator_SUB, tflite::Register_SUB(), ParseSub);
+  630:   }
+  631: 
+  632:   TfLiteStatus AddSum() {
+  633:     return AddBuiltin(BuiltinOperator_SUM, Register_SUM(), ParseReducer);
+  634:   }
+  635: 
+  636:   TfLiteStatus AddSvdf(const TFLMRegistration& registration = Register_SVDF()) {
+  637:     return AddBuiltin(BuiltinOperator_SVDF, registration, ParseSvdf);
+  638:   }
+  639: 
+  640:   TfLiteStatus AddTanh() {
+
+--- lines 686-700 ---
+  686: 
+  687:  public:
+  688:   TfLiteStatus AddBuiltin(tflite::BuiltinOperator op,
+  689:                           const TFLMRegistration& registration,
+  690:                           TfLiteBridgeBuiltinParseFunction parser) {
+  691:     if (op == BuiltinOperator_CUSTOM) {
+  692:       MicroPrintf("Invalid parameter BuiltinOperator_CUSTOM to the ");
+  693:       MicroPrintf("AddBuiltin function.");
+  694:       return kTfLiteError;
+  695:     }
+  696: 
+  697:     if (FindOp(op) != nullptr) {
+  698:       MicroPrintf("Calling AddBuiltin with the same op more than ");
+  699:       MicroPrintf("once is not supported (Op: #%d).", op);
+  700:       return kTfLiteError;
+
+=== PARSER CALLBACK DECLARATIONS ===
+
+=== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.h ===
+
+--- lines 114-125 ---
+  114: TfLiteStatus ParseCeil(const Operator* op, ErrorReporter* error_reporter,
+  115:                        BuiltinDataAllocator* allocator, void** builtin_data);
+  116: 
+  117: TfLiteStatus ParseCast(const Operator* op, ErrorReporter* error_reporter,
+  118:                        BuiltinDataAllocator* allocator, void** builtin_data);
+  119: 
+  120: TfLiteStatus ParseConcatenation(const Operator* op,
+  121:                                 ErrorReporter* error_reporter,
+  122:                                 BuiltinDataAllocator* allocator,
+  123:                                 void** builtin_data);
+  124: 
+  125: TfLiteStatus ParseConv2D(const Operator* op, ErrorReporter* error_reporter,
+
+--- lines 176-187 ---
+  176:                            BuiltinDataAllocator* allocator,
+  177:                            void** builtin_data);
+  178: 
+  179: TfLiteStatus ParseFloorMod(const Operator* op, ErrorReporter* error_reporter,
+  180:                            BuiltinDataAllocator* allocator,
+  181:                            void** builtin_data);
+  182: 
+  183: TfLiteStatus ParseFullyConnected(const Operator* op,
+  184:                                  ErrorReporter* error_reporter,
+  185:                                  BuiltinDataAllocator* allocator,
+  186:                                  void** builtin_data);
+  187: 
+
+--- lines 259-270 ---
+  259:                             BuiltinDataAllocator* allocator,
+  260:                             void** builtin_data);
+  261: 
+  262: TfLiteStatus ParseMul(const Operator* op, ErrorReporter* error_reporter,
+  263:                       BuiltinDataAllocator* allocator, void** builtin_data);
+  264: 
+  265: TfLiteStatus ParseNeg(const Operator* op, ErrorReporter* error_reporter,
+  266:                       BuiltinDataAllocator* allocator, void** builtin_data);
+  267: 
+  268: TfLiteStatus ParseNotEqual(const Operator* op, ErrorReporter* error_reporter,
+  269:                            BuiltinDataAllocator* allocator,
+  270:                            void** builtin_data);
+
+--- lines 296-307 ---
+  296:                                BuiltinDataAllocator* allocator,
+  297:                                void** builtin_data);
+  298: 
+  299: TfLiteStatus ParseReducer(const Operator* op, ErrorReporter* error_reporter,
+  300:                           BuiltinDataAllocator* allocator, void** builtin_data);
+  301: 
+  302: TfLiteStatus ParseRelu(const Operator* op, ErrorReporter* error_reporter,
+  303:                        BuiltinDataAllocator* allocator, void** builtin_data);
+  304: 
+  305: TfLiteStatus ParseRelu6(const Operator* op, ErrorReporter* error_reporter,
+  306:                         BuiltinDataAllocator* allocator, void** builtin_data);
+  307: 
+
+--- lines 353-364 ---
+  353: TfLiteStatus ParseSplit(const Operator* op, ErrorReporter* error_reporter,
+  354:                         BuiltinDataAllocator* allocator, void** builtin_data);
+  355: 
+  356: TfLiteStatus ParseSplitV(const Operator* op, ErrorReporter* error_reporter,
+  357:                          BuiltinDataAllocator* allocator, void** builtin_data);
+  358: 
+  359: TfLiteStatus ParseSqueeze(const Operator* op, ErrorReporter* error_reporter,
+  360:                           BuiltinDataAllocator* allocator, void** builtin_data);
+  361: 
+  362: TfLiteStatus ParseSqrt(const Operator* op, ErrorReporter* error_reporter,
+  363:                        BuiltinDataAllocator* allocator, void** builtin_data);
+  364: 
+
+--- lines 375-386 ---
+  375:                                BuiltinDataAllocator* allocator,
+  376:                                void** builtin_data);
+  377: 
+  378: TfLiteStatus ParseSub(const Operator* op, ErrorReporter* error_reporter,
+  379:                       BuiltinDataAllocator* allocator, void** builtin_data);
+  380: 
+  381: TfLiteStatus ParseSvdf(const Operator* op, ErrorReporter* error_reporter,
+  382:                        BuiltinDataAllocator* allocator, void** builtin_data);
+  383: 
+  384: TfLiteStatus ParseTanh(const Operator* op, ErrorReporter* error_reporter,
+  385:                        BuiltinDataAllocator* allocator, void** builtin_data);
+  386: 
+
+=== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/api/flatbuffer_conversions.cc ===
+
+--- lines 298-309 ---
+  298:     }
+  299: 
+  300:     case BuiltinOperator_FLOOR_MOD: {
+  301:       return ParseFloorMod(op, error_reporter, allocator, builtin_data);
+  302:     }
+  303: 
+  304:     case BuiltinOperator_FULLY_CONNECTED: {
+  305:       return ParseFullyConnected(op, error_reporter, allocator, builtin_data);
+  306:     }
+  307: 
+  308:     case BuiltinOperator_GATHER_ND: {
+  309:       return ParseGatherNd(op, error_reporter, allocator, builtin_data);
+
+--- lines 382-393 ---
+  382:     }
+  383: 
+  384:     case BuiltinOperator_MEAN: {
+  385:       return ParseReducer(op, error_reporter, allocator, builtin_data);
+  386:     }
+  387: 
+  388:     case BuiltinOperator_MINIMUM: {
+  389:       return ParseMinimum(op, error_reporter, allocator, builtin_data);
+  390:     }
+  391: 
+  392:     case BuiltinOperator_MUL: {
+  393:       return ParseMul(op, error_reporter, allocator, builtin_data);
+
+--- lines 430-441 ---
+  430:     }
+  431: 
+  432:     case BuiltinOperator_REDUCE_ANY: {
+  433:       return ParseReducer(op, error_reporter, allocator, builtin_data);
+  434:     }
+  435: 
+  436:     case BuiltinOperator_REDUCE_ALL: {
+  437:       return ParseReducer(op, error_reporter, allocator, builtin_data);
+  438:     }
+  439: 
+  440:     case BuiltinOperator_REDUCE_MAX: {
+  441:       return ParseReducer(op, error_reporter, allocator, builtin_data);
+
+--- lines 442-453 ---
+  442:     }
+  443: 
+  444:     case BuiltinOperator_REDUCE_MIN: {
+  445:       return ParseReducer(op, error_reporter, allocator, builtin_data);
+  446:     }
+  447: 
+  448:     case BuiltinOperator_REDUCE_PROD: {
+  449:       return ParseReducer(op, error_reporter, allocator, builtin_data);
+  450:     }
+  451: 
+  452:     case BuiltinOperator_RELU: {
+  453:       return ParseRelu(op, error_reporter, allocator, builtin_data);
+
+--- lines 507-518 ---
+  507:     }
+  508: 
+  509:     case BuiltinOperator_SPLIT_V: {
+  510:       return ParseSplitV(op, error_reporter, allocator, builtin_data);
+  511:     }
+  512: 
+  513:     case BuiltinOperator_SQRT: {
+  514:       return ParseSqrt(op, error_reporter, allocator, builtin_data);
+  515:     }
+  516: 
+  517:     case BuiltinOperator_SQUARE: {
+  518:       return ParseSquare(op, error_reporter, allocator, builtin_data);
+
+--- lines 532-543 ---
+  532:     }
+  533: 
+  534:     case BuiltinOperator_SUB: {
+  535:       return ParseSub(op, error_reporter, allocator, builtin_data);
+  536:     }
+  537: 
+  538:     case BuiltinOperator_SUM: {
+  539:       return ParseReducer(op, error_reporter, allocator, builtin_data);
+  540:     }
+  541: 
+  542:     case BuiltinOperator_SVDF: {
+  543:       return ParseSvdf(op, error_reporter, allocator, builtin_data);
+
+--- lines 572-583 ---
+  572:     }
+  573: 
+  574:     case BuiltinOperator_CAST: {
+  575:       return ParseCast(op, error_reporter, allocator, builtin_data);
+  576:     }
+  577:     case BuiltinOperator_LSH_PROJECTION: {
+  578:       auto params = safe_allocator.Allocate<TfLiteLSHProjectionParams>();
+  579:       TF_LITE_ENSURE(error_reporter, params != nullptr);
+  580:       if (const auto* lshParams =
+  581:               op->builtin_options_as_LSHProjectionOptions()) {
+  582:         params->type = parseLSHProjectionType(lshParams->type());
+  583:       }
+
+--- lines 1264-1275 ---
+ 1264: // We have this parse function instead of directly returning kTfLiteOk from the
+ 1265: // switch-case in ParseOpData because this function is used as part of the
+ 1266: // selective registration for the OpResolver implementation in micro.
+ 1267: TfLiteStatus ParseCast(const Operator* op, ErrorReporter* error_reporter,
+ 1268:                        BuiltinDataAllocator* allocator, void** builtin_data) {
+ 1269:   CheckParsePointerParams(op, error_reporter, allocator, builtin_data);
+ 1270: 
+ 1271:   SafeBuiltinDataAllocator safe_allocator(allocator);
+ 1272:   auto params = safe_allocator.Allocate<TfLiteCastParams>();
+ 1273:   TF_LITE_ENSURE(error_reporter, params != nullptr);
+ 1274:   if (const auto* schema_params = op->builtin_options_as_CastOptions()) {
+ 1275:     TF_LITE_ENSURE_STATUS(ConvertTensorType(
+
+--- lines 1530-1541 ---
+ 1530: // We have this parse function instead of directly returning kTfLiteOk from the
+ 1531: // switch-case in ParseOpData because this function is used as part of the
+ 1532: // selective registration for the OpResolver implementation in micro.
+ 1533: TfLiteStatus ParseFloorMod(const Operator*, ErrorReporter*,
+ 1534:                            BuiltinDataAllocator*, void**) {
+ 1535:   return kTfLiteOk;
+ 1536: }
+ 1537: 
+ 1538: TfLiteStatus ParseFullyConnected(const Operator* op,
+ 1539:                                  ErrorReporter* error_reporter,
+ 1540:                                  BuiltinDataAllocator* allocator,
+ 1541:                                  void** builtin_data) {
+
+--- lines 1843-1854 ---
+ 1843:   return kTfLiteOk;
+ 1844: }
+ 1845: 
+ 1846: TfLiteStatus ParseMul(const Operator* op, ErrorReporter* error_reporter,
+ 1847:                       BuiltinDataAllocator* allocator, void** builtin_data) {
+ 1848:   CheckParsePointerParams(op, error_reporter, allocator, builtin_data);
+ 1849: 
+ 1850:   SafeBuiltinDataAllocator safe_allocator(allocator);
+ 1851:   std::unique_ptr<TfLiteMulParams, SafeBuiltinDataAllocator::BuiltinDataDeleter>
+ 1852:       params = safe_allocator.Allocate<TfLiteMulParams>();
+ 1853:   TF_LITE_ENSURE(error_reporter, params != nullptr);
+ 1854: 
+
+--- lines 1986-1997 ---
+ 1986:   return kTfLiteOk;
+ 1987: }
+ 1988: 
+ 1989: TfLiteStatus ParseReducer(const Operator* op, ErrorReporter* error_reporter,
+ 1990:                           BuiltinDataAllocator* allocator,
+ 1991:                           void** builtin_data) {
+ 1992:   CheckParsePointerParams(op, error_reporter, allocator, builtin_data);
+ 1993: 
+ 1994:   SafeBuiltinDataAllocator safe_allocator(allocator);
+ 1995: 
+ 1996:   std::unique_ptr<TfLiteReducerParams,
+ 1997:                   SafeBuiltinDataAllocator::BuiltinDataDeleter>
+
+--- lines 2612-2623 ---
+ 2612:   return kTfLiteOk;
+ 2613: }
+ 2614: 
+ 2615: TfLiteStatus ParseSplitV(const Operator* op, ErrorReporter* error_reporter,
+ 2616:                          BuiltinDataAllocator* allocator, void** builtin_data) {
+ 2617:   CheckParsePointerParams(op, error_reporter, allocator, builtin_data);
+ 2618:   SafeBuiltinDataAllocator safe_allocator(allocator);
+ 2619: 
+ 2620:   std::unique_ptr<TfLiteSplitVParams,
+ 2621:                   SafeBuiltinDataAllocator::BuiltinDataDeleter>
+ 2622:       params = safe_allocator.Allocate<TfLiteSplitVParams>();
+ 2623:   TF_LITE_ENSURE(error_reporter, params != nullptr);
+
+--- lines 2750-2761 ---
+ 2750:   return kTfLiteOk;
+ 2751: }
+ 2752: 
+ 2753: TfLiteStatus ParseSub(const Operator* op, ErrorReporter* error_reporter,
+ 2754:                       BuiltinDataAllocator* allocator, void** builtin_data) {
+ 2755:   CheckParsePointerParams(op, error_reporter, allocator, builtin_data);
+ 2756: 
+ 2757:   SafeBuiltinDataAllocator safe_allocator(allocator);
+ 2758:   std::unique_ptr<TfLiteSubParams, SafeBuiltinDataAllocator::BuiltinDataDeleter>
+ 2759:       params = safe_allocator.Allocate<TfLiteSubParams>();
+ 2760:   TF_LITE_ENSURE(error_reporter, params != nullptr);
+ 2761: 
+
+=== TENSOR ACCESS API ===
+
+=== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h ===
+
+--- lines 64-77 ---
+   64:                                       const TfLiteNode* node, int index);
+   65: 
+   66: // Returns the TfLiteEvalTensor struct for a given input index in a node.
+   67: const TfLiteEvalTensor* GetEvalInput(const TfLiteContext* context,
+   68:                                      const TfLiteNode* node, int index);
+   69: 
+   70: // Returns the TfLiteEvalTensor struct for a given output index in a node.
+   71: TfLiteEvalTensor* GetEvalOutput(const TfLiteContext* context,
+   72:                                 const TfLiteNode* node, int index);
+   73: 
+   74: // Returns data for a TfLiteEvalTensor struct that are expected to exist.
+   75: template <typename T>
+   76: T* GetTensorData(TfLiteEvalTensor* tensor) {
+   77:   TFLITE_DCHECK(tensor != nullptr);
+
+--- lines 80-93 ---
+   80: 
+   81: // Returns const data for a TfLiteEvalTensor struct that are expected to exist.
+   82: template <typename T>
+   83: const T* GetTensorData(const TfLiteEvalTensor* tensor) {
+   84:   TFLITE_DCHECK(tensor != nullptr);
+   85:   return reinterpret_cast<const T*>(tensor->data.raw);
+   86: }
+   87: 
+   88: // Returns data for a TfLiteEvalTensor struct that could be null.
+   89: template <typename T>
+   90: T* GetOptionalTensorData(TfLiteEvalTensor* tensor) {
+   91:   return tensor == nullptr ? nullptr : reinterpret_cast<T*>(tensor->data.raw);
+   92: }
+   93: 
+
+--- lines 131-144 ---
+  131: // Overloads existing GetTensorData. If not compressed, this will return
+  132: // tensor->data.
+  133: template <typename T>
+  134: const T* GetTensorData(MicroContext* micro_context,
+  135:                        const TfLiteEvalTensor* tensor,
+  136:                        const CompressionTensorData* compression_data,
+  137:                        int scratch_buffer_handle) {
+  138:   TFLITE_DCHECK(tensor != nullptr);
+  139:   return GetOptionalTensorData<T>(micro_context, tensor, compression_data,
+  140:                                   scratch_buffer_handle);
+  141: }
+  142: 
+  143: #endif  // USE_TFLM_COMPRESSION
+  144: 
+
+=== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/tensor_ctypes.h ===
+
+--- lines 24-37 ---
+   24: namespace tflite {
+   25: 
+   26: template <typename T>
+   27: inline T* GetTensorData(TfLiteTensor* tensor) {
+   28:   return tensor != nullptr ? reinterpret_cast<T*>(tensor->data.raw) : nullptr;
+   29: }
+   30: 
+   31: template <typename T>
+   32: inline const T* GetTensorData(const TfLiteTensor* tensor) {
+   33:   return tensor != nullptr ? reinterpret_cast<const T*>(tensor->data.raw)
+   34:                            : nullptr;
+   35: }
+   36: 
+   37: TFLITE_NOINLINE RuntimeShape GetTensorShape(const TfLiteTensor* tensor);
+
+=== /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/c/common.h ===
+
+=== APPLICATION CMAKE SOURCE LIST ===
+
+=== /home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt ===
+
+--- lines 188-214 ---
+  188: endif()
+  189: 
+  190: target_sources(app PRIVATE
+  191:     src/application/main/Main.cc
+  192:     src/use_case/alif_asr/src/MainLoop.cc
+  193:     src/use_case/alif_asr/src/reverse_v2.cc
+  194:     src/use_case/alif_asr/src/PolyUModel1.cc
+  195:     src/power/power_mgr.c
+  196:     "${POLYU_MODEL_CPP}"
+  197: )
+  198: 
+  199: if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+  200:     target_sources(app PRIVATE
+  201:         src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc)
+  202:     target_compile_definitions(app PRIVATE
+  203:         HEATSTROKE_SINGLE_STEP_EXPERIMENT=1)
+  204: else()
+  205:     target_sources(app PRIVATE
+  206:         src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc)
+  207: endif()
+  208: 
+  209: set(SRC_MAIN "src/application/main/Main.cc")
+  210: 
+  211: list(APPEND SRC_MAIN_DEFS
+  212:     "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+  213:     "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+  214:     "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+
+--- lines 228-236 ---
+  228: 
+  229: if (HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+  230:     target_sources(app PRIVATE
+  231:         ${CMAKE_CURRENT_SOURCE_DIR}/src/use_case/alif_asr/src/heatstroke_fused_layernorm.cc
+  232:     )
+  233:     target_compile_definitions(app PRIVATE
+  234:         HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT=1
+  235:     )
+  236: endif()
+
+=== CURRENT BUILD SOURCE DATABASE ===
+Compile database: /home/user/sdk-alif/build_heatstroke_arena130000_kernelheap64k_20261110_094648/compile_commands.json
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+
+=== FINAL API CHECK COMPLETE ===
