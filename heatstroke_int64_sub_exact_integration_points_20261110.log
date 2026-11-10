@@ -1,0 +1,237 @@
+=== SUB REGISTRATION EXACT LOCATION ===
+701-#else
+702-    HS_ADD_REQUIRED(AddMul);
+703-#endif
+704-    HS_ADD_REQUIRED(AddNeg);
+705-    HS_ADD_REQUIRED(AddQuantize);
+706-    HS_ADD_REQUIRED(AddReshape);
+707-    HS_ADD_REQUIRED(AddRsqrt);
+708-    HS_ADD_REQUIRED(AddSelectV2);
+709-    HS_ADD_REQUIRED(AddSoftmax);
+710-    HS_ADD_REQUIRED(AddSplitV);
+711-    HS_ADD_REQUIRED(AddSqrt);
+712-    HS_ADD_REQUIRED(AddSquare);
+713:    HS_ADD_REQUIRED(AddSub);
+714-#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+715-    {
+716-        const TFLMRegistration registration =
+717-            tflite::RegisterHeatstrokeSumKernel();
+718-
+719-        if (this->m_opResolver.AddBuiltin(
+720-                tflite::BuiltinOperator_SUM,
+721-                registration,
+722-                tflite::ParseReducer) != kTfLiteOk) {
+723-            printf_err("Failed to register heat-stress INT64 SUM.\n");
+724-            return false;
+725-        }
+726-    }
+727-#else
+728-    HS_ADD_REQUIRED(AddSum);
+729-#endif
+730-    HS_ADD_REQUIRED(AddTopKV2);
+731-
+
+=== APPLICATION INCLUDES ===
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Application-local heat-stress TFLM operator registrations.
+ */
+
+#include "PolyUModel1.hpp"
+
+#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+#include "heatstroke_int64_cast_sum.hpp"
+#endif
+
+#if defined(HEATSTROKE_INT64_MUL_EXPERIMENT)
+#include "heatstroke_int64_mul.hpp"
+#endif
+
+#if defined(HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT)
+#include "heatstroke_int64_floor_mod.hpp"
+#endif
+
+
+#include <cstdint>
+
+#include <cstddef>
+#include <cstring>
+#include <limits>
+
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+#include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_utils.h"
+
+#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_log.h"
+
+#include "mlek/log/log_macros.h"
+#include "heatstroke_bidirectional_lstm.h"
+
+const tflite::MicroOpResolver&
+arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+{
+    return this->m_opResolver;
+}
+
+namespace
+{
+
+/*
+ * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+ * required by this implementation. Validate its options type and leave
+ * builtin_data null.
+ */
+TfLiteStatus ParseHeatstrokeSign(
+    const tflite::Operator* op,
+    tflite::ErrorReporter*,
+    tflite::BuiltinDataAllocator*,
+    void** builtin_data)
+{
+    if (builtin_data != nullptr) {
+        *builtin_data = nullptr;
+    }
+
+    if (op == nullptr ||
+        op->builtin_options_type() !=
+            tflite::BuiltinOptions_SignOptions) {
+        return kTfLiteError;
+    }
+
+    return kTfLiteOk;
+}
+
+/*
+ * Application-local INT32 SIGN implementation.
+ *
+ * y = -1 when x < 0
+ * y =  0 when x = 0
+ * y =  1 when x > 0
+ *
+ * No temporary buffer or scratch allocation is required.
+ */
+TfLiteStatus HeatstrokeSignEval(
+    TfLiteContext* context,
+    TfLiteNode* node)
+{
+    if (context == nullptr || node == nullptr) {
+        return kTfLiteError;
+    }
+
+    const TfLiteEvalTensor* input =
+        tflite::micro::GetEvalInput(context, node, 0);
+
+    TfLiteEvalTensor* output =
+        tflite::micro::GetEvalOutput(context, node, 0);
+
+    if (input == nullptr || output == nullptr) {
+        return kTfLiteError;
+    }
+
+    if (input->type != kTfLiteInt32 ||
+        output->type != kTfLiteInt32) {
+        MicroPrintf(
+            "Heatstroke SIGN requires INT32 input/output. "
+            "Input=%d Output=%d",
+            input->type,
+            output->type);
+        return kTfLiteError;
+    }
+
+=== FLOOR_MOD INCLUDE AND REGISTRATION PATTERN ===
+11-#include "heatstroke_int64_cast_sum.hpp"
+12-#endif
+13-
+14-#if defined(HEATSTROKE_INT64_MUL_EXPERIMENT)
+15-#include "heatstroke_int64_mul.hpp"
+16-#endif
+17-
+18:#if defined(HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT)
+19-#include "heatstroke_int64_floor_mod.hpp"
+20-#endif
+21-
+22-
+23-#include <cstdint>
+24-
+25-#include <cstddef>
+26-#include <cstring>
+27-#include <limits>
+28-
+29-#include "tensorflow/lite/c/builtin_op_data.h"
+30-#include "tensorflow/lite/c/common.h"
+31-#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+32-#include "tensorflow/lite/kernels/kernel_util.h"
+33-#include "tensorflow/lite/micro/micro_utils.h"
+34-
+--
+646-    HS_ADD_REQUIRED(AddCast);
+647-#endif
+648-    HS_ADD_REQUIRED(AddConcatenation);
+649-    HS_ADD_REQUIRED(AddCumSum);
+650-    HS_ADD_REQUIRED(AddDequantize);
+651-    HS_ADD_REQUIRED(AddDiv);
+652-    HS_ADD_REQUIRED(AddEqual);
+653:#if defined(HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT)
+654-    {
+655-        const TFLMRegistration registration =
+656:            tflite::RegisterHeatstrokeInt64FloorModKernel();
+657-        if (this->m_opResolver.AddBuiltin(
+658-                tflite::BuiltinOperator_FLOOR_MOD,
+659-                registration,
+660-                tflite::ParseFloorMod) != kTfLiteOk) {
+661-            printf_err(
+662-                "Failed to register heat-stress INT64 FLOOR_MOD.\\n");
+663-            return false;
+664-        }
+665-    }
+666-#else
+667-    HS_ADD_REQUIRED(AddFloorMod);
+668-#endif
+669-    /*
+670-     * Application-local GATHER replacement supporting INT32 and INT64
+671-     * indices. It reuses the existing output tensor and allocates no
+672-     * index-conversion or scratch buffer.
+
+=== CMAKE EXPERIMENT BLOCKS ===
+226-    target_sources(app PRIVATE
+227-        src/use_case/alif_asr/src/heatstroke_int64_mul.cc
+228-    )
+229-    target_compile_definitions(app PRIVATE
+230-        HEATSTROKE_INT64_MUL_EXPERIMENT=1
+231-    )
+232-endif()
+233-
+234:option(HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT
+235-       "Use application-local INT64-compatible FLOOR_MOD kernel" OFF)
+236-
+237:if (HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT)
+238-    target_sources(app PRIVATE
+239-        src/use_case/alif_asr/src/heatstroke_int64_floor_mod.cc
+240-    )
+241-    target_compile_definitions(app PRIVATE
+242:        HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT=1
+243-    )
+244-endif()
+245-
+246-set(SRC_MAIN "src/application/main/Main.cc")
+247-
+248-list(APPEND SRC_MAIN_DEFS
+249-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+250-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+251-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+252-
+253-set_source_files_properties(${SRC_MAIN}
+254-    PROPERTIES COMPILE_DEFINITIONS
+255-    "${SRC_MAIN_DEFS}")
+256-
+257-target_link_libraries(app PRIVATE
+258-    mlek::ml_framework_impl
+259-)
+260-
+
+=== END ===
