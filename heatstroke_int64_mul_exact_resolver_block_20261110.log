@@ -1,0 +1,219 @@
+=== POLYUMODEL1 INCLUDES ===
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Application-local heat-stress TFLM operator registrations.
+ */
+
+#include "PolyUModel1.hpp"
+
+#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+#include "heatstroke_int64_cast_sum.hpp"
+#endif
+
+
+#include <cstdint>
+
+#include <cstddef>
+#include <cstring>
+#include <limits>
+
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+#include "tensorflow/lite/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_utils.h"
+
+#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_log.h"
+
+#include "mlek/log/log_macros.h"
+#include "heatstroke_bidirectional_lstm.h"
+
+const tflite::MicroOpResolver&
+arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+{
+    return this->m_opResolver;
+}
+
+namespace
+{
+
+/*
+ * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+ * required by this implementation. Validate its options type and leave
+ * builtin_data null.
+ */
+TfLiteStatus ParseHeatstrokeSign(
+    const tflite::Operator* op,
+    tflite::ErrorReporter*,
+    tflite::BuiltinDataAllocator*,
+    void** builtin_data)
+{
+    if (builtin_data != nullptr) {
+        *builtin_data = nullptr;
+    }
+
+    if (op == nullptr ||
+        op->builtin_options_type() !=
+            tflite::BuiltinOptions_SignOptions) {
+        return kTfLiteError;
+    }
+
+    return kTfLiteOk;
+}
+
+/*
+ * Application-local INT32 SIGN implementation.
+ *
+ * y = -1 when x < 0
+ * y =  0 when x = 0
+ * y =  1 when x > 0
+ *
+ * No temporary buffer or scratch allocation is required.
+ */
+TfLiteStatus HeatstrokeSignEval(
+    TfLiteContext* context,
+    TfLiteNode* node)
+{
+    if (context == nullptr || node == nullptr) {
+        return kTfLiteError;
+    }
+
+    const TfLiteEvalTensor* input =
+        tflite::micro::GetEvalInput(context, node, 0);
+
+=== EXACT ENLISTOPERATIONS REGISTRATION BLOCK ===
+bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+{
+#define HS_ADD_REQUIRED(method)                                      \
+    do {                                                              \
+        const TfLiteStatus status = this->m_opResolver.method();      \
+        if (status != kTfLiteOk) {                                    \
+            printf_err(                                               \
+                "Failed to register heat-stress operator: %s\n",     \
+                #method);                                             \
+            return false;                                             \
+        }                                                             \
+    } while (0)
+
+    /*
+     * 28 stock ordinary built-in operators; GATHER is registered separately below.
+     * These CPU registrations must remain available with Ethos-U enabled.
+     */
+    HS_ADD_REQUIRED(AddAdd);
+    HS_ADD_REQUIRED(AddBroadcastArgs);
+    HS_ADD_REQUIRED(AddBroadcastTo);
+#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+    {
+        const TFLMRegistration registration =
+            tflite::RegisterHeatstrokeCastKernel();
+
+        if (this->m_opResolver.AddBuiltin(
+                tflite::BuiltinOperator_CAST,
+                registration,
+                tflite::ParseCast) != kTfLiteOk) {
+            printf_err("Failed to register heat-stress INT64 CAST.\n");
+            return false;
+        }
+    }
+#else
+    HS_ADD_REQUIRED(AddCast);
+#endif
+    HS_ADD_REQUIRED(AddConcatenation);
+    HS_ADD_REQUIRED(AddCumSum);
+    HS_ADD_REQUIRED(AddDequantize);
+    HS_ADD_REQUIRED(AddDiv);
+    HS_ADD_REQUIRED(AddEqual);
+    HS_ADD_REQUIRED(AddFloorMod);
+    /*
+     * Application-local GATHER replacement supporting INT32 and INT64
+     * indices. It reuses the existing output tensor and allocates no
+     * index-conversion or scratch buffer.
+     */
+    {
+        const TFLMRegistration registration =
+            tflite::RegisterHeatstrokeGatherKernel();
+
+        if (this->m_opResolver.AddBuiltin(
+                tflite::BuiltinOperator_GATHER,
+                registration,
+                tflite::ParseGather) != kTfLiteOk) {
+            printf_err(
+                "Failed to register heat-stress INT64 GATHER.\n");
+            return false;
+        }
+    }
+    HS_ADD_REQUIRED(AddGreater);
+    HS_ADD_REQUIRED(AddLogicalAnd);
+    HS_ADD_REQUIRED(AddLogicalNot);
+    HS_ADD_REQUIRED(AddMaximum);
+    HS_ADD_REQUIRED(AddMean);
+    HS_ADD_REQUIRED(AddMul);
+    HS_ADD_REQUIRED(AddNeg);
+    HS_ADD_REQUIRED(AddQuantize);
+    HS_ADD_REQUIRED(AddReshape);
+    HS_ADD_REQUIRED(AddRsqrt);
+    HS_ADD_REQUIRED(AddSelectV2);
+    HS_ADD_REQUIRED(AddSoftmax);
+    HS_ADD_REQUIRED(AddSplitV);
+    HS_ADD_REQUIRED(AddSqrt);
+    HS_ADD_REQUIRED(AddSquare);
+    HS_ADD_REQUIRED(AddSub);
+#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+    {
+        const TFLMRegistration registration =
+            tflite::RegisterHeatstrokeSumKernel();
+
+        if (this->m_opResolver.AddBuiltin(
+                tflite::BuiltinOperator_SUM,
+                registration,
+                tflite::ParseReducer) != kTfLiteOk) {
+            printf_err("Failed to register heat-stress INT64 SUM.\n");
+            return false;
+
+=== CUSTOM CAST/SUM REGISTRATION DECLARATIONS ===
+#ifndef HEATSTROKE_INT64_CAST_SUM_HPP
+#define HEATSTROKE_INT64_CAST_SUM_HPP
+
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+
+namespace tflite {
+
+TFLMRegistration RegisterHeatstrokeCastKernel();
+TFLMRegistration RegisterHeatstrokeSumKernel();
+
+}  // namespace tflite
+
+#endif
+
+=== CUSTOM CAST/SUM REGISTRATION DEFINITIONS ===
+368-        micro::GetEvalInput(context, node, 1);
+369-
+370-    return HeatstrokeSumInt64Eval(
+371-        context, node, input, axis, output);
+372-}
+373-
+374-}  // namespace
+375-
+376:TFLMRegistration RegisterHeatstrokeCastKernel()
+377-{
+378-    return micro::RegisterOp(
+379-        nullptr,
+380-        HeatstrokeCastPrepare,
+381-        HeatstrokeCastEval);
+382-}
+383-
+384:TFLMRegistration RegisterHeatstrokeSumKernel()
+385-{
+386-    return micro::RegisterOp(
+387-        HeatstrokeSumInit,
+388-        HeatstrokeSumPrepare,
+389-        HeatstrokeSumEval);
+390-}
+391-
+392-}  // namespace tflite
+
+=== END ===
