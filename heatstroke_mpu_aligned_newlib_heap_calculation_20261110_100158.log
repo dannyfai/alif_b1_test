@@ -1,0 +1,859 @@
+============================================================
+MPU-ALIGNED NEWLIB HEAP CALCULATION
+============================================================
+
+1. MPU alignment configuration
+/home/user/sdk-alif/build_heatstroke_arena130000_kernelheap64k_20261110_094648/zephyr/.config:CONFIG_CPU_HAS_ARM_MPU=y
+/home/user/sdk-alif/build_heatstroke_arena130000_kernelheap64k_20261110_094648/zephyr/.config:CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE=32
+/home/user/sdk-alif/build_heatstroke_arena130000_kernelheap64k_20261110_094648/zephyr/.config:CONFIG_ARM_MPU=y
+/home/user/sdk-alif/build_heatstroke_arena130000_kernelheap64k_20261110_094648/zephyr/.config:# CONFIG_USERSPACE is not set
+
+2. USED_RAM_END_ADDR definition
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-64-	/* Partition size must be a multiple of the minimum MPU region
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-65-	 * size. Start address of the partition must align with the
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-66-	 * minimum MPU region size.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-67-	 */
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-68-	int partition_is_valid =
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-69-		(part->size != 0U)
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-70-		&&
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-71-		((part->size &
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c:72:			(~(CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE - 1)))
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-73-			== part->size)
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-74-		&&
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-75-		((part->start &
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c:76:			(CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE - 1)) == 0U);
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-77-
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-78-	return partition_is_valid;
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-79-}
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-80-
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-81-/* This internal function performs MPU region initialization.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-82- *
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-83- * Note:
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-84- *   The caller must provide a valid region index.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-85- */
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-86-static void region_init(const uint32_t index,
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-87-	const struct nxp_mpu_region *region_conf)
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-88-{
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-89-	uint32_t region_base = region_conf->base;
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-90-	uint32_t region_end = region_conf->end;
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/nxp_mpu.c-91-	uint32_t region_attr = region_conf->attr.attr;
+--
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-187- * */
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-188-static int mpu_partition_is_valid(const struct z_arm_mpu_partition *part)
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-189-{
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-190-	/* Partition size must be a multiple of the minimum MPU region
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-191-	 * size. Start address of the partition must align with the
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-192-	 * minimum MPU region size.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-193-	 */
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-194-	int partition_is_valid =
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h:195:		(part->size >= CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE)
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-196-		&&
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-197-		((part->size &
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h:198:			(~(CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE - 1)))
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-199-			== part->size)
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-200-		&&
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-201-		((part->start &
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h:202:			(CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE - 1)) == 0U);
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-203-
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-204-	return partition_is_valid;
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-205-}
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-206-
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-207-/**
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-208- * This internal function returns the MPU region, in which a
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-209- * buffer, specified by its start address and size, lies. If
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-210- * a valid MPU region cannot be derived the function returns
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-211- * -EINVAL.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-212- *
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-213- * Note that, for the function to work properly, the ARM MPU
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-214- * needs to be enabled.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-215- *
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-216- */
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v8_internal.h-217-#if defined(CONFIG_AARCH32_ARMV8_R)
+--
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-65-	/* Partition size must be power-of-two,
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-66-	 * and greater or equal to the minimum
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-67-	 * MPU region size. Start address of the
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-68-	 * partition must align with size.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-69-	 */
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-70-	int partition_is_valid =
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-71-		((part->size & (part->size - 1U)) == 0U)
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-72-		&&
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h:73:		(part->size >= CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE)
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-74-		&&
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-75-		((part->start & (part->size - 1U)) == 0U);
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-76-
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-77-	return partition_is_valid;
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-78-}
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-79-
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-80-/**
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-81- * This internal function converts the region size to
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-82- * the SIZE field value of MPU_RASR.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-83- *
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-84- * Note: If size is not a power-of-two, it is rounded-up to the next
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-85- * power-of-two value, and the returned SIZE field value corresponds
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-86- * to that power-of-two value.
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-87- */
+/home/user/sdk-alif/zephyr/arch/arm/core/mpu/arm_mpu_v7_internal.h-88-static inline uint32_t size_to_mpu_rasr_size(uint32_t size)
+--
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-128- *
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-129- * Denotes the minimum required alignment of a thread stack.
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-130- *
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-131- * Note:
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-132- * User thread stacks must respect the minimum MPU region
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-133- * alignment requirement.
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-134- */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-135-#if defined(CONFIG_USERSPACE)
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h:136:#define Z_THREAD_MIN_STACK_ALIGN CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-137-#elif defined(CONFIG_ARM_AARCH32_MMU)
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-138-#define Z_THREAD_MIN_STACK_ALIGN CONFIG_ARM_MMU_REGION_MIN_ALIGN_AND_SIZE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-139-#else
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-140-#define Z_THREAD_MIN_STACK_ALIGN ARCH_STACK_PTR_ALIGN
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-141-#endif
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-142-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-143-/**
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-144- * @brief Declare a minimum MPU guard alignment and size
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-145- *
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-146- * This specifies the minimum MPU guard alignment/size for the MPU. This
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-147- * will be used to denote the guard section of the stack, if it exists.
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-148- *
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-149- * One key note is that this guard results in extra bytes being added to
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-150- * the stack. APIs which give the stack ptr and stack size will take this
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-151- * guard size into account.
+--
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-184- * |---------------------- <---- Stack Buffer Ptr from API
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-185- * |  MPU Guard,         |
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-186- * |     if present      |
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-187- * ----------------------- <---- Stack Allocation address
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-188- *
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-189- */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-190-#if defined(CONFIG_MPU_STACK_GUARD)
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-191-/* make sure there's more than enough space for an exception frame */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h:192:#if CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE <= 0x20
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-193-#define MPU_GUARD_ALIGN_AND_SIZE 0x40
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-194-#else
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h:195:#define MPU_GUARD_ALIGN_AND_SIZE CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-196-#endif
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-197-#else
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-198-#define MPU_GUARD_ALIGN_AND_SIZE 0
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-199-#endif
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-200-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-201-/**
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-202- * @brief Declare the MPU guard alignment and size for a thread stack
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-203- *        that is using the Floating Point services.
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-204- *
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-205- * For threads that are using the Floating Point services under Shared
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-206- * Registers (CONFIG_FPU_SHARING=y) mode, the exception stack frame may
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-207- * contain both the basic stack frame and the FP caller-saved context,
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-208- * upon exception entry. Therefore, a wide guard region is required to
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-209- * guarantee that stack-overflow detection will always be successful.
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-210- */
+--
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-242- */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-243-#define ARCH_THREAD_STACK_OBJ_ALIGN(size)	Z_POW2_CEIL(size)
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-244-#define ARCH_THREAD_STACK_SIZE_ADJUST(size)	Z_POW2_CEIL(size)
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-245-#else
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-246-#define ARCH_THREAD_STACK_OBJ_ALIGN(size)	MAX(Z_THREAD_MIN_STACK_ALIGN, \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-247-						    Z_MPU_GUARD_ALIGN)
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-248-#ifdef CONFIG_USERSPACE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-249-#define ARCH_THREAD_STACK_SIZE_ADJUST(size) \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h:250:	ROUND_UP(size, CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE)
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-251-#endif
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-252-#endif
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-253-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-254-#ifdef CONFIG_MPU_STACK_GUARD
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-255-/* Kernel-only stacks need an MPU guard region programmed at the beginning of
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-256- * the stack object, so align the object appropriately.
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-257- */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-258-#define ARCH_KERNEL_STACK_RESERVED	MPU_GUARD_ALIGN_AND_SIZE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-259-#define ARCH_KERNEL_STACK_OBJ_ALIGN	Z_MPU_GUARD_ALIGN
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-260-#endif
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-261-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-262-/* On arm, all MPU guards are carve-outs. */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-263-#define ARCH_THREAD_STACK_RESERVED 0
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-264-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/arch.h-265-/* Legacy case: retain containing extern "C" with C++ */
+--
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-378-#define K_MEM_PARTITION_P_RX_U_RX_NOCACHE                                                          \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-379-	((k_mem_partition_attr_t){(P_RO_U_RO_Msk | OUTER_SHAREABLE_Msk),                           \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-380-				  MPU_MAIR_INDEX_SRAM_NOCACHE})
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-381-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-382-#endif /* _ASMLANGUAGE */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-383-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-384-#define _ARCH_MEM_PARTITION_ALIGN_CHECK(start, size)                                               \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-385-	BUILD_ASSERT((size > 0) &&                                                                 \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:386:			     ((uint32_t)start % CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE == 0U) && \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:387:			     ((size) % CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE == 0),             \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-388-		     "The start and size of the partition must align with the minimum MPU "        \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h-389-		     "region size.")
+--
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-229- * not kept here.
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-230- */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-231-extern const struct nxp_mpu_config mpu_config;
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-232-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-233-#endif /* _ASMLANGUAGE */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-234-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-235-#define _ARCH_MEM_PARTITION_ALIGN_CHECK(start, size)                                               \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-236-	BUILD_ASSERT(                                                                              \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h:237:		(size) % CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE == 0 &&                          \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h:238:			(size) >= CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE &&                      \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h:239:			(uint32_t)(start) % CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE == 0,         \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-240-		"The size of the partition must align with minimum MPU region size"                \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-241-		" and greater than or equal to minimum MPU region size.\n"                         \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-242-		"The start address of the partition must align with minimum MPU region size.")
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-243-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/nxp_mpu.h-244-#endif /* ZEPHYR_INCLUDE_ARCH_ARM_MPU_NXP_MPU_H_ */
+--
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-270-#define K_MEM_PARTITION_P_RX_U_RX_NOCACHE                                                          \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-271-	((k_mem_partition_attr_t){                                                                 \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-272-		(_K_MEM_PARTITION_P_RX_U_RX | NORMAL_OUTER_INNER_NON_CACHEABLE_SHAREABLE)})
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-273-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-274-#endif /* _ASMLANGUAGE */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-275-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-276-#define _ARCH_MEM_PARTITION_ALIGN_CHECK(start, size)                                               \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-277-	BUILD_ASSERT(!(((size) & ((size) - 1))) &&                                                 \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h:278:			     (size) >= CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE &&                 \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-279-			     !((uint32_t)(start) & ((size) - 1)),                                  \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-280-		     "The size of the partition must be power of 2 and greater than or equal to "  \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-281-		     "the minimum MPU region size.\n"                                              \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h-282-		     "The start address of the partition must align with size.")
+--
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-13- * page size which is CONFIG_MMU_PAGE_SIZE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-14- */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-15-#define MEM_DOMAIN_ALIGN_AND_SIZE CONFIG_MMU_PAGE_SIZE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-16-#elif defined(CONFIG_ARM_MPU)
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-17-#include <zephyr/arch/arm64/cortex_r/arm_mpu.h>
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-18-/*
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-19- * When mpu enabled, some section addresses need to be aligned with
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-20- * mpu region min align size which is
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h:21: * CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-22- */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h:23:#define MEM_DOMAIN_ALIGN_AND_SIZE CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-24-#endif
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-25-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-26-#ifndef _ASMLANGUAGE
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-27-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-28-struct k_thread;
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-29-void z_arm64_thread_mem_domains_init(struct k_thread *thread);
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-30-void z_arm64_swap_mem_domains(struct k_thread *thread);
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-31-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-32-#endif /* _ASMLANGUAGE */
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-33-
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/mm.h-34-#endif /* ZEPHYR_INCLUDE_ARCH_ARM64_MM_H_ */
+
+3. Actual linker memory endpoint symbols
+2014e8d4 B _end
+2014e8d4 B _image_ram_end
+2014e8d4 B z_mapped_end
+20180000 A __kernel_ram_end
+
+4. Calculate heap size using the actual MPU alignment
+SRAM base:             0x2000A000
+SRAM end:              0x20180000
+USED_RAM_END candidate: 0x2014E8D4
+Required heap:         163,840 bytes
+MPU alignment:         32 bytes
+Aligned heap base:     0x2014E8E0
+MAX_HEAP_SIZE:         202,528 bytes
+Newlib minimum:        163,840 bytes
+Heap margin:           38,688 bytes
+STARTUP CHECK: PASS
+
+ALIGNMENT SENSITIVITY
+alignment=     32: base=0x2014E8E0, heap=202,528, PASS
+alignment=    256: base=0x2014E900, heap=202,496, PASS
+alignment=  4,096: base=0x2014F000, heap=200,704, PASS
+alignment= 32,768: base=0x20150000, heap=196,608, PASS
+alignment= 65,536: base=0x20150000, heap=196,608, PASS
+alignment=131,072: base=0x20160000, heap=131,072, FAIL
+alignment=262,144: base=0x20180000, heap=      0, FAIL
+
+5. Kernel heap API users across application and SDK
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1283-	if (!net_if_is_admin_up(net_if_lookup_by_dev(dev))) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1284-		return 0;
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1285-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1286-
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1287-#ifdef CONFIG_NXP_WIFI_GET_LOG
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c:1288:	wifi_stats = k_malloc(sizeof(wlan_pkt_stats_t));
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1289-	if (!wifi_stats) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1290-		LOG_WRN("No mem for detailed statistics");
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1291-		return 0;
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1292-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1293-
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1294-	memset(wifi_stats, 0, sizeof(wlan_pkt_stats_t));
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1295-	ret = nxp_wifi_get_detail_stats(if_handle->state.interface, wifi_stats);
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1296-	if (ret != 0) {
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1336-		return 0;
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1337-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1338-
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1339-#ifdef CONFIG_NXP_WIFI_GET_LOG
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1340-	/* store firmware statistics */
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c:1341:	wifi_stats = k_malloc(sizeof(wlan_pkt_stats_t));
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1342-	if (!wifi_stats) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1343-		LOG_WRN("No mem to reset detailed statistics");
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1344-		return 0;
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1345-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1346-
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1347-	memset(wifi_stats, 0, sizeof(wlan_pkt_stats_t));
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1348-	ret = nxp_wifi_get_detail_stats(if_handle->state.interface, wifi_stats);
+/home/user/sdk-alif/zephyr/drivers/wifi/nxp/nxp_wifi_drv.c-1349-	if (ret != 0) {
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-229-	if (!aps) {
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-230-		LOG_INF("No Wi-Fi AP found");
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-231-		goto out;
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-232-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-233-
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c:234:	ap_list_buffer = k_malloc(aps * sizeof(wifi_ap_record_t));
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-235-	if (ap_list_buffer == NULL) {
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-236-		LOG_INF("Failed to malloc buffer to print scan results");
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-237-		goto out;
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-238-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-239-
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-240-	if (esp_wifi_scan_get_ap_records(&aps, (wifi_ap_record_t *)ap_list_buffer) == ESP_OK) {
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-241-		for (int k = 0; k < aps; k++) {
+/home/user/sdk-alif/zephyr/drivers/wifi/esp32/src/esp_wifi_drv.c-242-			memset(&res, 0, sizeof(struct wifi_scan_result));
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-64- * Implement WHD memory wrappers
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-65- */
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-66-
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-67-inline void *whd_mem_malloc(size_t size)
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-68-{
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c:69:	return k_malloc(size);
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-70-}
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-71-
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-72-inline void *whd_mem_calloc(size_t nitems, size_t size)
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-73-{
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c:74:	return k_calloc(nitems, size);
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-75-}
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-76-
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-77-inline void whd_mem_free(void *ptr)
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-78-{
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-79-	k_free(ptr);
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-80-}
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-81-
+/home/user/sdk-alif/zephyr/drivers/wifi/infineon/airoc_whd_hal_common.c-82-inline void whd_mem_memcpy(void *dest, const void *src, size_t len)
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-172-	if (scan_res->valid_fields & NRF_WIFI_EVENT_NEW_SCAN_RESULTS_BEACON_IES_VALID) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-173-		beacon_ie = scan_res->ies + scan_res->ies_len;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-174-		beacon_ie_len = scan_res->beacon_ies_len;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-175-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-176-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c:177:	r = k_calloc(sizeof(*r) + ie_len + beacon_ie_len, sizeof(char));
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-178-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-179-	if (!r) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-180-		LOG_ERR("%s: Unable to allocate memory for scan result", __func__);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-181-		return;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-182-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-183-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-184-	if (scan_res->valid_fields & NRF_WIFI_EVENT_NEW_SCAN_RESULTS_MAC_ADDR_VALID) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-185-		memcpy(r->bssid, scan_res->mac_addr, ETH_ALEN);
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-517-		for (indx = 0; params->freqs[indx]; indx++) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-518-			num_freqs++;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-519-		}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-520-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-521-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c:522:	scan_info = k_calloc(sizeof(*scan_info) + (num_freqs * sizeof(unsigned int)),
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-523-			     sizeof(char));
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-524-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-525-	if (!scan_info) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-526-		LOG_ERR("%s: Unable to allocate memory for scan info", __func__);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-527-		ret = -ENOMEM;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-528-		goto out;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-529-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-530-
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1412-		goto out;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1413-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1414-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1415-	k_mutex_lock(&mgmt_tx_lock, K_FOREVER);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1416-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c:1417:	mgmt_tx_info = k_calloc(sizeof(*mgmt_tx_info), sizeof(char));
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1418-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1419-	if (!mgmt_tx_info) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1420-		LOG_ERR("%s: Unable to allocate memory", __func__);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1421-		goto out;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1422-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1423-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1424-	if (offchanok) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1425-		mgmt_tx_info->nrf_wifi_flags |= NRF_WIFI_CMD_FRAME_OFFCHANNEL_TX_OK;
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1609-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1610-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1611-	if ((wiphy_info->params_valid & NRF_WIFI_GET_WIPHY_VALID_EXTENDED_CAPABILITIES) &&
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1612-	    rpu_ctx_zep->extended_capa == NULL) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1613-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c:1614:		rpu_ctx_zep->extended_capa = k_malloc(wiphy_info->extended_capabilities_len);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1615-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1616-		if (rpu_ctx_zep->extended_capa) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1617-			memcpy(rpu_ctx_zep->extended_capa, wiphy_info->extended_capabilities,
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1618-			       wiphy_info->extended_capabilities_len);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1619-		}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1620-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c:1621:		rpu_ctx_zep->extended_capa_mask = k_malloc(wiphy_info->extended_capabilities_len);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1622-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1623-		if (rpu_ctx_zep->extended_capa_mask) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1624-			memcpy(rpu_ctx_zep->extended_capa_mask,
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1625-			       wiphy_info->extended_capabilities_mask,
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1626-			       wiphy_info->extended_capabilities_len);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1627-		} else {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1628-			free(rpu_ctx_zep->extended_capa);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wpa_supp_if.c-1629-			rpu_ctx_zep->extended_capa = NULL;
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-107-		}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-108-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-109-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-110-	vif_ctx_zep->disp_scan_cb = cb;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-111-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c:112:	scan_info = k_calloc(sizeof(*scan_info) +
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-113-			     (num_scan_channels *
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-114-			      sizeof(scan_info->scan_params.center_frequency[0])),
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-115-			     sizeof(char));
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-116-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-117-	if (!scan_info) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-118-		LOG_ERR("%s: Unable to allocate memory for scan_info (size: %d bytes)",
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-119-			__func__,
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/wifi_mgmt_scan.c-120-		       sizeof(*scan_info) + (num_scan_channels *
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-463-		LOG_DBG("%s: Unsolicited regulatory change event", __func__);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-464-		/* TODO: Handle unsolicited regulatory change event */
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-465-		return;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-466-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-467-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c:468:	fmac_dev_ctx->reg_change = k_malloc(sizeof(struct nrf_wifi_event_regulatory_change));
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-469-	if (!fmac_dev_ctx->reg_change) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-470-		LOG_ERR("%s: Failed to allocate memory for reg_change", __func__);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-471-		return;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-472-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-473-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-474-	memcpy(fmac_dev_ctx->reg_change,
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-475-		   reg_change_event,
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/fmac_main.c-476-		   sizeof(struct nrf_wifi_event_regulatory_change));
+--
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-457-		LOG_DBG("%s: rpu_ctx_zep or rpu_ctx is NULL",
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-458-			__func__);
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-459-		goto unlock;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-460-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-461-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c:462:	mcast_info = k_calloc(sizeof(*mcast_info), sizeof(char));
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-463-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-464-	if (!mcast_info) {
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-465-		LOG_ERR("%s: Unable to allocate memory of size %d "
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-466-			"for mcast_info", __func__, sizeof(*mcast_info));
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-467-		goto unlock;
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-468-	}
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-469-
+/home/user/sdk-alif/zephyr/drivers/wifi/nrf_wifi/src/net_if.c-470-	switch (addr->family) {
+--
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-875-	}
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-876-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-877-#ifdef CONFIG_I3C_STM32_DMA
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-878-	i3c_stm32_end_dma_requests(dev);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-879-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c:880:	k_heap_free(&stm32_i3c_fifo_heap, data->status_fifo);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c:881:	k_heap_free(&stm32_i3c_fifo_heap, data->control_fifo);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-882-#endif
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-883-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-884-	data->msg_state = STM32_I3C_MSG_IDLE;
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-885-	data->sf_state = STM32_I3C_SF_IDLE;
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-886-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-887-	k_mutex_unlock(&data->bus_mutex);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-888-}
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-889-
+--
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1179-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1180-#ifdef CONFIG_I3C_STM32_DMA
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1181-	struct i3c_stm32_msg *curr_msg = &data->curr_msg;
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1182-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1183-	data->fifo_len = curr_msg->num_msgs * sizeof(uint32_t);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c:1184:	data->control_fifo = k_heap_alloc(&stm32_i3c_fifo_heap, data->fifo_len, K_FOREVER);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c:1185:	data->status_fifo = k_heap_alloc(&stm32_i3c_fifo_heap, data->fifo_len, K_FOREVER);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1186-	int ret;
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1187-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1188-	/* Prepare all control words for all messages on the transfer */
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1189-	for (size_t i = 0; i < curr_msg->num_msgs; i++) {
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1190-		WRITE_REG(data->control_fifo[i],
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1191-			  ((curr_msg->target_addr << I3C_CR_ADD_Pos) |
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1192-			   i3c_stm32_curr_msg_control_get_len(dev) |
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1193-			   i3c_stm32_curr_msg_control_get_dir(dev) | curr_msg->msg_type |
+--
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1274-	/* Fill the num_xfer for each message from the status FIFO */
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1275-	for (size_t i = 0; i < num_msgs; i++) {
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1276-		msgs[i].num_xfer = READ_BIT(data->status_fifo[i], I3C_SR_XDCNT);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1277-	}
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1278-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c:1279:	k_heap_free(&stm32_i3c_fifo_heap, data->control_fifo);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c:1280:	k_heap_free(&stm32_i3c_fifo_heap, data->status_fifo);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1281-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1282-	i3c_stm32_end_dma_requests(dev);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1283-#endif
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1284-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1285-	k_mutex_unlock(&data->bus_mutex);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1286-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1287-	return 0;
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1288-}
+--
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1326-	}
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1327-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1328-	LL_I3C_EnableArbitrationHeader(i3c);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1329-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1330-#ifdef CONFIG_I3C_STM32_DMA
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c:1331:	k_heap_free(&stm32_i3c_fifo_heap, data->control_fifo);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c:1332:	k_heap_free(&stm32_i3c_fifo_heap, data->status_fifo);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1333-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1334-	i3c_stm32_end_dma_requests(dev);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1335-#endif
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1336-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1337-	k_mutex_unlock(&data->bus_mutex);
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1338-
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1339-	return 0;
+/home/user/sdk-alif/zephyr/drivers/i3c/i3c_stm32.c-1340-}
+--
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-69-		return -ENODEV;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-70-	}
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-71-
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-72-	struct fpga_bridge_dev_data *const data = (struct fpga_bridge_dev_data *const)(dev->data);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-73-
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c:74:	uint32_t *cmd_addr = (uint32_t *)k_malloc(cmd_size);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-75-
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-76-	if (!cmd_addr) {
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-77-		return -ENOMEM;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-78-	}
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-79-
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-80-	/* Fill the SiP SVC buffer with CANCEL request */
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-81-	*cmd_addr = MAILBOX_CANCEL_COMMAND;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-82-
+--
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-147-		resp_len = response->resp_data_size / 4;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-148-		private_data->mbox_response_len = resp_len;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-149-		if (resp_data && resp_len) {
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-150-			response_header = (union mailbox_response_header)resp_data[0];
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-151-			private_data->mbox_response_data =
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c:152:				(uint32_t *)k_malloc(sizeof(uint32_t) * resp_len);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-153-			for (mbox_idx = 0; mbox_idx < resp_len; mbox_idx++) {
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-154-				LOG_DBG("\t\t[%4d] %08x", mbox_idx, resp_data[mbox_idx]);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-155-				private_data->mbox_response_data[mbox_idx] = resp_data[mbox_idx];
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-156-			}
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-157-		} else {
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-158-			LOG_ERR("\t\tInvalid addr (%p) or len (%d)", resp_data, resp_len);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-159-		}
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-160-	}
+--
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-204-		LOG_ERR("Mailbox client is not registered");
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-205-		return -ENODEV;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-206-	}
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-207-
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-208-	if (cmd_type == SIP_SVC_PROTO_CMD_ASYNC) {
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c:209:		cmd_addr = (uint32_t *)k_malloc(FPGA_MB_CMD_ADDR_MEM_SIZE);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-210-		if (!cmd_addr) {
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-211-			LOG_ERR("Failed to allocate command memory");
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-212-			return -ENOMEM;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-213-		}
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-214-		cmd_addr[MBOX_CMD_HEADER_INDEX] =
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-215-			MBOX_REQUEST_HEADER(cmd_request[SMC_REQUEST_A2_INDEX], 0, 0);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c:216:		resp_addr = (uint32_t *)k_malloc(FPGA_MB_RESPONSE_MEM_SIZE);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-217-		if (!resp_addr) {
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-218-			k_free(cmd_addr);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-219-			return -ENOMEM;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-220-		}
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-221-
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-222-		request.a2 = (uint64_t)cmd_addr;
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-223-		request.a3 = sizeof(uint32_t);
+/home/user/sdk-alif/zephyr/drivers/fpga/fpga_altera_agilex_bridge.c-224-		request.resp_data_addr = (uint64_t)resp_addr;
+--
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-142-
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-143-	/* need to store data in intermediate RAM buffer in case from flash to flash write */
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-144-	if (((uint32_t)data >= FLASH_ORIGIN) &&
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-145-		((uint32_t)data < (FLASH_ORIGIN + FLASH_SIZE))) {
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-146-
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c:147:		buf = k_malloc(len);
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-148-		if (buf == NULL) {
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-149-			k_sem_give(&dev_data->write_lock);
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-150-			return -ENOMEM;
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-151-		}
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-152-
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-153-		/* copy Flash data to RAM */
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-154-		memcpy(buf, data, len);
+/home/user/sdk-alif/zephyr/drivers/flash/soc_flash_b91.c-155-
+--
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-563-	struct cdns_cdma_command_descriptor *cdma_desc;
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-564-	int ret;
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-565-
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-566-	page_buffer_size = (page_count > max_page_desc) ? max_page_desc : page_count;
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-567-
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c:568:	cdma_desc = k_malloc(sizeof(struct cdns_cdma_command_descriptor) * page_buffer_size);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-569-
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-570-	if (cdma_desc == NULL) {
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-571-		LOG_ERR("Memory allocation error occurred %s", __func__);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-572-		return -ENOSR;
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-573-	}
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-574-
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-575-	base_address = params->nand_base;
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-576-
+--
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1212-		}
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1213-
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1214-	} else if (((check_page_last == 0) && (check_page_first == 1) && (page_count == 1)) ||
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1215-		   ((check_page_last == 0) && (check_page_first == 0) && (page_count == 1)) ||
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1216-		   ((check_page_last == 1) && (check_page_first == 0) && (page_count == 1))) {
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c:1217:		first_end_page = (char *)k_malloc(sizeof(char) * (params->page_size));
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1218-		if (first_end_page != NULL) {
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1219-			memset(first_end_page, 0xFF, sizeof(char) * (params->page_size));
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1220-		} else {
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1221-			LOG_ERR("Memory allocation error occurred %s", __func__);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1222-			return -ENOSR;
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1223-		}
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1224-		ret = cdns_read_data(params, start_page_number, first_end_page, page_count);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1225-		if (ret != 0) {
+--
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1229-		memcpy((char *)buffer, first_end_page + (offset % (params->page_size)), size);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1230-		k_free(first_end_page);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1231-	} else if (((check_page_last == 0) && (check_page_first == 1) && (page_count == 2)) ||
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1232-		   ((check_page_last == 0) && (check_page_first == 0) && (page_count == 2)) ||
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1233-		   ((check_page_last == 1) && (check_page_first == 0) && (page_count == 2))) {
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c:1234:		first_end_page = (char *)k_malloc(sizeof(char) * (params->page_size * 2));
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1235-		if (first_end_page != NULL) {
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1236-			memset(first_end_page, 0xFF, sizeof(char) * (params->page_size * 2));
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1237-		} else {
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1238-			LOG_ERR("Memory allocation error occurred %s", __func__);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1239-			return -ENOSR;
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1240-		}
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1241-		ret = cdns_read_data(params, start_page_number, first_end_page, page_count);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1242-		if (ret < 0) {
+--
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1245-		}
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1246-		memcpy((char *)buffer, first_end_page + (offset % (params->page_size)), size);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1247-		k_free(first_end_page);
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1248-
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1249-	} else if ((check_page_last == 0) && (check_page_first == 1) && (page_count > 2)) {
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c:1250:		first_end_page = (char *)k_malloc(sizeof(char) * (params->page_size));
+/home/user/sdk-alif/zephyr/drivers/flash/flash_cadence_nand_ll.c-1251-		if (first_end_page != NULL) {
+
+6. Ethos-U driver dynamic allocation calls
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-26- * Re-implementation/Overrides __((weak)) symbol functions from ethosu_driver.c
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-27- * To handle mutex and semaphores
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-28- *******************************************************************************/
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-29-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-30-void *ethosu_mutex_create(void)
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-31-{
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-32-	struct k_mutex *mutex;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-33-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c:34:	mutex = k_malloc(sizeof(*mutex));
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-35-	if (mutex == NULL) {
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-36-		LOG_ERR("Failed allocate mutex");
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-37-		return NULL;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-38-	}
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-39-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-40-	k_mutex_init(mutex);
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-41-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-42-	return (void *)mutex;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-43-}
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-44-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-45-int ethosu_mutex_lock(void *mutex)
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-46-{
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-47-	int status;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-48-
+--
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-60-	k_mutex_unlock((struct k_mutex *)mutex);
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-61-	return 0;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-62-}
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-63-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-64-void *ethosu_semaphore_create(void)
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-65-{
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-66-	struct k_sem *sem;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-67-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c:68:	sem = k_malloc(sizeof(*sem));
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-69-	if (sem == NULL) {
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-70-		LOG_ERR("Failed to allocate semaphore");
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-71-		return NULL;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-72-	}
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-73-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-74-	k_sem_init(sem, 0, 100);
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-75-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-76-	return (void *)sem;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-77-}
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-78-
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-79-int ethosu_semaphore_take(void *sem, uint64_t timeout)
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-80-{
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-81-	int status;
+/home/user/sdk-alif/zephyr/drivers/misc/ethos_u/ethos_u.c-82-
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-41-  PyArrayObject *capi_arr_tmp = NULL;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-42-  PyObject *arr_capi = Py_None;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-43-  int i;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-44-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-45-  if (!PyArg_ParseTuple(capi_args,"iiOiO|:wrap.call",\
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-46-                        &type_num,&elsize,&dims_capi,&intent,&arr_capi))
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-47-    return NULL;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-48-  rank = PySequence_Length(dims_capi);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c:49:  dims = malloc(rank*sizeof(npy_intp));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-50-  for (i=0;i<rank;++i) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-51-    PyObject *tmp;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-52-    tmp = PySequence_GetItem(dims_capi, i);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-53-    if (tmp == NULL) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-54-        goto fail;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-55-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-56-    dims[i] = (npy_intp)PyLong_AsLong(tmp);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-57-    Py_DECREF(tmp);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-58-    if (dims[i] == -1 && PyErr_Occurred()) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-59-        goto fail;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-60-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-61-  }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-62-  capi_arr_tmp = ndarray_from_pyobj(type_num,elsize,dims,rank,intent|F2PY_INTENT_OUT,arr_capi,"wrap.call failed");
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/f2py/tests/src/array_from_pyobj/wrapmodule.c-63-  if (capi_arr_tmp == NULL) {
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-170-        goto cleanup;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-171-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-172-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-173-    if (itemsize <= 0) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-174-        PyErr_SetString(PyExc_ValueError, "ndim <= 0");
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-175-        goto cleanup;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-176-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-177-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c:178:    shape_ary = malloc(sizeof(Py_ssize_t) * ndim + 1);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c:179:    strides_ary = malloc(sizeof(Py_ssize_t) * ndim + 1);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-180-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-181-    shape_tuple = PySequence_Fast(shape, "shape is not a sequence");
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-182-    if (!shape_tuple) goto cleanup;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-183-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-184-    for (i = 0; i < ndim; ++i) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-185-        shape_ary[i] = PyNumber_AsSsize_t(
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-186-                           PySequence_Fast_GET_ITEM(shape_tuple, i),
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-187-                           PyExc_OverflowError);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-188-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-189-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-190-    strides_tuple = PySequence_Fast(strides, "strides is not a sequence");
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-191-    if (!strides_tuple) goto cleanup;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-192-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/mviewbuf.c-193-    for (i = 0; i < ndim; ++i) {
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-527-int
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-528-numba_dictkeys_new(NB_DictKeys **out, Py_ssize_t size, Py_ssize_t key_size, Py_ssize_t val_size) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-529-    Py_ssize_t usable = USABLE_FRACTION(size);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-530-    Py_ssize_t index_size = ix_size(size);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-531-    Py_ssize_t entry_size = aligned_size(sizeof(NB_DictEntry) + aligned_size(key_size) + aligned_size(val_size));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-532-    Py_ssize_t entry_offset = aligned_size(index_size * size);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-533-    Py_ssize_t alloc_size = sizeof(NB_DictKeys) + entry_offset + entry_size * usable;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-534-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c:535:    NB_DictKeys *dk = malloc(aligned_size(alloc_size));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-536-    if (!dk) return ERR_NO_MEMORY;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-537-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-538-    assert ( size >= D_MINSIZE );
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-539-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-540-    dk->size = size;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-541-    dk->usable = usable;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-542-    dk->nentries = 0;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-543-    dk->key_size = key_size;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-544-    dk->val_size = val_size;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-545-    dk->entry_offset = entry_offset;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-546-    dk->entry_size = entry_size;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-547-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-548-    assert (aligned_pointer(dk->indices) == dk->indices );
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-549-    /* Ensure that the method table is all nulls */
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-559-/* Allocate new dictionary */
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-560-int
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-561-numba_dict_new(NB_Dict **out, Py_ssize_t size, Py_ssize_t key_size, Py_ssize_t val_size) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-562-    NB_DictKeys *dk;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-563-    NB_Dict *d;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-564-    int status = numba_dictkeys_new(&dk, size, key_size, val_size);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-565-    if (status != OK) return status;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-566-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c:567:    d = malloc(sizeof(NB_Dict));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-568-    if (!d) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-569-        numba_dictkeys_free(dk);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-570-        return ERR_NO_MEMORY;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-571-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-572-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-573-    d->used = 0;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-574-    d->keys = dk;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-575-    *out = d;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-576-    return OK;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-577-}
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-578-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-579-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-580-/*
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/dictobject.c-581-Adapted from CPython lookdict_index().
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-159- * items if requested (allocated != 0). See _listobject.h for more information
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-160- * on the NB_List struct.
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-161- */
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-162-int
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-163-numba_list_new(NB_List **out, Py_ssize_t item_size, Py_ssize_t allocated){
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-164-    NB_List *lp;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-165-    char *items;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-166-    // allocate memory to hold the struct
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c:167:    lp = malloc(aligned_size(sizeof(NB_List)));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-168-    if (lp == NULL) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-169-        return LIST_ERR_NO_MEMORY;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-170-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-171-    // set up members
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-172-    lp->size = 0;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-173-    lp->item_size = item_size;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-174-    lp->allocated = allocated;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-175-    lp->is_mutable = 1;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-176-    // set method table to zero */
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-177-    memset(&lp->methods, 0x00, sizeof(list_type_based_methods_table));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-178-    // allocate memory to hold items, if requested
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-179-    if (allocated != 0) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c:180:        items = malloc(aligned_size(lp->item_size * allocated));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-181-        // allocated was definitely not zero, if malloc returns NULL
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-182-        // this is definitely an error
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-183-        if (items == NULL) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-184-            // free previously allocated struct to avoid leaking memory
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-185-            free(lp);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-186-            return LIST_ERR_NO_MEMORY;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-187-        }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-188-        lp->items = items;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-189-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-190-    else {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-191-        // be explicit
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-192-        lp->items = NULL;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-193-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/cext/listobject.c-194-    *out = lp;
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-517-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-518-extern "C" void* NRT_Allocate(size_t size) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-519-    return NRT_Allocate_External(size, NULL);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-520-}
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-521-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-522-extern "C" void* NRT_Allocate_External(size_t size, NRT_ExternalAllocator *allocator) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-523-    void *ptr = NULL;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-524-    if (allocator) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp:525:        ptr = allocator->malloc(size, allocator->opaque_data);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-526-        NRT_Debug(nrt_debug_print("NRT_Allocate_External custom bytes=%zu ptr=%p\n", size, ptr));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-527-    } else {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp:528:        ptr = TheMSys.allocator.malloc(size);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-529-        NRT_Debug(nrt_debug_print("NRT_Allocate_External bytes=%zu ptr=%p\n", size, ptr));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-530-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-531-    if (TheMSys.stats.enabled)
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-532-    {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-533-        TheMSys.stats.alloc++;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-534-    }
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-535-    return ptr;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-536-}
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-537-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-538-extern "C" void *NRT_Reallocate(void *ptr, size_t size) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-539-    void *new_ptr = TheMSys.allocator.realloc(ptr, size);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-540-    NRT_Debug(nrt_debug_print("NRT_Reallocate bytes=%zu ptr=%p -> %p\n",
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-541-                              size, ptr, new_ptr));
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-542-    return new_ptr;
+--
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-555- * Sample external allocator implementation for internal testing.
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-556- */
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-557-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-558-static int sample_external_opaque_data = 0xabacad;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-559-
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-560-static
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-561-void* sample_external_malloc(size_t size, void* opaque_data) {
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-562-    if (opaque_data != &sample_external_opaque_data) return NULL;
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp:563:    return TheMSys.allocator.malloc(size);
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-564-}
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/core/runtime/nrt.cpp-565-
+
+7. Current kernel heap symbol
+538175664 00065536 B kheap__system_heap
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
