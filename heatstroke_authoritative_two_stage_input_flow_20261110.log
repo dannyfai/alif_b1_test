@@ -1,0 +1,323 @@
+=== COMBINED PYTORCH REFERENCE ===
+   150	
+   151	if SAMPLE_INDEX >= len(dataset):
+   152	    raise IndexError(
+   153	        f"Sample {SAMPLE_INDEX} does not exist. "
+   154	        f"Dataset size={len(dataset)}"
+   155	    )
+   156	
+   157	(
+   158	    x_original,
+   159	    x_reg,
+   160	    worker_features,
+   161	    y,
+   162	    x_mark,
+   163	    y_mark,
+   164	) = dataset[SAMPLE_INDEX]
+   165	
+   166	
+   167	# Convert dataset values to NumPy.
+   168	
+   169	x_original = to_numpy(x_original).astype(np.float32)
+   170	x_reg = to_numpy(x_reg).astype(np.float32)
+   171	worker_features = to_numpy(worker_features).astype(np.float32)
+   172	x_mark = to_numpy(x_mark).astype(np.float32)
+   173	
+   174	
+   175	# Add batch dimension if necessary.
+   176	
+   177	if x_original.ndim == 2:
+   178	    x_original = x_original[np.newaxis, ...]
+   179	
+   180	if x_reg.ndim == 2:
+   181	    x_reg = x_reg[np.newaxis, ...]
+   182	
+   183	if worker_features.ndim == 1:
+   184	    worker_features = worker_features[np.newaxis, ...]
+   185	
+   186	if x_mark.ndim == 2:
+   187	    x_mark = x_mark[np.newaxis, ...]
+   188	
+   189	
+   190	print("\nSample information:")
+   191	print("Sample index     :", SAMPLE_INDEX)
+   192	print("x_original      :", x_original.shape)
+   193	print("x_reg           :", x_reg.shape)
+   194	print("worker_features :", worker_features.shape)
+   195	print("x_mark          :", x_mark.shape)
+   196	
+   197	
+   198	# ============================================================
+   199	# 2. Prepare model inputs
+   200	# ============================================================
+   201	
+   202	# Identify missing values from the regression input.
+   203	
+   204	missing_mask = np.zeros(
+   205	    x_reg.shape,
+   206	    dtype=bool,
+   207	)
+   208	
+   209	for sentinel in (-9997.0, -9998.0, -9999.0):
+   210	    missing_mask |= (x_reg == sentinel)
+   211	
+   212	
+   213	# The combined model receives:
+   214	#
+   215	# x_values:
+   216	#     Original sequence with missing values replaced by zero.
+   217	#
+   218	# missing_mask:
+   219	#     1 = missing, 0 = observed.
+   220	
+   221	x_values = np.where(
+   222	    missing_mask,
+   223	    0.0,
+   224	    x_original,
+   225	).astype(np.float32)
+   226	
+   227	missing_mask = missing_mask.astype(np.float32)
+   228	
+   229	
+   230	inputs = {
+   231	    "x_values": x_values,
+   232	    "missing_mask": missing_mask,
+   233	    "x_mark": x_mark,
+   234	    "worker_features": worker_features,
+   235	}
+   236	
+   237	
+   238	print("\nModel input information:")
+   239	
+   240	for name, value in inputs.items():
+
+=== DATASET ONNX/TFLITE COMPARISON ===
+   145	    (
+   146	        batch_x1_1,
+   147	        batch_x1_2,
+   148	        batch_x2,
+   149	        batch_y,
+   150	        batch_x_mark,
+   151	        _,
+   152	    ) = batch
+   153	
+   154	    x_original = to_numpy(batch_x1_1).astype(
+   155	        np.float32, copy=True
+   156	    )
+   157	
+   158	    x_reg = to_numpy(batch_x1_2).astype(
+   159	        np.float32, copy=True
+   160	    )
+   161	
+   162	    worker_features = to_numpy(batch_x2).astype(
+   163	        np.float32, copy=True
+   164	    )
+   165	
+   166	    x_mark = to_numpy(batch_x_mark).astype(
+   167	        np.float32, copy=True
+   168	    )
+   169	
+   170	    labels = to_numpy(batch_y).copy()
+   171	
+   172	    # Missing-value markers are stored in x_reg.
+   173	    missing_mask = np.zeros(
+   174	        x_reg.shape,
+   175	        dtype=bool,
+   176	    )
+   177	
+   178	    for sentinel in (-9997.0, -9998.0, -9999.0):
+   179	        missing_mask |= (x_reg == sentinel)
+   180	
+   181	    # Replace missing values in the original input with zero.
+   182	    x_values = np.where(
+   183	        missing_mask,
+   184	        0.0,
+   185	        x_original,
+   186	    ).astype(np.float32)
+   187	
+   188	    missing_mask_float = missing_mask.astype(
+   189	        np.float32
+   190	    )
+   191	
+   192	    return {
+   193	        "x_values": x_values,
+   194	        "missing_mask": missing_mask_float,
+   195	        "x_mark": x_mark,
+   196	        "worker_features": worker_features,
+   197	    }, labels
+   198	
+   199	
+   200	# ============================================================
+   201	# TFLite tensor-name matching
+   202	# ============================================================
+   203	
+   204	def normalize_tensor_name(name):
+   205	    return str(name).lower().replace(":0", "")
+   206	
+   207	
+   208	def find_tensor_detail(details, expected_name):
+   209	    """
+   210	    Match a TFLite tensor by its input/output name.
+   211	
+   212	    The exported model may prepend names such as
+   213	    serving_default_ to the original input name.
+   214	    """
+   215	
+
+=== COMBINED MODEL VALIDATION ===
+   170	            batch_x1_2,
+   171	            batch_x2,
+   172	            _batch_y,
+   173	            batch_x_mark,
+   174	            _,
+   175	        ) in enumerate(loader):
+   176	
+   177	            if args.max_batches and batch_index >= args.max_batches:
+   178	                break
+   179	
+   180	            x_original = batch_x1_1.float().to(device)
+   181	            x_reg = batch_x1_2.float().to(device)
+   182	            x_mark = batch_x_mark.float().to(device)
+   183	            worker_features = batch_x2.float().to(device)
+   184	
+   185	            # Original run.py pipeline.
+   186	            reg_out = reg_reference(
+   187	                x_reg,
+   188	                x_mark_enc=x_mark,
+   189	                one_hot_x=worker_features[:, :18],
+   190	                device=device,
+   191	            )
+   192	
+   193	            # Match run.py's exact restoration operation.
+   194	            non_missing_mask = (
+   195	                (x_reg != -9997)
+   196	                & (x_reg != -9998)
+   197	                & (x_reg != -9999)
+   198	            )
+   199	            reg_out = reg_out.clone()
+   200	            reg_out[non_missing_mask] = x_original[non_missing_mask]
+   201	
+   202	            reference_rpe, reference_psi = cla_reference(
+   203	                reg_out,
+   204	                x_mark_enc=x_mark,
+   205	                one_hot_x=worker_features[:, :30],
+   206	                device=device,
+   207	            )
+   208	
+   209	            # Combined pipeline.
+   210	            combined_rpe, combined_psi = combined(
+   211	                x_original,
+   212	                x_reg,
+   213	                x_mark,
+   214	                worker_features,
+   215	            )
+   216	
+   217	            rpe_diff = compare_outputs(
+   218	                f"Batch {batch_index} RPE",
+   219	                reference_rpe,
+   220	                combined_rpe,
+   221	                args.atol,
+   222	                args.rtol,
+   223	            )
+   224	            psi_diff = compare_outputs(
+   225	                f"Batch {batch_index} PSI",
+
+=== TFLITE EVALUATION INPUT PREPARATION ===
+   294	def prepare_inputs(
+   295	    batch_x1_2,
+   296	    batch_x2,
+   297	    batch_x_mark,
+   298	):
+   299	    """
+   300	    Prepare the four inputs expected by the combined model.
+   301	
+   302	    x_values:
+   303	        Masked sequence with missing sentinel values replaced by 0.
+   304	
+   305	    missing_mask:
+   306	        1 = missing value
+   307	        0 = available value
+   308	
+   309	    x_mark:
+   310	        Temporal/calendar features.
+   311	
+   312	    worker_features:
+   313	        30 worker-level features.
+   314	    """
+   315	
+   316	    x_reg = to_numpy(batch_x1_2).astype(
+   317	        np.float32,
+   318	        copy=True,
+   319	    )
+   320	
+   321	    worker_features = to_numpy(batch_x2).astype(
+   322	        np.float32,
+   323	        copy=True,
+   324	    )
+   325	
+   326	    x_mark = to_numpy(batch_x_mark).astype(
+   327	        np.float32,
+   328	        copy=True,
+   329	    )
+   330	
+   331	    # Identify all missing-value sentinel positions.
+   332	    missing_mask = np.zeros(
+   333	        x_reg.shape,
+   334	        dtype=np.bool_,
+   335	    )
+   336	
+   337	    for missing_value in MISSING_VALUES:
+   338	        missing_mask |= (x_reg == missing_value)
+   339	
+   340	    # Replace missing values with zero.
+   341	    x_values = np.where(
+   342	        missing_mask,
+   343	        0.0,
+   344	        x_reg,
+   345	    ).astype(np.float32)
+   346	
+   347	    # Convert mask to float32.
+   348	    missing_mask = missing_mask.astype(np.float32)
+   349	
+   350	    return {
+   351	        "x_values": x_values,
+   352	        "missing_mask": missing_mask,
+   353	        "x_mark": x_mark,
+   354	        "worker_features": worker_features,
+   355	    }, missing_mask
+   356	
+
+=== CALIBRATION INPUT PREPARATION ===
+    80	
+    81	    # Dataset output:
+    82	    # x1_1, x1_2, x2, y, seq_x_mark, seq_y_mark
+    83	    sample = dataset[index]
+    84	
+    85	    x1_1 = np.asarray(sample[0], dtype=np.float32)
+    86	    x1_2 = np.asarray(sample[1], dtype=np.float32)
+    87	    x2 = np.asarray(sample[2], dtype=np.float32)
+    88	    seq_x_mark = np.asarray(sample[4], dtype=np.float32)
+    89	
+    90	    # Identify missing sequence elements.
+    91	    missing_mask = np.isin(
+    92	        x1_2,
+    93	        MISSING_SENTINELS
+    94	    ).astype(np.float32)
+    95	
+    96	    # Replace missing sequence values with zero.
+    97	    x_values = np.where(
+    98	        missing_mask > 0,
+    99	        0.0,
+   100	        x1_1
+   101	    ).astype(np.float32)
+   102	
+   103	    # Add batch dimension.
+   104	    inputs = {
+   105	        "x_values": x_values[np.newaxis, :, :],
+   106	        "missing_mask": missing_mask[np.newaxis, :, :],
+   107	        "x_mark": seq_x_mark[np.newaxis, :, :],
+   108	        "worker_features": x2[np.newaxis, :],
+   109	    }
+   110	
+   111	    # Validate shapes and values.
+   112	    for input_name, expected_shape in INPUT_SHAPES.items():
