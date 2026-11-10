@@ -1,0 +1,285 @@
+=== APPLICATION SOURCE INCLUDES ===
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+     3	 * SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Application-local heat-stress TFLM operator registrations.
+     6	 */
+     7	
+     8	#include "PolyUModel1.hpp"
+     9	
+    10	#include <cstdint>
+    11	
+    12	#include <cstddef>
+    13	#include <cstring>
+    14	#include <limits>
+    15	
+    16	#include "tensorflow/lite/c/builtin_op_data.h"
+    17	#include "tensorflow/lite/c/common.h"
+    18	#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+    19	#include "tensorflow/lite/kernels/kernel_util.h"
+    20	#include "tensorflow/lite/micro/micro_utils.h"
+    21	
+    22	#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+    23	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    24	#include "tensorflow/lite/micro/micro_log.h"
+    25	
+    26	#include "mlek/log/log_macros.h"
+    27	#include "heatstroke_bidirectional_lstm.h"
+    28	
+    29	const tflite::MicroOpResolver&
+    30	arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    31	{
+    32	    return this->m_opResolver;
+    33	}
+    34	
+    35	namespace
+    36	{
+    37	
+    38	/*
+    39	 * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+    40	 * required by this implementation. Validate its options type and leave
+    41	 * builtin_data null.
+    42	 */
+    43	TfLiteStatus ParseHeatstrokeSign(
+    44	    const tflite::Operator* op,
+    45	    tflite::ErrorReporter*,
+    46	    tflite::BuiltinDataAllocator*,
+    47	    void** builtin_data)
+    48	{
+    49	    if (builtin_data != nullptr) {
+    50	        *builtin_data = nullptr;
+    51	    }
+    52	
+    53	    if (op == nullptr ||
+    54	        op->builtin_options_type() !=
+    55	            tflite::BuiltinOptions_SignOptions) {
+    56	        return kTfLiteError;
+    57	    }
+    58	
+    59	    return kTfLiteOk;
+    60	}
+    61	
+    62	/*
+    63	 * Application-local INT32 SIGN implementation.
+    64	 *
+    65	 * y = -1 when x < 0
+    66	 * y =  0 when x = 0
+    67	 * y =  1 when x > 0
+    68	 *
+    69	 * No temporary buffer or scratch allocation is required.
+    70	 */
+    71	TfLiteStatus HeatstrokeSignEval(
+    72	    TfLiteContext* context,
+    73	    TfLiteNode* node)
+    74	{
+    75	    if (context == nullptr || node == nullptr) {
+    76	        return kTfLiteError;
+    77	    }
+    78	
+    79	    const TfLiteEvalTensor* input =
+    80	        tflite::micro::GetEvalInput(context, node, 0);
+    81	
+    82	    TfLiteEvalTensor* output =
+    83	        tflite::micro::GetEvalOutput(context, node, 0);
+    84	
+    85	    if (input == nullptr || output == nullptr) {
+    86	        return kTfLiteError;
+    87	    }
+    88	
+    89	    if (input->type != kTfLiteInt32 ||
+    90	        output->type != kTfLiteInt32) {
+    91	        MicroPrintf(
+    92	            "Heatstroke SIGN requires INT32 input/output. "
+    93	            "Input=%d Output=%d",
+    94	            input->type,
+    95	            output->type);
+    96	        return kTfLiteError;
+    97	    }
+    98	
+    99	    const auto input_shape =
+   100	        tflite::micro::GetTensorShape(input);
+
+=== EXISTING CUSTOM GATHER IMPLEMENTATION ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.bak_int64_gather_20261109_095629
+61:TfLiteStatus HeatstrokeSignEval(
+69:    const TfLiteEvalTensor* input =
+70:        tflite::micro::GetEvalInput(context, node, 0);
+72:    TfLiteEvalTensor* output =
+73:        tflite::micro::GetEvalOutput(context, node, 0);
+105:        tflite::micro::GetTensorData<int32_t>(input);
+108:        tflite::micro::GetTensorData<int32_t>(output);
+132:        HeatstrokeSignEval);
+
+=== GENERIC RESOLVER API ===
+619:    return AddBuiltin(BuiltinOperator_STRIDED_SLICE, Register_STRIDED_SLICE(),
+620-                      ParseStridedSlice);
+621-  }
+622-
+623-  TfLiteStatus AddStacker() {
+624-    // TODO(b/286250473): change back name to "Stacker" and remove namespace
+625-    return AddCustom("SignalStacker", tflite::tflm_signal::Register_STACKER());
+626-  }
+627-
+628-  TfLiteStatus AddSub() {
+629:    return AddBuiltin(BuiltinOperator_SUB, tflite::Register_SUB(), ParseSub);
+630-  }
+631-
+632-  TfLiteStatus AddSum() {
+633:    return AddBuiltin(BuiltinOperator_SUM, Register_SUM(), ParseReducer);
+634-  }
+635-
+636-  TfLiteStatus AddSvdf(const TFLMRegistration& registration = Register_SVDF()) {
+637:    return AddBuiltin(BuiltinOperator_SVDF, registration, ParseSvdf);
+638-  }
+639-
+640-  TfLiteStatus AddTanh() {
+641:    return AddBuiltin(BuiltinOperator_TANH, Register_TANH(), ParseTanh);
+642-  }
+643-
+644-  TfLiteStatus AddTransposeConv(
+645-      const TFLMRegistration& registration = Register_TRANSPOSE_CONV()) {
+646:    return AddBuiltin(BuiltinOperator_TRANSPOSE_CONV, registration,
+647-                      ParseTransposeConv);
+648-  }
+649-
+650-  TfLiteStatus AddTranspose() {
+651:    return AddBuiltin(BuiltinOperator_TRANSPOSE, Register_TRANSPOSE(),
+652-                      ParseTranspose);
+653-  }
+654-
+655-  TfLiteStatus AddUnpack() {
+656:    return AddBuiltin(BuiltinOperator_UNPACK, Register_UNPACK(), ParseUnpack);
+657-  }
+658-
+659-  TfLiteStatus AddUnidirectionalSequenceLSTM(
+660-      const TFLMRegistration& registration =
+661-          Register_UNIDIRECTIONAL_SEQUENCE_LSTM()) {
+662:    return AddBuiltin(BuiltinOperator_UNIDIRECTIONAL_SEQUENCE_LSTM,
+663-                      registration, ParseUnidirectionalSequenceLSTM);
+664-  }
+665-
+666-  TfLiteStatus AddVarHandle() {
+667:    return AddBuiltin(BuiltinOperator_VAR_HANDLE, Register_VAR_HANDLE(),
+668-                      ParseVarHandle);
+669-  }
+670-
+671-  TfLiteStatus AddWhile() {
+672:    return AddBuiltin(BuiltinOperator_WHILE, Register_WHILE(), ParseWhile);
+673-  }
+674-
+675-  TfLiteStatus AddWindow() {
+676-    // TODO(b/286250473): change back name to "Window" and remove namespace
+677-    return AddCustom("SignalWindow", tflite::tflm_signal::Register_WINDOW());
+678-  }
+679-
+680-  TfLiteStatus AddZerosLike() {
+681:    return AddBuiltin(BuiltinOperator_ZEROS_LIKE, Register_ZEROS_LIKE(),
+682-                      ParseZerosLike);
+683-  }
+684-
+685-  unsigned int GetRegistrationLength() { return registrations_len_; }
+686-
+687- public:
+688:  TfLiteStatus AddBuiltin(tflite::BuiltinOperator op,
+689-                          const TFLMRegistration& registration,
+690-                          TfLiteBridgeBuiltinParseFunction parser) {
+691-    if (op == BuiltinOperator_CUSTOM) {
+692-      MicroPrintf("Invalid parameter BuiltinOperator_CUSTOM to the ");
+693-      MicroPrintf("AddBuiltin function.");
+694-      return kTfLiteError;
+695-    }
+696-
+697-    if (FindOp(op) != nullptr) {
+698-      MicroPrintf("Calling AddBuiltin with the same op more than ");
+699-      MicroPrintf("once is not supported (Op: #%d).", op);
+700-      return kTfLiteError;
+701-    }
+702-
+703-    if (registrations_len_ >= tOpCount) {
+704-      MicroPrintf("Couldn't register builtin op #%d, resolver size ", op);
+705-      MicroPrintf("is too small (%d).", tOpCount);
+706-      return kTfLiteError;
+707-    }
+708-
+709-    registrations_[registrations_len_] = registration;
+710-    // Strictly speaking, the builtin_code is not necessary for TFLM but
+711-    // filling it in regardless.
+712-    registrations_[registrations_len_].builtin_code = op;
+713-    registrations_len_++;
+714-
+715-    builtin_codes_[num_buitin_ops_] = op;
+716-    builtin_parsers_[num_buitin_ops_] = parser;
+717-    num_buitin_ops_++;
+718-
+
+=== PARSER CALLBACK DEFINITIONS ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:191:    return AddBuiltin(BuiltinOperator_CAST, Register_CAST(), ParseCast);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:337:                      ParseFloorMod);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:455:    return AddBuiltin(BuiltinOperator_MEAN, Register_MEAN(), ParseReducer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:464:    return AddBuiltin(BuiltinOperator_MUL, registration, ParseMul);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:517:                      ParseReducer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:596:    return AddBuiltin(BuiltinOperator_SPLIT_V, Register_SPLIT_V(), ParseSplitV);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:629:    return AddBuiltin(BuiltinOperator_SUB, tflite::Register_SUB(), ParseSub);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_mutable_op_resolver.h:633:    return AddBuiltin(BuiltinOperator_SUM, Register_SUM(), ParseReducer);
+
+=== TFLITE REGISTRATION STRUCTURE ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:92:struct TfLiteRegistration;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:876:      struct TfLiteRegistration** registration);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:881:      struct TfLiteContext*, struct TfLiteRegistration registration,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:1107:typedef struct TfLiteRegistration {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:1212:typedef struct TfLiteRegistration_V3 {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:1238:typedef struct TfLiteRegistration_V2 {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/core/c/common.h:1262:typedef struct TfLiteRegistration_V1 {
+
+=== TENSOR ACCESS / ALLOCATION API ===
+grep: Unmatched ( or \(
+
+=== APPLICATION CMAKE SOURCES ===
+186-if (CONFIG_USE_APP_MENU)
+187-target_compile_definitions(app PRIVATE USE_APP_MENU)
+188-endif()
+189-
+190-target_sources(app PRIVATE
+191-    src/application/main/Main.cc
+192-    src/use_case/alif_asr/src/MainLoop.cc
+193-    src/use_case/alif_asr/src/reverse_v2.cc
+194:    src/use_case/alif_asr/src/PolyUModel1.cc
+195-    src/power/power_mgr.c
+196-    "${POLYU_MODEL_CPP}"
+197-)
+198-
+199-if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+200-    target_sources(app PRIVATE
+201-        src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc)
+202-    target_compile_definitions(app PRIVATE
+203-        HEATSTROKE_SINGLE_STEP_EXPERIMENT=1)
+204-else()
+205-    target_sources(app PRIVATE
+206-        src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc)
+207-endif()
+208-
+209-set(SRC_MAIN "src/application/main/Main.cc")
+210-
+211-list(APPEND SRC_MAIN_DEFS
+212-    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+213-    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+214-    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+215-
+216-set_source_files_properties(${SRC_MAIN}
+217-    PROPERTIES COMPILE_DEFINITIONS
+218-    "${SRC_MAIN_DEFS}")
+219-
+220-target_link_libraries(app PRIVATE
+221-    mlek::ml_framework_impl
+222-)
+223-
+224-# Optional application-local fused LayerNorm/quantization kernel.
+225-# Default builds do not compile or register this experimental operator.
+226-option(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT
+227-       "Compile the fused LayerNorm quantization experiment" OFF)
+228-
+229-if (HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+
+=== MODEL RESOLVER CAPACITY ===
+44:    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
