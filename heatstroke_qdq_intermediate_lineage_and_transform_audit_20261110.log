@@ -1,0 +1,601 @@
+=== LAYERNORM QDQ SOURCE ===
+     1	import onnx
+     2	from onnx import checker
+     3	
+     4	src = (
+     5	    "export/"
+     6	    "combined_static_model_gelu_tanh_int32_indices_qdq.onnx"
+     7	)
+     8	
+     9	dst = (
+    10	    "export/"
+    11	    "combined_static_model_gelu_tanh_int32_indices_qdq_"
+    12	    "variance_eps_fp32.onnx"
+    13	)
+    14	
+    15	model = onnx.load(src)
+    16	graph = model.graph
+    17	
+    18	targets = [
+    19	    "node_layer_norm_variance_eps",
+    20	    "node_layer_norm_1_variance_eps",
+    21	]
+    22	
+    23	remove_names = set()
+    24	patched = []
+    25	
+    26	nodes_by_name = {
+    27	    node.name: node
+    28	    for node in graph.node
+    29	}
+    30	
+    31	for target in targets:
+    32	    q_name = target + "_QuantizeLinear"
+    33	    dq_name = target + "_DequantizeLinear"
+    34	
+    35	    if q_name not in nodes_by_name:
+    36	        raise RuntimeError(f"Missing Q node: {q_name}")
+    37	
+    38	    if dq_name not in nodes_by_name:
+    39	        raise RuntimeError(f"Missing DQ node: {dq_name}")
+    40	
+    41	    q_node = nodes_by_name[q_name]
+    42	    dq_node = nodes_by_name[dq_name]
+    43	
+    44	    if q_node.input[0] != target:
+    45	        raise RuntimeError(
+    46	            f"Unexpected Q input: {q_node.input}"
+    47	        )
+    48	
+    49	    if dq_node.input[0] != q_node.output[0]:
+    50	        raise RuntimeError(
+    51	            f"Unexpected DQ input: {dq_node.input}"
+    52	        )
+    53	
+    54	    dq_output = dq_node.output[0]
+    55	
+    56	    replacement_count = 0
+    57	
+    58	    for node in graph.node:
+    59	        for i, inp in enumerate(node.input):
+    60	            if inp == dq_output:
+    61	                node.input[i] = target
+    62	                replacement_count += 1
+    63	
+    64	    if replacement_count == 0:
+    65	        raise RuntimeError(
+    66	            f"No consumers found for {dq_output}"
+    67	        )
+    68	
+    69	    remove_names.add(q_name)
+    70	    remove_names.add(dq_name)
+    71	
+    72	    patched.append(
+    73	        (target, q_name, dq_name, replacement_count)
+    74	    )
+    75	
+    76	# Remove nodes using their unique names, not Python object IDs.
+    77	kept_nodes = [
+    78	    node for node in graph.node
+    79	    if node.name not in remove_names
+    80	]
+    81	
+    82	del graph.node[:]
+    83	graph.node.extend(kept_nodes)
+    84	
+    85	# Check the graph before saving.
+    86	checker.check_model(model)
+    87	
+    88	onnx.save(model, dst)
+    89	
+    90	print("Patched nodes:")
+    91	
+    92	for target, q, dq, count in patched:
+    93	    print(f"  {target}")
+    94	    print(f"    Removed: {q}")
+    95	    print(f"    Removed: {dq}")
+    96	    print(f"    Rewired consumers: {count}")
+    97	
+    98	print("\nSaved:", dst)
+    99	print("ONNX checker: PASSED")
+
+=== COMPLETE PREPROCESS FP32 TRANSFORMATION ===
+     1	import onnx
+     2	import numpy as np
+     3	from onnx import numpy_helper
+     4	
+     5	
+     6	SOURCE = (
+     7	    "export/layernorm_variance_eps_variants/"
+     8	    "qdq_both_variance_eps_fp32.onnx"
+     9	)
+    10	
+    11	OUTPUT = (
+    12	    "export/layernorm_variance_eps_variants/"
+    13	    "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+    14	)
+    15	
+    16	
+    17	def main():
+    18	    print("=" * 90)
+    19	    print("CREATE FP32 PREPROCESSING BRANCH VARIANT")
+    20	    print("=" * 90)
+    21	
+    22	    model = onnx.load(SOURCE)
+    23	
+    24	    # ------------------------------------------------------------
+    25	    # 1. Rewire QDQ outputs to their original FP32 tensors.
+    26	    # ------------------------------------------------------------
+    27	
+    28	    rewires = {
+    29	        "x_values_DequantizeLinear_Output_1": "x_values",
+    30	        "x_values_DequantizeLinear_Output_2": "x_values",
+    31	        "mul_3_DequantizeLinear_Output": "mul_3",
+    32	        "sum_2_DequantizeLinear_Output": "sum_2",
+    33	        "clamp_2_DequantizeLinear_Output": "clamp_2",
+    34	        "sum_3_DequantizeLinear_Output": "sum_3",
+    35	        "div_1_DequantizeLinear_Output": "div_1",
+    36	        "expand_3_DequantizeLinear_Output": "expand_3",
+    37	    }
+    38	
+    39	    all_names = set()
+    40	
+    41	    for node in model.graph.node:
+    42	        all_names.update(node.input)
+    43	        all_names.update(node.output)
+    44	
+    45	    for old, new in rewires.items():
+    46	        if old not in all_names:
+    47	            raise RuntimeError(
+    48	                f"Expected tensor not found: {old}"
+    49	            )
+    50	
+    51	        if new not in all_names:
+    52	            raise RuntimeError(
+    53	                f"Replacement tensor not found: {new}"
+    54	            )
+    55	
+    56	    replacement_counts = {}
+    57	
+    58	    for node in model.graph.node:
+    59	        for i, name in enumerate(node.input):
+    60	            if name in rewires:
+    61	                node.input[i] = rewires[name]
+    62	
+    63	                replacement_counts[name] = (
+    64	                    replacement_counts.get(name, 0) + 1
+    65	                )
+    66	
+    67	    print("\nRewired tensors:")
+    68	
+    69	    for old, new in rewires.items():
+    70	        count = replacement_counts.get(old, 0)
+    71	
+    72	        if count == 0:
+    73	            raise RuntimeError(
+    74	                f"No consumer was rewired for {old}"
+    75	            )
+    76	
+    77	        print(f"  {old} -> {new}: {count} consumer(s)")
+    78	
+    79	    # ------------------------------------------------------------
+    80	    # 2. Restore the original FP32 Clip minimum.
+    81	    #
+    82	    # val_110_quantized = 127
+    83	    # zero_point = -128
+    84	    # scale = 0.003921569
+    85	    #
+    86	    # Therefore, the original value is approximately 1.0.
+    87	    # ------------------------------------------------------------
+    88	
+    89	    clip_nodes = [
+    90	        node
+    91	        for node in model.graph.node
+    92	        if node.name == "node_clamp_2"
+    93	    ]
+    94	
+    95	    if len(clip_nodes) != 1:
+    96	        raise RuntimeError(
+    97	            f"Expected one node_clamp_2, found {len(clip_nodes)}"
+    98	        )
+    99	
+   100	    clip = clip_nodes[0]
+   101	
+   102	    if len(clip.input) < 2:
+   103	        raise RuntimeError("Unexpected Clip input count")
+   104	
+   105	    clip_min_name = "preprocess_clip_min_fp32"
+   106	
+   107	    if any(
+   108	        item.name == clip_min_name
+   109	        for item in model.graph.initializer
+   110	    ):
+   111	        raise RuntimeError(
+   112	            f"Initializer already exists: {clip_min_name}"
+   113	        )
+   114	
+   115	    clip.input[1] = clip_min_name
+   116	
+   117	    model.graph.initializer.append(
+   118	        numpy_helper.from_array(
+   119	            np.asarray(1.0, dtype=np.float32),
+   120	            name=clip_min_name,
+   121	        )
+   122	    )
+   123	
+   124	    print("\nClip minimum restored:")
+   125	    print(f"  {clip_min_name} = 1.0 (FP32)")
+   126	
+   127	    # ------------------------------------------------------------
+   128	    # 3. Remove only the QDQ nodes belonging to this branch.
+   129	    #
+   130	    # Binary mask QDQ is intentionally retained.
+   131	    # ------------------------------------------------------------
+   132	
+   133	    nodes_to_remove = {
+   134	        "x_values_QuantizeLinear_1",
+   135	        "x_values_DequantizeLinear_1",
+   136	        "x_values_QuantizeLinear_2",
+   137	        "x_values_DequantizeLinear_2",
+   138	
+   139	        "mul_3_QuantizeLinear",
+   140	        "mul_3_DequantizeLinear",
+   141	
+   142	        "sum_2_QuantizeLinear",
+   143	        "sum_2_DequantizeLinear",
+   144	
+   145	        "clamp_2_QuantizeLinear",
+   146	        "clamp_2_DequantizeLinear",
+   147	
+   148	        "sum_3_QuantizeLinear",
+   149	        "sum_3_DequantizeLinear",
+   150	
+   151	        "div_1_QuantizeLinear",
+   152	        "div_1_DequantizeLinear",
+   153	
+   154	        "expand_3_QuantizeLinear",
+   155	        "expand_3_DequantizeLinear",
+   156	    }
+   157	
+   158	    found_nodes = {
+   159	        node.name
+   160	        for node in model.graph.node
+   161	        if node.name in nodes_to_remove
+   162	    }
+   163	
+   164	    missing_nodes = nodes_to_remove - found_nodes
+   165	
+   166	    if missing_nodes:
+   167	        raise RuntimeError(
+   168	            "Expected QDQ nodes not found:\n"
+   169	            + "\n".join(sorted(missing_nodes))
+   170	        )
+   171	
+   172	    removed_outputs = {
+   173	        output
+   174	        for node in model.graph.node
+   175	        if node.name in nodes_to_remove
+   176	        for output in node.output
+   177	    }
+   178	
+   179	    # Verify no remaining node consumes a removed QDQ output.
+   180	    for node in model.graph.node:
+   181	        if node.name in nodes_to_remove:
+   182	            continue
+   183	
+   184	        for name in node.input:
+   185	            if name in removed_outputs:
+   186	                raise RuntimeError(
+   187	                    "Remaining consumer of removed QDQ output: "
+   188	                    f"{name}, node={node.name}"
+   189	                )
+   190	
+   191	    kept_nodes = [
+   192	        node
+   193	        for node in model.graph.node
+   194	        if node.name not in nodes_to_remove
+   195	    ]
+   196	
+   197	    del model.graph.node[:]
+   198	    model.graph.node.extend(kept_nodes)
+   199	
+   200	    print("\nRemoved QDQ nodes:")
+   201	
+   202	    for name in sorted(nodes_to_remove):
+   203	        print(f"  {name}")
+   204	
+   205	    print(
+   206	        f"\nNode count: {len(kept_nodes)} "
+   207	        f"(removed {len(nodes_to_remove)})"
+   208	    )
+   209	
+   210	    # ------------------------------------------------------------
+   211	    # 4. Check that no QDQ nodes remain on the targeted branch.
+   212	    # ------------------------------------------------------------
+   213	
+   214	    targeted_prefixes = (
+   215	        "mul_3",
+   216	        "sum_2",
+   217	        "clamp_2",
+   218	        "sum_3",
+   219	        "div_1",
+   220	        "expand_3",
+   221	    )
+   222	
+   223	    targeted_x_values = {
+   224	        "x_values_DequantizeLinear_Output_1",
+   225	        "x_values_DequantizeLinear_Output_2",
+   226	    }
+   227	
+   228	    remaining = []
+   229	
+   230	    for node in model.graph.node:
+   231	        if node.op_type not in (
+   232	            "QuantizeLinear",
+   233	            "DequantizeLinear",
+   234	        ):
+   235	            continue
+   236	
+   237	        names = list(node.input) + list(node.output)
+   238	
+   239	        if any(
+   240	            name.startswith(targeted_prefixes)
+   241	            for name in names
+   242	        ) or any(
+   243	            name in targeted_x_values
+   244	            for name in names
+   245	        ):
+   246	            remaining.append(node)
+   247	
+   248	    if remaining:
+   249	        print("\nRemaining targeted QDQ nodes:")
+   250	
+   251	        for node in remaining:
+   252	            print(
+   253	                node.op_type,
+   254	                node.name,
+   255	                "inputs=", list(node.input),
+   256	                "outputs=", list(node.output),
+   257	            )
+   258	
+   259	        raise RuntimeError(
+   260	            "Unexpected QDQ nodes remain on the targeted branch"
+   261	        )
+   262	
+   263	    print("\nTargeted preprocessing QDQ check: PASSED")
+   264	
+   265	    # ------------------------------------------------------------
+   266	    # 5. Validate and save.
+   267	    # ------------------------------------------------------------
+   268	
+   269	    onnx.checker.check_model(model)
+   270	
+   271	    onnx.save(model, OUTPUT)
+   272	
+   273	    print("\nONNX checker: PASSED")
+   274	    print("Saved:", OUTPUT)
+   275	    print("=" * 90)
+   276	
+   277	
+   278	if __name__ == "__main__":
+   279	    main()
+
+=== CONCAT / MIXED-DTYPE REPAIR ===
+     1	import onnx
+     2	from collections import defaultdict
+     3	
+     4	src = (
+     5	    "export/layernorm_variance_eps_variants/"
+     6	    "qdq_both_variance_eps_preprocess_fp32_v2.onnx"
+     7	)
+     8	
+     9	dst = (
+    10	    "export/layernorm_variance_eps_variants/"
+    11	    "qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx"
+    12	)
+    13	
+    14	model = onnx.load(src)
+    15	graph = model.graph
+    16	
+    17	producer = {}
+    18	consumers = defaultdict(list)
+    19	
+    20	for i, node in enumerate(graph.node):
+    21	    for output in node.output:
+    22	        producer[output] = (i, node)
+    23	    for inp in node.input:
+    24	        consumers[inp].append((i, node))
+    25	
+    26	def find_node(name):
+    27	    matches = [
+    28	        (i, n) for i, n in enumerate(graph.node)
+    29	        if n.name == name
+    30	    ]
+    31	    if len(matches) != 1:
+    32	        raise RuntimeError(
+    33	            f"Expected exactly one node named {name}, found {len(matches)}"
+    34	        )
+    35	    return matches[0]
+    36	
+    37	q_index, q_node = find_node("cumsum_QuantizeLinear")
+    38	dq_index, dq_node = find_node("cumsum_DequantizeLinear")
+    39	concat_index, concat_node = find_node("node_cat_1")
+    40	
+    41	if q_node.op_type != "QuantizeLinear":
+    42	    raise RuntimeError("Unexpected cumsum quantizer type")
+    43	
+    44	if dq_node.op_type != "DequantizeLinear":
+    45	    raise RuntimeError("Unexpected cumsum dequantizer type")
+    46	
+    47	if concat_node.op_type != "Concat":
+    48	    raise RuntimeError("Unexpected concat node type")
+    49	
+    50	if len(q_node.input) != 3 or len(dq_node.input) != 3:
+    51	    raise RuntimeError("Unexpected Q/DQ input count")
+    52	
+    53	if q_node.input[0] != "cumsum":
+    54	    raise RuntimeError("Quantizer does not consume cumsum")
+    55	
+    56	if dq_node.input[0] != q_node.output[0]:
+    57	    raise RuntimeError("Dequantizer does not consume quantizer output")
+    58	
+    59	if q_node.input[1:] != dq_node.input[1:]:
+    60	    raise RuntimeError("Q/DQ parameters differ")
+    61	
+    62	if len(consumers[q_node.output[0]]) != 1:
+    63	    raise RuntimeError("Quantized cumsum output has additional consumers")
+    64	
+    65	if consumers[q_node.output[0]][0][1].name != dq_node.name:
+    66	    raise RuntimeError("Unexpected consumer of quantized cumsum")
+    67	
+    68	if len(consumers[dq_node.output[0]]) != 1:
+    69	    raise RuntimeError("Dequantized cumsum output has additional consumers")
+    70	
+    71	if consumers[dq_node.output[0]][0][1].name != concat_node.name:
+    72	    raise RuntimeError("Unexpected consumer of dequantized cumsum")
+    73	
+    74	if "cumsum_DequantizeLinear_Output" not in concat_node.input:
+    75	    raise RuntimeError("Expected DQ tensor is not a concat input")
+    76	
+    77	print("Source graph checks: PASSED")
+    78	print("Quantizer:", q_node.name, list(q_node.input), list(q_node.output))
+    79	print("Dequantizer:", dq_node.name, list(dq_node.input), list(dq_node.output))
+    80	print("Concat before:", list(concat_node.input))
+    81	
+    82	# Feed the original FP32 cumsum directly into Concat.
+    83	for i, name in enumerate(concat_node.input):
+    84	    if name == dq_node.output[0]:
+    85	        concat_node.input[i] = "cumsum"
+    86	
+    87	# Remove only the Q/DQ pair immediately before this Concat.
+    88	remove_names = {
+    89	    q_node.name,
+    90	    dq_node.name,
+    91	}
+    92	
+    93	kept_nodes = [
+    94	    node for node in graph.node
+    95	    if node.name not in remove_names
+    96	]
+    97	
+    98	del graph.node[:]
+    99	graph.node.extend(kept_nodes)
+   100	
+   101	# Remove obsolete intermediate value_info entries.
+   102	obsolete = {
+   103	    q_node.output[0],
+   104	    dq_node.output[0],
+   105	}
+   106	
+   107	kept_value_info = [
+   108	    item for item in graph.value_info
+   109	    if item.name not in obsolete
+   110	]
+   111	
+   112	del graph.value_info[:]
+   113	graph.value_info.extend(kept_value_info)
+   114	
+   115	onnx.checker.check_model(model)
+   116	onnx.save(model, dst)
+   117	
+   118	# Reload and verify the saved artifact.
+   119	saved = onnx.load(dst)
+   120	onnx.checker.check_model(saved)
+   121	
+   122	print("\nPatched graph checker: PASSED")
+   123	print("Concat after:", list(concat_node.input))
+   124	print("Removed nodes:", sorted(remove_names))
+   125	print("Saved:", dst)
+   126	print("Original model unchanged:", src)
+
+=== ONNX TO TFLITE CONVERTER ===
+     1	#!/usr/bin/env python3
+     2	"""
+     3	Convert the fixed-shape combined ONNX model to TFLite using NXP ONNX2TFLite.
+     4	
+     5	This intentionally creates an FP32 TFLite model first. Quantization is a
+     6	separate step so graph-conversion errors can be isolated from quantization.
+     7	"""
+     8	import argparse
+     9	import shutil
+    10	import subprocess
+    11	import sys
+    12	from pathlib import Path
+    13	
+    14	def main():
+    15	    p = argparse.ArgumentParser()
+    16	    p.add_argument("--onnx", required=True, help="Input combined_static_model.onnx")
+    17	    p.add_argument("--out", default="export/combined_static_model_fp32.tflite")
+    18	    p.add_argument("--converter", default="onnx2tflite",
+    19	                   help="onnx2tflite executable")
+    20	    p.add_argument("--skip-shape-inference", action="store_true",
+    21	                   help="Use only if ONNX shape inference fails; model shapes must be static")
+    22	    p.add_argument("--cast-int64-to-int32", action="store_true")
+    23	    p.add_argument("--allow-select-ops", action="store_true",
+    24	                   help="Not recommended for TFLite Micro deployment")
+    25	    args = p.parse_args()
+    26	
+    27	    onnx_path = Path(args.onnx).expanduser().resolve()
+    28	    out_path = Path(args.out).expanduser().resolve()
+    29	    if not onnx_path.is_file():
+    30	        p.error(f"ONNX file does not exist: {onnx_path}")
+    31	    if shutil.which(args.converter) is None:
+    32	        p.error(
+    33	            f"Cannot find {args.converter!r}. Install the NXP converter and "
+    34	            "ensure its executable is on PATH."
+    35	        )
+    36	
+    37	    out_path.parent.mkdir(parents=True, exist_ok=True)
+    38	    cmd = [args.converter, str(onnx_path), "-o", str(out_path)]
+    39	    if args.skip_shape_inference:
+    40	        cmd.append("--skip-shape-inference")
+    41	    if args.cast_int64_to_int32:
+    42	        cmd.append("--cast-int64-to-int32")
+    43	    if args.allow_select_ops:
+    44	        cmd.append("--allow-select-ops")
+    45	
+    46	    print("Running:")
+    47	    print(" ".join(cmd))
+    48	    subprocess.run(cmd, check=True)
+    49	
+    50	    if not out_path.is_file() or out_path.stat().st_size == 0:
+    51	        raise RuntimeError("Converter returned successfully but output TFLite is missing/empty.")
+    52	
+    53	    print(f"\nTFLite model created: {out_path}")
+    54	    print(f"File size: {out_path.stat().st_size:,} bytes")
+    55	    print("\nNext: run validate_onnx_tflite.py with representative input tensors.")
+    56	
+    57	if __name__ == "__main__":
+    58	    main()
+
+=== MATCHING TRANSFORMATION SOURCE FILES ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/BroadcastToOptions.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/StablehloBroadcastInDimOptions.py
+
+=== EXACT ARTIFACTS AND INTERMEDIATE HASHES ===
+    11889688 bytes  b0f3ef4473edaf711b1bb265d1c1e9c1b547c46f2fb684643d096f1d0a95da53  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/layernorm_variance_eps_variants/qdq_both_variance_eps_fp32.onnx
+    11888035 bytes  78f05f9a60f22c9f67d497370d27f428e3d24383c6734a0bfe694d306c61cf7c  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/layernorm_variance_eps_variants/qdq_both_variance_eps_preprocess_fp32.onnx
+    11887459 bytes  4b5b6add7a1e95885a79973ad37328a8af5657e550ce537ab010ec6df5115391  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/layernorm_variance_eps_variants/qdq_both_variance_eps_preprocess_fp32_v2.onnx
+    11887186 bytes  5ca56b6bb6650ed79460fefe897a79d86bbaffbdfa1b6d35dac4ddb0d5fb4e3c  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/layernorm_variance_eps_variants/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.onnx
+    11887182 bytes  c966bd075027e82aef10491def08949ece8639e508251ba9b930b2bbffc5db75  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/layernorm_variance_eps_variants/qdq_both_variance_eps_preprocess_fp32_v2_conv0_output_bypass.onnx
+    11886840 bytes  de7b1cb5a8f1fa15f6a4392c379572df2670e4185055ab91a9f15e52368bf5fe  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/layernorm_variance_eps_variants/qdq_both_variance_eps_preprocess_fp32_v2_conv1_output_bypass.onnx
+    11844288 bytes  4e2f12fe015d777ab3dff7a2d4d170369c8a6ec63fe76fdadd79bb57ae8c065a  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32.tflite
+    11844352 bytes  470c938604e2ace44bfb68223d72848d2a5493942bd30ddfda29543d2596e072  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/qdq_both_variance_eps_preprocess_fp32_v2_gather_nonnegative.tflite
+    11026432 bytes  7b4c9d0883b0445c1b1bd639c0380d844ff1ada8292b8c15c95c8c6267f08565  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_allocator_compare_20261109_113916/Greedy/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11026432 bytes  7b4c9d0883b0445c1b1bd639c0380d844ff1ada8292b8c15c95c8c6267f08565  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_allocator_compare_20261109_113916/HillClimb/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11026432 bytes  ee4285f9858416351c6c9a9b74d263485b3a2e8a3e5aa008205d11aed80a6e8b  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_allocator_compare_20261109_113916/LinearAlloc/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11025968 bytes  5d4f633522785ee875fb3389f184700d909c8d57089133dfb2229a3aefddda60  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_bilstm_rank4_noreshape_20261109_150728/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_noreshape_exp_vela.tflite
+    11026656 bytes  8054cd8dec400e6bb80851f94d7aff58139a47d95b5df017d53acb3801b25ee2  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+    11026432 bytes  60f5c826e709c5e86fe722acc8ec6d8e8e778a1229554223465e8cd016597278  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_vela.tflite
+    11026208 bytes  b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11026432 bytes  7b4c9d0883b0445c1b1bd639c0380d844ff1ada8292b8c15c95c8c6267f08565  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_size_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11026208 bytes  b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_live_range_inspection_20261109_140426/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11026432 bytes  7b4c9d0883b0445c1b1bd639c0380d844ff1ada8292b8c15c95c8c6267f08565  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_u55_scheduling_compare_20261109_135406/baseline/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11025632 bytes  c6b3891d7a6e7ba3346412497ac5db1d66cf1f1002dc2e67de093576aacf438b  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_u55_scheduling_compare_20261109_135406/disable_buffering/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11025408 bytes  45238836bb8d1adaec71a62d657557e28c1db2213596d9cfbc97f75559b28b74  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/export/vela_u55_scheduling_compare_20261109_135406/disable_cascading/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite
+    11844264 bytes  db0cdb5443b63adb22e6253da1c5e11fba36cc142dce57e2e609a225ed949290  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold.tflite
+    11844184 bytes  275f6468499bdf146d6f1889d01d866a80277416e6f686e5be9f1fa07184408f  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp.tflite
+    11844184 bytes  53f9e6f8c8b683de6e0d45cd7d1b7d5b601e9e741598337f4e23ce13fe079e12  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_noreshape_exp.tflite
+    11025096 bytes  06455fa9d1b41e2b920485b9bfd4a1a48d68ae0474d1aa7d9558c0a0afd02125  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp.tflite
+    11025968 bytes  72bf7dba9d0234458108fc413915cdb161050edccf4327dd6cf34597e1cb556a  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite
+Matching artifacts: 25
