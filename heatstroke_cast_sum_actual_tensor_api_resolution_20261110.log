@@ -1,0 +1,1388 @@
+=== ACTUAL TENSOR API HEADER LOCATIONS ===
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/array.h ---
+   72: 
+   73: // Allocates a TfLiteIntArray of given size using malloc.
+   74: template <>
+   75: inline IntArrayUniquePtr BuildTfLiteArray<int>(const int size) {
+   76:   return IntArrayUniquePtr(TfLiteIntArrayCreate(size));
+   77: }
+   78: 
+   79: // Allocates a TfLiteFloatArray of given size using malloc.
+   80: template <>
+   81: inline FloatArrayUniquePtr BuildTfLiteArray<float>(const int size) {
+   82:   return FloatArrayUniquePtr(TfLiteFloatArrayCreate(size));
+   83: }
+   84: 
+   85: // Allocates a TFLiteArray of given size and initializes it with the given
+   86: // values.
+   87: //
+   88: // `values` is expected to holds `size` elements.
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/mock_micro_graph.h ---
+   30:  public:
+   31:   explicit MockMicroGraph(SingleArenaBufferAllocator* allocator);
+   32:   TfLiteStatus InvokeSubgraph(int subgraph_idx) override;
+   33:   size_t NumSubgraphInputs(int subgraph_idx) override;
+   34:   TfLiteEvalTensor* GetSubgraphInput(int subgraph_idx, int tensor_idx) override;
+   35:   size_t NumSubgraphOutputs(int subgraph_idx) override;
+   36:   TfLiteEvalTensor* GetSubgraphOutput(int subgraph_idx,
+   37:                                       int tensor_idx) override;
+   38:   int NumSubgraphs() override;
+   39:   MicroResourceVariables* GetResourceVariables() override;
+   40:   int get_init_count() const { return init_count_; }
+   41:   int get_prepare_count() const { return prepare_count_; }
+   42:   int get_free_count() const { return free_count_; }
+   43:   int get_invoke_count(int subgraph_idx) const {
+   44:     return invoke_counts_[subgraph_idx];
+   45:   }
+   46: 
+   47:  private:
+   48:   static constexpr int kMaxSubgraphs = 10;
+   49:   SingleArenaBufferAllocator* allocator_;
+   50:   TfLiteEvalTensor* mock_tensor_;
+   51:   int init_count_;
+   52:   int prepare_count_;
+   53:   int free_count_;
+   54:   int invoke_counts_[kMaxSubgraphs];
+   55:   TF_LITE_REMOVE_VIRTUAL_DELETE
+   56: };
+   57: 
+   58: }  // namespace tflite
+   59: 
+   60: #endif  // TENSORFLOW_LITE_MICRO_MOCK_MICRO_GRAPH_H_
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocator.h ---
+   40: 
+   41: // Sets up all of the data structure members for a TfLiteTensor based on the
+   42: // contents of a serialized tensor in the flatbuffer.
+   43: // TODO(b/162311891): Drop this method when the interpreter has an API for
+   44: // returning buffers on TfLiteEvalTensor.
+   45: TfLiteStatus InitializeTfLiteTensorFromFlatbuffer(
+   46:     IPersistentBufferAllocator* persistent_buffer_allocator,
+   47:     INonPersistentBufferAllocator* non_persistent_buffer_allocator,
+   48:     bool allocate_temp, const tflite::Tensor& flatbuffer_tensor,
+   49:     const flatbuffers::Vector<flatbuffers::Offset<Buffer>>* buffers,
+   50:     TfLiteTensor* result);
+   51: 
+   52: // Holds placeholder information for a scratch buffer request from a kernel.
+   53: // This struct is only used during the model prepare stage. Each request from a
+   54: // kernel is stored in the head section. During the prepare stage, the head
+   55: // section will at least hold kMaxScratchBuffersPerOp number of requests plus
+   56: // any requests from previous kernel requests.
+   95: // Stores all per-subgraph allocations. This includes the node and registration
+   96: // array, and tensor list for each subgraph.
+   97: struct SubgraphAllocations {
+   98:   NodeAndRegistration* node_and_registrations;
+   99:   TfLiteEvalTensor* tensors;
+  100: #ifdef USE_TFLM_COMPRESSION
+  101:   CompressedTensorList compressed;
+  102: #endif  // USE_TFLM_COMPRESSION
+  103: };
+  104: 
+  105: // Allocator responsible for allocating memory for all intermediate tensors
+  106: // necessary to invoke a model.
+  107: //
+  108: // The lifetime of the model, tensor arena and error reporter must be at
+  109: // least as long as that of the allocator object, since the allocator needs
+  110: // them to be accessible during its entire lifetime.
+  111: //
+  209:   // Allocates a TfLiteTensor struct and populates the returned value with
+  210:   // properties from the model flatbuffer. This struct is allocated from
+  211:   // temporary arena memory is only guaranteed until a call is made to
+  212:   // ResetTempAllocations(). Subgraph_allocations contains the array of
+  213:   // TfLiteEvalTensors. If the newly allocated temp at the specified subgraph
+  214:   // and tensor index is already present int the TfLiteEvalTensor array, its
+  215:   // data buffer will be re-used.
+  216:   virtual TfLiteTensor* AllocateTempTfLiteTensor(
+  217:       const Model* model, const SubgraphAllocations* subgraph_allocations,
+  218:       int tensor_index, int subgraph_index);
+  219: 
+  220:   virtual void DeallocateTempTfLiteTensor(TfLiteTensor*);
+  221: 
+  222:   // Returns a pointer to a buffer from the temporary arena memory and is only
+  223:   // guaranteed until a call is made to ResetTempAllocations().
+  224:   virtual uint8_t* AllocateTempBuffer(size_t size, size_t alignment);
+  225: 
+  226:   // Signals that the temporary buffer no longer needed.
+  281:   // model.
+  282:   virtual TfLiteStatus AllocateNodeAndRegistrations(
+  283:       const Model* model, SubgraphAllocations* subgraph_allocations);
+  284: 
+  285:   // Allocates the list of persistent TfLiteEvalTensors that are used for the
+  286:   // "eval" phase of model inference. These structs will be the source of truth
+  287:   // for all tensor buffers.
+  288:   virtual TfLiteStatus AllocateTfLiteEvalTensors(
+  289:       const Model* model, SubgraphAllocations* subgraph_allocations);
+  290: 
+  291:   // Allocates persistent tensor buffers for variable tensors in the subgraph.
+  292:   // Online and offline variable tensors are handled differently hence the
+  293:   // offline_planner_offsets parameter is needed.
+  294:   virtual TfLiteStatus AllocateVariables(
+  295:       const SubGraph* subgraph, TfLiteEvalTensor* eval_tensors,
+  296:       const int32_t* offline_planner_offsets);
+  297: 
+  298:   // Allocate and return a persistent TfLiteTensor.
+  299:   // TODO(b/162311891): Drop this method when the interpreter has an API for
+  300:   // accessing TfLiteEvalTensor structs.
+  301:   virtual TfLiteTensor* AllocatePersistentTfLiteTensorInternal();
+  302: 
+  303:   // Populates a TfLiteTensor struct with data from the model flatbuffer. Any
+  304:   // quantization data is allocated from either the tail (persistent) or temp
+  305:   // sections of the arena based on the allocation flag.
+  306:   virtual TfLiteStatus PopulateTfLiteTensorFromFlatbuffer(const Model* model,
+  307:                                                           TfLiteTensor* tensor,
+  308:                                                           int tensor_index,
+  309:                                                           int subgraph_idx,
+  310:                                                           bool allocate_temp);
+  311: 
+  312:  private:
+  313:   // Commits a memory plan for all non-persistent buffer allocations in the
+  314:   // 'head' section of the memory arena. The eval_tensors pointer is the list of
+  315:   // pre-allocated TfLiteEvalTensor structs that will point to the buffers that
+  316:   // will be allocated into the head section in this function call. The
+  317:   // scratch_buffer_handles pointer is the array of pre-allocated
+  318:   // ScratchBufferHandle structs that will point to allocated buffers also in
+  319:   // the head section.
+  320:   virtual TfLiteStatus CommitStaticMemoryPlan(
+  321:       const Model* model, SubgraphAllocations* allocations,
+  322:       ScratchBufferHandle* scratch_buffer_handles);
+  323: 
+  324:   // Allocates an array of ScratchBufferHandle structs in the tail section for a
+  325:   // given number of handles.
+  326:   virtual TfLiteStatus AllocateScratchBufferHandles(
+  327:       ScratchBufferHandle** scratch_buffer_handles, size_t handle_count);
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_allocation_info.h ---
+  124:   void UpdateLastUsed(AllocationInfo* current, int allocation_scope_count);
+  125: 
+  126:   // Validate if a subgraph satisfies assumptions.
+  127:   TfLiteStatus ValidateSubgraph(const SubGraph* subgraph,
+  128:                                 TfLiteEvalTensor* eval_tensors);
+  129: 
+  130:   const tflite::Model* model_ = nullptr;
+  131:   INonPersistentBufferAllocator* non_persistent_allocator_ = nullptr;
+  132:   GraphAllocationInfo info_ =
+  133:       {};  // Prevents problems caused by accessing uninitialized memory.
+  134:   int allocation_scope_count_ = 0;
+  135: };
+  136: 
+  137: }  // namespace tflite
+  138: 
+  139: #endif  // TENSORFLOW_LITE_MICRO_MICRO_ALLOCATION_INFO_H_
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_graph.h ---
+   65:   // Number of tensor inputs to a specified subgraph in the model.
+   66:   virtual size_t NumSubgraphInputs(int subgraph_idx);
+   67: 
+   68:   // Get the specified input tensor of a specified subgraph in the model.
+   69:   virtual TfLiteEvalTensor* GetSubgraphInput(int subgraph_idx, int input_idx);
+   70: 
+   71:   // Number of tensor outputs from a specified subgraph in the model.
+   72:   virtual size_t NumSubgraphOutputs(int subgraph_idx);
+   73: 
+   74:   // Get the specified output tensor of a specified subgraph in the model.
+   75:   virtual TfLiteEvalTensor* GetSubgraphOutput(int subgraph_idx, int output_idx);
+   76: 
+   77:   // Number of subgraphs in the model.
+   78:   virtual int NumSubgraphs();
+   79: 
+   80:   // Hook to pass in subgraph allocations tracked within the interpreter,
+   81:   // allowing MicroInterpreterGraph to init / prepare / invoke subgraphs in the
+   82:   // model.
+   83:   void SetSubgraphAllocations(SubgraphAllocations* subgraph_allocations);
+   84: 
+   85:   // Get the current subgraph index. Within an on operator, this is guaranteed
+   86:   // to be the subgraph of that operator.
+   87:   int GetCurrentSubgraphIndex() { return current_subgraph_index_; }
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/memory_helpers.h ---
+   45: // How many bytes are needed to hold a tensor's contents.
+   46: TfLiteStatus BytesRequiredForTensor(const tflite::Tensor& flatbuffer_tensor,
+   47:                                     size_t* bytes, size_t* type_size);
+   48: 
+   49: // How many bytes are used in a TfLiteEvalTensor instance. The byte length is
+   50: // returned in out_bytes.
+   51: TfLiteStatus TfLiteEvalTensorByteLength(const TfLiteEvalTensor* eval_tensor,
+   52:                                         size_t* out_bytes);
+   53: 
+   54: // Deduce output dimensions from input and allocate given size.
+   55: // Useful for operators with two inputs where the largest input should equal the
+   56: // output dimension.
+   57: TfLiteStatus AllocateOutputDimensionsFromInput(TfLiteContext* context,
+   58:                                                const TfLiteTensor* input1,
+   59:                                                const TfLiteTensor* input2,
+   60:                                                TfLiteTensor* output);
+   61: 
+   62: }  // namespace tflite
+   63: 
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.h ---
+  122:     return nullptr;
+  123:   }
+  124: 
+  125:   // Returns a pointer to the tensor for the corresponding tensor_index
+  126:   TfLiteEvalTensor* GetTensor(int tensor_index, int subgraph_index = 0);
+  127: 
+  128:   // Reset the state to be what you would expect when the interpreter is first
+  129:   // created. i.e. after Init and Prepare is called for the very first time.
+  130:   TfLiteStatus Reset();
+  131: 
+  132:   TfLiteStatus initialization_status() const { return initialization_status_; }
+  133: 
+  134:   // Populates node and registration pointers representing the inference graph
+  135:   // of the model from values inside the flatbuffer (loaded from the TfLiteModel
+  136:   // instance). Persistent data (e.g. operator data) is allocated from the
+  137:   // arena.
+  138:   TfLiteStatus PrepareNodeAndRegistrationDataFromFlatbuffer();
+  194: 
+  195:   ScratchBufferHandle* scratch_buffer_handles_ = nullptr;
+  196: 
+  197:   // TODO(b/162311891): Clean these pointers up when this class supports buffers
+  198:   // from TfLiteEvalTensor.
+  199:   TfLiteTensor** input_tensors_;
+  200:   TfLiteTensor** output_tensors_;
+  201: 
+  202:   MicroInterpreterContext micro_context_;
+  203: };
+  204: 
+  205: }  // namespace tflite
+  206: 
+  207: #endif  // TENSORFLOW_LITE_MICRO_MICRO_INTERPRETER_H_
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_context.h ---
+   81:   // Signals that the temporary buffer is no longer needed.
+   82:   // Virtual so that it can be faked for kernel tests.
+   83:   virtual void DeallocateTempBuffer(uint8_t* buffer) override;
+   84: 
+   85:   // Returns a TfLiteEvalTensor struct for a given index.
+   86:   // Virtual so that it can be faked for kernel tests.
+   87:   virtual TfLiteEvalTensor* GetEvalTensor(int tensor_idx) override;
+   88: 
+   89:   // Sets the State of MemoryPlanning MicroInterpreterContext
+   90:   void SetInterpreterState(InterpreterState state);
+   91: 
+   92:   // Sets the State of MemoryPlanning MicroInterpreterContext
+   93:   InterpreterState GetInterpreterState() const;
+   94: 
+   95:   // Does not take ownership of the pointer and the pointer must refer to valid
+   96:   // an object that outlive this class instance.
+   97:   // This can only be called once to set one external context.
+   98:   TfLiteStatus set_external_context(void* external_context_payload) override;
+   99: 
+  123:       const TfLiteNode* node, int tensor_idx) override;
+  124: 
+  125:   // Only available during Prepare & Eval. Returns nullptr on failure, otherwise
+  126:   // returns a pointer to the buffer.
+  127:   void* DecompressTensorToBuffer(const TfLiteEvalTensor& tensor,
+  128:                                  const CompressionTensorData& compression_data,
+  129:                                  void* buffer) override;
+  130: 
+  131:   // Set the alternate decompression memory regions.
+  132:   // Can only be called during the MicroInterpreter kInit state.
+  133:   TfLiteStatus SetDecompressionMemory(
+  134:       const std::initializer_list<AlternateMemoryRegion>& regions) override;
+  135: 
+  136:   // Return a pointer to memory that can be used for decompression.
+  137:   // The pointer will be aligned to the <alignment> value.
+  138:   // Return nullptr if the requested size is not available.
+  139:   // Can be called during kPrepare and kInvoke states.
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_utils.h ---
+   28: // Returns number of elements in the shape array.
+   29: 
+   30: int ElementCount(const TfLiteIntArray& dims);
+   31: 
+   32: size_t EvalTensorBytes(const TfLiteEvalTensor* tensor);
+   33: 
+   34: // C++11 does not support constexpr max; hence, use ternary conditional to
+   35: // create our own constexpr Max function.
+   36: constexpr int Max(int a, int b) { return a >= b ? a : b; }
+   37: 
+   38: // Converts a float value into a quantized value.  Note that large values (close
+   39: // to max int and min int) may see significant error due to a lack of floating
+   40: // point granularity for large values.
+   41: template <typename T>
+   42: T FloatToQuantizedType(const float value, const float scale, int zero_point) {
+   43:   int32_t result = round(value / scale) + zero_point;
+   44:   result =
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_context.h ---
+   91: 
+   92:   // Signals that the temporary buffer is no longer needed.
+   93:   virtual void DeallocateTempBuffer(uint8_t* buffer) = 0;
+   94: 
+   95:   // Returns a TfLiteEvalTensor struct for a given index.
+   96:   virtual TfLiteEvalTensor* GetEvalTensor(int tensor_idx) = 0;
+   97: 
+   98:   // Does not take ownership of the pointer and the pointer must refer to valid
+   99:   // an object that outlive this class instance.
+  100:   // This can only be called once to set one external context.
+  101:   virtual TfLiteStatus set_external_context(void* external_context_payload) = 0;
+  102: 
+  103:   virtual void* external_context() = 0;
+  104: 
+  105:   virtual MicroGraph& graph() = 0;
+  106: 
+  107: #ifdef USE_TFLM_COMPRESSION
+  108: 
+  122: 
+  123:   // Only available during Prepare & Eval. Returns nullptr on failure, otherwise
+  124:   // returns a pointer to the buffer.
+  125:   virtual void* DecompressTensorToBuffer(
+  126:       const TfLiteEvalTensor& tensor,
+  127:       const CompressionTensorData& compression_data, void* buffer);
+  128: 
+  129:   // Used for configuring alternate decompression memory
+  130:   struct AlternateMemoryRegion {
+  131:     void* address;
+  132:     size_t bytes;
+  133:   };
+  134: 
+  135:   // Set the alternate decompression memory regions.
+  136:   // Can only be called during the MicroInterpreter kInit state.
+  137:   virtual TfLiteStatus SetDecompressionMemory(
+  138:       const std::initializer_list<AlternateMemoryRegion>& regions);
+  195: inline TfLiteTensor* MicroContextGetTensor(const struct TfLiteContext* context,
+  196:                                            int tensor_idx) {
+  197:   return GetMicroContext(context)->AllocateTempTfLiteTensor(tensor_idx);
+  198: }
+  199: inline TfLiteEvalTensor* MicroContextGetEvalTensor(
+  200:     const struct TfLiteContext* context, int tensor_idx) {
+  201:   return GetMicroContext(context)->GetEvalTensor(tensor_idx);
+  202: }
+  203: inline TfLiteExternalContext* MicroContextGetExternalContext(
+  204:     TfLiteContext* context, TfLiteExternalContextType unused) {
+  205:   return reinterpret_cast<TfLiteExternalContext*>(
+  206:       GetMicroContext(context)->external_context());
+  207: }
+  208: 
+  209: // Requests that an error be reported with format string msg.
+  210: void MicroContextReportOpError(struct TfLiteContext* context,
+  211:                                const char* format, ...);
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_graph.h ---
+   36:   // Number of tensor inputs to a specified subgraph in the model.
+   37:   virtual size_t NumSubgraphInputs(int subgraph_idx) = 0;
+   38: 
+   39:   // Get the specified input tensor of a specified subgraph in the model.
+   40:   virtual TfLiteEvalTensor* GetSubgraphInput(int subgraph_idx,
+   41:                                              int input_idx) = 0;
+   42: 
+   43:   // Number of tensor outputs from a specified subgraph in the model.
+   44:   virtual size_t NumSubgraphOutputs(int subgraph_idx) = 0;
+   45: 
+   46:   // Get the specified output tensor of a specified subgraph in the model.
+   47:   virtual TfLiteEvalTensor* GetSubgraphOutput(int subgraph_idx,
+   48:                                               int output_idx) = 0;
+   49: 
+   50:   // Number of subgraphs in the model.
+   51:   virtual int NumSubgraphs() = 0;
+   52: 
+   53:   // Get the resource variables for this TFLM graph.
+   54:   virtual MicroResourceVariables* GetResourceVariables() = 0;
+   55: 
+   56:  private:
+   57:   TF_LITE_REMOVE_VIRTUAL_DELETE
+   58: };
+   59: 
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/recording_micro_allocator.h ---
+   25: // List of buckets currently recorded by this class. Each type keeps a list of
+   26: // allocated information during model initialization.
+   27: // TODO(b/169834511): Add tracking for scratch buffer allocations.
+   28: enum class RecordedAllocationType {
+   29:   kTfLiteEvalTensorData,
+   30:   kPersistentTfLiteTensorData,
+   31:   kPersistentTfLiteTensorQuantizationData,
+   32:   kPersistentBufferData,
+   33:   kTfLiteTensorVariableBufferData,
+   34:   kNodeAndRegistrationArray,
+   35:   kOpData,
+   36: #ifdef USE_TFLM_COMPRESSION
+   37:   kCompressionData,
+   38: #endif  // USE_TFLM_COMPRESSION
+   39: 
+   40:   kNumAllocationTypes,  // must be last
+   41: };
+   79: 
+   80:  protected:
+   81:   TfLiteStatus AllocateNodeAndRegistrations(
+   82:       const Model* model, SubgraphAllocations* subgraph_allocations) override;
+   83:   TfLiteStatus AllocateTfLiteEvalTensors(
+   84:       const Model* model, SubgraphAllocations* subgraph_allocations) override;
+   85:   TfLiteStatus AllocateVariables(
+   86:       const SubGraph* subgraph, TfLiteEvalTensor* eval_tensors,
+   87:       const int32_t* offline_planner_offsets) override;
+   88:   // TODO(b/162311891): Once all kernels have been updated to the new API drop
+   89:   // this method. It is only used to record TfLiteTensor persistent allocations.
+   90:   TfLiteTensor* AllocatePersistentTfLiteTensorInternal() override;
+   91: 
+   92:   // TODO(b/162311891): Once all kernels have been updated to the new API drop
+   93:   // this function since all allocations for quantized data will take place in
+   94:   // the temp section.
+   95:   TfLiteStatus PopulateTfLiteTensorFromFlatbuffer(const Model* model,
+   96:                                                   TfLiteTensor* tensor,
+   97:                                                   int tensor_index,
+   98:                                                   int subgraph_index,
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/fake_micro_context.h ---
+   48: 
+   49:   uint8_t* AllocateTempBuffer(size_t size, size_t alignment) override;
+   50:   void DeallocateTempBuffer(uint8_t* buffer) override;
+   51: 
+   52:   TfLiteEvalTensor* GetEvalTensor(int tensor_index) override;
+   53: 
+   54:   TfLiteStatus set_external_context(void* external_context_payload) override;
+   55:   void* external_context() override;
+   56:   MicroGraph& graph() override;
+   57: 
+   58: #ifdef USE_TFLM_COMPRESSION
+   59: 
+   60:   // Available during Prepare & Eval. Returns false if tensor is not
+   61:   // compressed.
+   62:   bool IsTensorCompressed(const TfLiteNode* node, int tensor_idx) override;
+   63: 
+   64:   // Only available during Prepare. The kernel is responsible for storing the
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_resource_variable.h ---
+   37:   int CreateIdIfNoneFound(const char* container, const char* shared_name);
+   38: 
+   39:   // Read the resource buffer associated with the given ID into the given
+   40:   // tensor.
+   41:   TfLiteStatus Read(int id, const TfLiteEvalTensor* tensor);
+   42: 
+   43:   // Allocates the resource buffer if none has been allocated, based on the
+   44:   // length of the input tensor. Copies input tensor contents to the resource
+   45:   // buffer.
+   46:   TfLiteStatus Allocate(int id, TfLiteContext* context,
+   47:                         const TfLiteTensor* tensor);
+   48: 
+   49:   // Copies input_buffer contents to the resource buffer.
+   50:   // AllocateResourceVariable with a TFLite tensor must have been called first
+   51:   // in order to allocate the resource buffer.
+   52:   TfLiteStatus Assign(int id, size_t count_bytes, const void* input_buffer);
+   53: 
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h ---
+  254:           typename BiasType>
+  255: void CalculateLstmGate(
+  256:     const LstmStepManager& step_info, const GateParameters& gate_params,
+  257:     // Input FC
+  258:     const TfLiteEvalTensor* input, const TfLiteEvalTensor* input_weight,
+  259:     const TfLiteEvalTensor* input_bias,
+  260:     // Recurrent FC
+  261:     const TfLiteEvalTensor* recurrent, const TfLiteEvalTensor* recurrent_weight,
+  262:     const TfLiteEvalTensor* recurrent_bias,
+  263:     // Output
+  264:     CellType* gate_output,
+  265:     // Scratch arrays
+  266:     CellType* fc_output_buffer, const TfLiteFusedActivation activation) {
+  267:   const auto gate_output_shape = step_info.StateShape();
+  268:   // Check offset validity to avoid memory overflow
+  269:   TFLITE_DCHECK_LE(step_info.InputOffset() + step_info.InputShape().FlatSize(),
+  270:                    tflite::micro::GetTensorShape(input).FlatSize());
+  271:   TFLITE_DCHECK_LE(
+  272:       step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+  273:       tflite::micro::GetTensorShape(recurrent).FlatSize());
+  274: 
+  316: // input_gate_output * cell_gate_output, where * denotes element wise
+  317: // multiplication
+  318: template <typename CellType>
+  319: void UpdateLstmCell(const LstmStepManager& step_info,
+  320:                     TfLiteEvalTensor* cell_state,
+  321:                     // Gate outputs
+  322:                     CellType* forget_gate_output,
+  323:                     const CellType* input_gate_output,
+  324:                     const CellType* cell_gate_output,
+  325:                     // Mul parameters
+  326:                     const ArithmeticParams& forget_cell_mul_params,
+  327:                     const ArithmeticParams& input_mul_params,
+  328:                     const CellStateInfo& cell_state_info, CellType* buffer) {
+  329:   // Check offset validity to avoid memory overflow
+  330:   TFLITE_DCHECK_LE(
+  331:       step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+  332:       tflite::micro::GetTensorShape(cell_state).FlatSize());
+  362: // updated_hidden_state = Tanh(updated_cell_state) * output_gate_output, * means
+  363: // element wise multiplication
+  364: template <typename CellType, typename ActivationType>
+  365: void UpdateLstmHidden(const LstmStepManager& step_info,
+  366:                       TfLiteEvalTensor* cell_state,
+  367:                       TfLiteEvalTensor* hidden_state,
+  368:                       const CellType* output_gate_output,
+  369:                       const ArithmeticParams& mul_params,
+  370:                       int32_t cell_state_scale_power, CellType* buffer) {
+  371:   // Check offset validity to avoid memory overflow
+  372:   TFLITE_DCHECK_LE(
+  373:       step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+  374:       tflite::micro::GetTensorShape(cell_state).FlatSize());
+  375:   TFLITE_DCHECK_LE(
+  376:       step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+  377:       tflite::micro::GetTensorShape(hidden_state).FlatSize());
+  378: 
+  379:   auto cell_state_shape = step_info.StateShape();
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h ---
+  121: // invocation. Constructed during the invocation phase
+  122: struct LSTMKernelContents {
+  123:  public:
+  124:   // Internal tensors, fixed (const). see lstm_shared.h for tensor names
+  125:   const TfLiteEvalTensor* GetInternalTensor(const int tensor_index) const {
+  126:     return internal_tensors[tensor_index];
+  127:   }
+  128:   // Variable tensors (will be changed, can not be const)
+  129:   TfLiteEvalTensor* HiddenStateTensor() {
+  130:     return internal_tensors[kLstmOutputStateTensor];
+  131:   }
+  132:   TfLiteEvalTensor* CellStateTensor() {
+  133:     return internal_tensors[kLstmCellStateTensor];
+  134:   }
+  135:   // Node internal tensors with indexes defined at the beginning of the file
+  136:   TfLiteEvalTensor* internal_tensors[24];
+  137:   TfLiteEvalTensor* output_tensor;
+  138: };
+  139: 
+  140: template <typename CellType>
+  141: struct LSTMBuffers {
+  142:   // TFLM buffers requires buffer index from LstmOpData.
+  143:   CellType* buffer0;
+  144:   CellType* buffer1;
+  145:   CellType* buffer2;
+  146:   CellType* buffer3;
+  147: };
+  148: 
+  149: }  // namespace tflite
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/maximum_minimum.h ---
+   39: constexpr int kOutputTensor = 0;
+   40: 
+   41: struct OpContext {
+   42:   OpContext(TfLiteContext* context, TfLiteNode* node) {
+   43:     input1 = tflite::micro::GetEvalInput(context, node, kInputTensor1);
+   44:     input2 = tflite::micro::GetEvalInput(context, node, kInputTensor2);
+   45:     output = tflite::micro::GetEvalOutput(context, node, kOutputTensor);
+   46:   }
+   47:   const TfLiteEvalTensor* input1;
+   48:   const TfLiteEvalTensor* input2;
+   49:   TfLiteEvalTensor* output;
+   50: };
+   51: 
+   52: struct MaximumOp {
+   53:   template <typename data_type>
+   54:   static data_type op(data_type el1, data_type el2) {
+   55:     return el1 > el2 ? el1 : el2;
+   56:   }
+   57: };
+   58: 
+   59: struct MinimumOp {
+   60:   template <typename data_type>
+   61:   static data_type op(data_type el1, data_type el2) {
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.h ---
+   53: void AveragePoolingEvalFloat(const TfLiteContext* context,
+   54:                              const TfLiteNode* node,
+   55:                              const TfLitePoolParams* params,
+   56:                              const OpDataPooling* data,
+   57:                              const TfLiteEvalTensor* input,
+   58:                              TfLiteEvalTensor* output);
+   59: 
+   60: template <typename T>
+   61: void AveragePoolingEvalQuantized(TfLiteContext* context, const TfLiteNode* node,
+   62:                                  const TfLitePoolParams* params,
+   63:                                  const OpDataPooling* data,
+   64:                                  const TfLiteEvalTensor* input,
+   65:                                  TfLiteEvalTensor* output) {
+   66:   TFLITE_DCHECK(input->type == kTfLiteInt8 || input->type == kTfLiteInt16);
+   67: 
+   68:   PoolParams op_params;
+   69:   op_params.stride_height = params->stride_height;
+   70:   op_params.stride_width = params->stride_width;
+   71:   op_params.filter_height = params->filter_height;
+   72:   op_params.filter_width = params->filter_width;
+   73:   op_params.padding_values.height = data->padding.height;
+   74:   op_params.padding_values.width = data->padding.width;
+   75:   op_params.quantized_activation_min = data->activation_min;
+   76:   op_params.quantized_activation_max = data->activation_max;
+   77: 
+   83: }
+   84: 
+   85: void MaxPoolingEvalFloat(TfLiteContext* context, TfLiteNode* node,
+   86:                          TfLitePoolParams* params, const OpDataPooling* data,
+   87:                          const TfLiteEvalTensor* input,
+   88:                          TfLiteEvalTensor* output);
+   89: 
+   90: template <typename T>
+   91: void MaxPoolingEvalQuantized(TfLiteContext* context, TfLiteNode* node,
+   92:                              TfLitePoolParams* params,
+   93:                              const OpDataPooling* data,
+   94:                              const TfLiteEvalTensor* input,
+   95:                              TfLiteEvalTensor* output) {
+   96:   TFLITE_DCHECK(input->type == kTfLiteInt8 || input->type == kTfLiteInt16);
+   97: 
+   98:   tflite::PoolParams op_params;
+   99:   op_params.stride_height = params->stride_height;
+  100:   op_params.stride_width = params->stride_width;
+  101:   op_params.filter_height = params->filter_height;
+  102:   op_params.filter_width = params->filter_width;
+  103:   op_params.padding_values.height = data->padding.height;
+  104:   op_params.padding_values.width = data->padding.width;
+  105:   op_params.quantized_activation_min = data->activation_min;
+  106:   op_params.quantized_activation_max = data->activation_max;
+  107: 
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/svdf.h ---
+   47: // Output tensor.
+   48: extern const int kSvdfOutputTensor;
+   49: 
+   50: void EvalInt8SvdfReference(TfLiteContext* context, TfLiteNode* node,
+   51:                            const TfLiteEvalTensor* input_tensor,
+   52:                            const TfLiteEvalTensor* weights_feature_tensor,
+   53:                            const TfLiteEvalTensor* weights_time_tensor,
+   54:                            const TfLiteEvalTensor* bias_tensor,
+   55:                            const TfLiteSVDFParams* params,
+   56:                            TfLiteEvalTensor* activation_state_tensor,
+   57:                            TfLiteEvalTensor* output_tensor,
+   58:                            const OpDataSvdf& data);
+   59: 
+   60: // TODO(#523): remove 16-bit code when no longer needed.
+   61: void EvalInt16SvdfReference(TfLiteContext* context, TfLiteNode* node,
+   62:                             const TfLiteEvalTensor* input_tensor,
+   63:                             const TfLiteEvalTensor* weights_feature_tensor,
+   64:                             const TfLiteEvalTensor* weights_time_tensor,
+   65:                             const TfLiteEvalTensor* bias_tensor,
+   66:                             const TfLiteSVDFParams* params,
+   67:                             TfLiteEvalTensor* activation_state_tensor,
+   68:                             TfLiteEvalTensor* output_tensor,
+   69:                             const OpDataSvdf& data);
+   70: 
+   71: void EvalFloatSvdfReference(
+   72:     TfLiteContext* context, TfLiteNode* node, const TfLiteEvalTensor* input,
+   73:     const TfLiteEvalTensor* weights_feature,
+   74:     const TfLiteEvalTensor* weights_time, const TfLiteEvalTensor* bias,
+   75:     const TfLiteSVDFParams* params, int scratch_tensor_index,
+   76:     TfLiteEvalTensor* activation_state, TfLiteEvalTensor* output);
+   77: 
+   78: TfLiteStatus PrepareSvdf(TfLiteContext* context, TfLiteNode* node);
+   79: 
+   80: // This is the most generic TFLMRegistration. The actual supported types
+   81: // may still be target dependent. The only requirement is that every
+   82: // implementation (reference or optimized) must define this function.
+   83: TFLMRegistration Register_SVDF();
+   84: 
+   85: #if defined(HEXAGON) || defined(CMSIS_NN) || defined(XTENSA)
+   86: 
+   87: TFLMRegistration Register_SVDF_INT8();
+   88: 
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/batch_matmul.h ---
+   41: struct OpDataBatchMatmul {
+   42:   QuantizationOpDataBatchMatmul* quantization;
+   43: 
+   44:   // Transpose tensors and state
+   45:   TfLiteEvalTensor* lhs_transposed_tensor;
+   46:   TfLiteEvalTensor* rhs_transposed_tensor;
+   47:   bool rhs_is_transposed;
+   48:   bool lhs_is_constant_tensor;
+   49:   bool rhs_is_constant_tensor;
+   50: };
+   51: 
+   52: extern const int kBatchMatmulInputLhsTensor;
+   53: extern const int kBatchMatmulInputRhsTensor;
+   54: extern const int kBatchMatmulOutputTensor;
+   55: 
+   56: TfLiteStatus ReshapeOutputTensor(TfLiteContext* context, TfLiteNode* node,
+   57:                                  const RuntimeShape& extended_lhs_shape,
+   58:                                  const RuntimeShape& extended_rhs_shape,
+   59:                                  bool adj_x, bool adj_y, int output_rank,
+   60:                                  TfLiteTensor* output);
+   61: 
+   62: template <typename T>
+   63: void TransposeRowsColumnsImpl(const TfLiteEvalTensor& tensor_in,
+   64:                               TfLiteEvalTensor* tensor_out);
+   65: 
+   66: TfLiteStatus TransposeRowsColumns(const TfLiteEvalTensor& tensor_in,
+   67:                                   TfLiteEvalTensor* tensor_out);
+   68: 
+   69: RuntimeShape SwapRowColumnDims(const RuntimeShape& shape);
+   70: 
+   71: TFLMRegistration Register_BATCH_MATMUL();
+   72: 
+   73: #if defined(CMSIS_NN)
+   74: 
+   75: // Returns a TFLMRegistration struct for kernel variant that only supports
+   76: // int8 matrix multiplication and uses the latency optimized
+   77: // implementations.
+   78: TFLMRegistration Register_BATCH_MATMUL_INT8();
+   79: 
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/kernel_util.h ---
+   49: // Prints out n bytes in a int8_t buffer as hex
+   50: void PrintNBytes(const int8_t* tensor_data, int n_bytes,
+   51:                  const char* prefix = nullptr);
+   52: 
+   53: // Prints out the n bytes in a TfLiteEvalTensor as hex
+   54: void PrintNBytes(const TfLiteEvalTensor* tensor, int n_bytes,
+   55:                  const char* prefix = nullptr);
+   56: 
+   57: // Prints out n bytes in a TfLiteTensor as hex
+   58: void PrintNBytes(const TfLiteTensor* tensor, int n_bytes,
+   59:                  const char* prefix = nullptr);
+   60: 
+   61: // Returns a mutable tensor for a given input index. is_variable must be checked
+   62: // during prepare when the full TfLiteTensor is available.
+   63: TfLiteEvalTensor* GetMutableEvalInput(const TfLiteContext* context,
+   64:                                       const TfLiteNode* node, int index);
+   65: 
+   66: // Returns the TfLiteEvalTensor struct for a given input index in a node.
+   67: const TfLiteEvalTensor* GetEvalInput(const TfLiteContext* context,
+   68:                                      const TfLiteNode* node, int index);
+   69: 
+   70: // Returns the TfLiteEvalTensor struct for a given output index in a node.
+   71: TfLiteEvalTensor* GetEvalOutput(const TfLiteContext* context,
+   72:                                 const TfLiteNode* node, int index);
+   73: 
+   74: // Returns data for a TfLiteEvalTensor struct that are expected to exist.
+   75: template <typename T>
+   76: T* GetTensorData(TfLiteEvalTensor* tensor) {
+   77:   TFLITE_DCHECK(tensor != nullptr);
+   78:   return reinterpret_cast<T*>(tensor->data.raw);
+   79: }
+   80: 
+   81: // Returns const data for a TfLiteEvalTensor struct that are expected to exist.
+   82: template <typename T>
+   83: const T* GetTensorData(const TfLiteEvalTensor* tensor) {
+   84:   TFLITE_DCHECK(tensor != nullptr);
+   85:   return reinterpret_cast<const T*>(tensor->data.raw);
+   86: }
+   87: 
+   88: // Returns data for a TfLiteEvalTensor struct that could be null.
+   89: template <typename T>
+   90: T* GetOptionalTensorData(TfLiteEvalTensor* tensor) {
+   91:   return tensor == nullptr ? nullptr : reinterpret_cast<T*>(tensor->data.raw);
+   92: }
+   93: 
+   94: // Returns const data for a TfLiteEvalTensor struct that could be null.
+   95: template <typename T>
+   96: const T* GetOptionalTensorData(const TfLiteEvalTensor* tensor) {
+   97:   return tensor == nullptr ? nullptr
+   98:                            : reinterpret_cast<const T*>(tensor->data.raw);
+   99: }
+  100: 
+  101: #ifdef USE_TFLM_COMPRESSION
+  102: 
+  103: // Overloads existing GetOptionalTensorData. If not compressed, this will return
+  104: // tensor->data.
+  105: template <typename T>
+  106: const T* GetOptionalTensorData(MicroContext* micro_context,
+  107:                                const TfLiteEvalTensor* tensor,
+  108:                                const CompressionTensorData* compression_data,
+  109:                                int scratch_buffer_handle) {
+  110:   if (tensor == nullptr) {
+  111:     return nullptr;
+  112:   }
+  113:   if (compression_data == nullptr) {
+  114:     return reinterpret_cast<const T*>(tensor->data.data);
+  115:   }
+  116: 
+  117:   void* scratch_buffer = nullptr;
+  118:   if (scratch_buffer_handle != -1) {
+  119:     scratch_buffer = micro_context->GetScratchBuffer(scratch_buffer_handle);
+  130: 
+  131: // Overloads existing GetTensorData. If not compressed, this will return
+  132: // tensor->data.
+  133: template <typename T>
+  134: const T* GetTensorData(MicroContext* micro_context,
+  135:                        const TfLiteEvalTensor* tensor,
+  136:                        const CompressionTensorData* compression_data,
+  137:                        int scratch_buffer_handle) {
+  138:   TFLITE_DCHECK(tensor != nullptr);
+  139:   return GetOptionalTensorData<T>(micro_context, tensor, compression_data,
+  140:                                   scratch_buffer_handle);
+  141: }
+  142: 
+  143: #endif  // USE_TFLM_COMPRESSION
+  144: 
+  145: // Returns the shape of a TfLiteEvalTensor struct.
+  146: const RuntimeShape GetTensorShape(const TfLiteEvalTensor* tensor);
+  147: 
+  148: // Return true if the given tensors have the same shape.
+  149: bool HaveSameShapes(const TfLiteEvalTensor* input1,
+  150:                     const TfLiteEvalTensor* input2);
+  151: 
+  152: PaddingType RuntimePaddingType(TfLitePadding padding);
+  153: 
+  154: // Relocate tensor dims from FlatBuffer to the persistent storage arena.
+  155: // The old dims data is copied to the new storage area.
+  156: // The tensor and eval_tensor must be the same tensor.
+  157: // Only use during Prepare phase.
+  158: TfLiteStatus CreateWritableTensorDimsWithCopy(TfLiteContext* context,
+  159:                                               TfLiteTensor* tensor,
+  160:                                               TfLiteEvalTensor* eval_tensor);
+  161: 
+  162: // Copy all op input tensors to op output tensors. Requires all op input tensor
+  163: // shapes and types to be identical to op output tensor shapes and types.
+  164: TfLiteStatus CopyOpInputsToOpOutputs(TfLiteContext* context, TfLiteNode* node);
+  165: 
+  166: // Copy all op input tensors to subgraph input tensors. Requires all op input
+  167: // tensor shapes and types to be identical to subgraph input tensor shapes and
+  168: // types.
+  169: TfLiteStatus CopyOpInputsToSubgraphInputs(TfLiteContext* context,
+  170:                                           TfLiteNode* node,
+  171:                                           MicroGraph* graph_info,
+  172:                                           int subgraph_idx,
+  186:                                             TfLiteNode* node,
+  187:                                             MicroGraph* graph_info,
+  188:                                             int subgraph_idx);
+  189: 
+  190: // If tensor is INT4, make a new TfLiteEvalTensor with data unpacked into
+  191: // a scratch buffer. The returned tensor will have the kTfLiteInt8 type.
+  192: // Assume scratch buffer is previously requested in Prepare, and
+  193: // scratch_buffer_index can be used to retrieve that buffer.
+  194: // If the tensor is not INT4, a shallow copy is returned.
+  195: TfLiteEvalTensor MakeUnpackedInt4Tensor(TfLiteContext* context,
+  196:                                         int scratch_buffer_index,
+  197:                                         const TfLiteEvalTensor* tensor);
+  198: }  // namespace micro
+  199: }  // namespace tflite
+  200: 
+  201: #endif  // TENSORFLOW_LITE_MICRO_KERNELS_KERNEL_UTIL_H_
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h ---
+  144:                32767.0));
+  145:   return cell_state_info;
+  146: }
+  147: 
+  148: // Create LSTMKernelContents from LstmNodeContent by copying TfLiteEvalTensor
+  149: // pointers
+  150: template <typename ActivationType, typename WeightType, typename BiasType,
+  151:           typename CellType, int batch_size, int time_steps,
+  152:           int input_dimension, int state_dimension>
+  153: LSTMKernelContents CreateLSTMKernelContent(
+  154:     LstmNodeContent<ActivationType, WeightType, BiasType, CellType, batch_size,
+  155:                     time_steps, input_dimension, state_dimension>&
+  156:         node_contents) {
+  157:   LSTMKernelContents kernel_content;
+  158:   // Point to correct tensors
+  159:   kernel_content.internal_tensors[kLstmInputTensor] =
+  160:       node_contents.GetEvalTensor(kLstmInputTensor);
+  330:   }
+  331: }
+  332: 
+  333: template <int batch_size, int state_dimension>
+  334: void TestCalculateLstmGateFloat(const TfLiteEvalTensor* input,
+  335:                                 const TfLiteEvalTensor* input_weight,
+  336:                                 const TfLiteEvalTensor* input_bias,
+  337:                                 // Recurrent FC
+  338:                                 const TfLiteEvalTensor* recurrent,
+  339:                                 const TfLiteEvalTensor* recurrent_weight,
+  340:                                 const TfLiteEvalTensor* recurrent_bias,
+  341:                                 // Result comparison
+  342:                                 TfLiteFusedActivation nonlinear_type,
+  343:                                 const float* expected_vals, float tolerance) {
+  344:   float gate_output[batch_size * state_dimension] = {};
+  345:   float fc_output_buffer[batch_size * state_dimension] = {};
+  346: 
+  347:   tflite::GateParameters gate_params = CreateGateParamsFloat();
+  348: 
+  349:   // Create step information: only one time step, no need to update
+  350:   auto size_info = tflite::testing::CreateLstmSizeInfo(
+  351:       /*time_major*/ false, input->dims, recurrent->dims);
+  352:   // revise time_major = true to enable batch inference
+  370: 
+  371: template <typename ActivationType, typename WeightType, typename BiasType,
+  372:           typename CellType, int batch_size, int state_dimension>
+  373: void TestCalculateLstmGateInteger(
+  374:     const TfLiteEvalTensor* input, const TfLiteEvalTensor* input_weight,
+  375:     const TfLiteEvalTensor* input_bias,
+  376:     // Recurrent FC
+  377:     const TfLiteEvalTensor* recurrent, const TfLiteEvalTensor* recurrent_weight,
+  378:     const TfLiteEvalTensor* recurrent_bias,
+  379:     // Quantization settings
+  380:     const NodeQuantizationParameters& node_quantization_settings,
+  381:     const GateQuantizationParameters& gate_quantization_settings,
+  382:     // Result comparison
+  383:     TfLiteFusedActivation nonlinear_type, const float* expected_vals,
+  384:     float tolerance) {
+  385:   CellType gate_output[batch_size * state_dimension] = {};
+  386:   CellType fc_output_buffer[batch_size * state_dimension] = {};
+  387: 
+  388:   tflite::GateParameters gate_params = CreateGateParams<CellType>(
+  389:       node_quantization_settings.input, node_quantization_settings.hidden_state,
+  390:       gate_quantization_settings,
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/mul.h ---
+   49: TfLiteStatus MulPrepare(TfLiteContext* context, TfLiteNode* node);
+   50: 
+   51: TfLiteStatus EvalMulQuantizedReference(TfLiteContext* context, TfLiteNode* node,
+   52:                                        const OpDataMul* data,
+   53:                                        const TfLiteEvalTensor* input1,
+   54:                                        const TfLiteEvalTensor* input2,
+   55:                                        TfLiteEvalTensor* output);
+   56: 
+   57: void EvalMulFloatReference(TfLiteContext* context, TfLiteNode* node,
+   58:                            TfLiteMulParams* params, const OpDataMul* data,
+   59:                            const TfLiteEvalTensor* input1,
+   60:                            const TfLiteEvalTensor* input2,
+   61:                            TfLiteEvalTensor* output);
+   62: 
+   63: // Generic must define registration function.
+   64: TFLMRegistration Register_MUL();
+   65: 
+   66: #if defined(CMSIS_NN)
+   67: TFLMRegistration Register_MUL_INT8();
+   68: #else
+   69: // Fallback registration
+   70: inline TFLMRegistration Register_MUL_INT8() { return Register_MUL(); }
+   71: #endif
+   72: }  // namespace tflite
+   73: 
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_reshape.h ---
+   34: 
+   35: TfLiteStatus ReshapePrepareVision(TfLiteContext* context, TfLiteNode* node);
+   36: 
+   37: TfLiteStatus ReshapeEvalVision(const XtensaReshapeData& data,
+   38:                                const TfLiteEvalTensor* input,
+   39:                                TfLiteEvalTensor* output);
+   40: #endif  // VISION_P6
+   41: 
+   42: }  // namespace tflite
+   43: 
+   44: #endif  // TENSORFLOW_LITE_MICRO_KERNELS_XTENSA_XTENSA_RESHAPE_H_
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h ---
+  303:           typename BiasType>
+  304: void CalculateLstmGate(
+  305:     const LstmStepManager& step_info, const GateParameters& gate_params,
+  306:     // Input FC
+  307:     const TfLiteEvalTensor* input, const TfLiteEvalTensor* input_weight,
+  308:     const TfLiteEvalTensor* input_bias,
+  309:     // Recurrent FC
+  310:     const TfLiteEvalTensor* recurrent, const TfLiteEvalTensor* recurrent_weight,
+  311:     const TfLiteEvalTensor* recurrent_bias,
+  312:     // Output
+  313:     CellType* gate_output,
+  314:     // Scratch arrays
+  315:     CellType* fc_output_buffer, const TfLiteFusedActivation activation) {
+  316:   const auto gate_output_shape = step_info.StateShape();
+  317:   // Check offset validity to avoid memory overflow
+  318:   TFLITE_DCHECK_LE(step_info.InputOffset() + step_info.InputShape().FlatSize(),
+  319:                    tflite::micro::GetTensorShape(input).FlatSize());
+  320:   TFLITE_DCHECK_LE(
+  321:       step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+  322:       tflite::micro::GetTensorShape(recurrent).FlatSize());
+  323: 
+  365: // input_gate_output * cell_gate_output, where * denotes element wise
+  366: // multiplication
+  367: template <typename CellType>
+  368: void UpdateLstmCell(const LstmStepManager& step_info,
+  369:                     TfLiteEvalTensor* cell_state,
+  370:                     // Gate outputs
+  371:                     CellType* forget_gate_output,
+  372:                     const CellType* input_gate_output,
+  373:                     const CellType* cell_gate_output,
+  374:                     // Mul parameters
+  375:                     const ArithmeticParams& forget_cell_mul_params,
+  376:                     const ArithmeticParams& input_mul_params,
+  377:                     const CellStateInfo& cell_state_info, CellType* buffer) {
+  378:   // Check offset validity to avoid memory overflow
+  379:   TFLITE_DCHECK_LE(
+  380:       step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+  381:       tflite::micro::GetTensorShape(cell_state).FlatSize());
+  411:           typename BiasType>
+  412: void CalculateLstmGate(
+  413:     const LstmStepManager& step_info, const GateParameters& gate_params,
+  414:     // Input FC
+  415:     const TfLiteEvalTensor* input, const TfLiteEvalTensor* input_weight,
+  416:     const TfLiteEvalTensor* input_bias,
+  417:     // Recurrent FC
+  418:     const TfLiteEvalTensor* recurrent, const TfLiteEvalTensor* recurrent_weight,
+  419:     const TfLiteEvalTensor* recurrent_bias,
+  420:     // Output
+  421:     CellType* gate_output,
+  422:     // Scratch arrays
+  423:     CellType* fc_output_buffer, const TfLiteFusedActivation activation,
+  424:     const int num_batches, const int input_dimension,
+  425:     const int state_dimension) {
+  426:   // RuntimeShape step_input_shape = step_info.InputShape();
+  427:   // RuntimeShape input_shape = tflite::micro::GetTensorShape(input);
+  428:   // RuntimeShape step_state_shape = step_info.StateShape();
+  429:   // RuntimeShape recurrent_shape = tflite::micro::GetTensorShape(recurrent);
+  430: 
+  431:   // Moved these to LstmStep function
+  476: // cell gate Formula: updated_cell_state = forget_gate_output*cell_state +
+  477: // input_gate_output * cell_gate_output, where * denotes element wise
+  478: // multiplication
+  479: void UpdateLstmCell(const LstmStepManager& step_info,
+  480:                     TfLiteEvalTensor* cell_state,
+  481:                     // Gate outputs
+  482:                     int16_t* forget_gate_output,
+  483:                     const int16_t* input_gate_output,
+  484:                     const int16_t* cell_gate_output,
+  485:                     // Mul parameters
+  486:                     const ArithmeticParams& forget_cell_mul_params,
+  487:                     const ArithmeticParams& input_mul_params,
+  488:                     const CellStateInfo& cell_state_info, int16_t* buffer);
+  489: 
+  490: void UpdateLstmCell(const LstmStepManager& step_info,
+  491:                     TfLiteEvalTensor* cell_state,
+  492:                     // Gate outputs
+  493:                     float* forget_gate_output, const float* input_gate_output,
+  494:                     const float* cell_gate_output,
+  495:                     // Mul parameters
+  496:                     const ArithmeticParams& forget_cell_mul_params,
+  497:                     const ArithmeticParams& input_mul_params,
+  498:                     const CellStateInfo& cell_state_info, float* buffer);
+  499: #endif  // #if !(defined(HIFI3) || defined(HIFI4) || defined(HIFI5))
+  500: 
+  501: // Update the hidden state of the LSTM kernel using the following formula:
+  502: // updated_hidden_state = Tanh(updated_cell_state) * output_gate_output, * means
+  503: // element wise multiplication
+  504: template <typename CellType, typename ActivationType>
+  505: void UpdateLstmHidden(const LstmStepManager& step_info,
+  506:                       TfLiteEvalTensor* cell_state,
+  507:                       TfLiteEvalTensor* hidden_state,
+  508:                       const CellType* output_gate_output,
+  509:                       const ArithmeticParams& mul_params,
+  510:                       int32_t cell_state_scale_power, CellType* buffer) {
+  511:   // Check offset validity to avoid memory overflow
+  512:   TFLITE_DCHECK_LE(
+  513:       step_info.CellStateOffset() + step_info.StateShape().FlatSize(),
+  514:       tflite::micro::GetTensorShape(cell_state).FlatSize());
+  515:   TFLITE_DCHECK_LE(
+  516:       step_info.HiddenStateOffset() + step_info.StateShape().FlatSize(),
+  517:       tflite::micro::GetTensorShape(hidden_state).FlatSize());
+  518: 
+  519:   auto cell_state_shape = step_info.StateShape();
+  656:           typename BiasType>
+  657: void LstmStep(const LstmStepManager& step_info, const OpDataLSTM& op_data,
+  658:               LSTMKernelContents& kernel_content,
+  659:               const LSTMBuffers<CellType>& buffers) {
+  660:   const TfLiteEvalTensor* input =
+  661:       kernel_content.GetInternalTensor(tflite::kLstmInputTensor);
+  662:   TfLiteEvalTensor* recurrent = kernel_content.HiddenStateTensor();
+  663: 
+  664:   int time_major = step_info.time_major();
+  665:   int num_batches = time_major == 0 ? 1 : step_info.batch_size();
+  666:   int input_dimension = step_info.input_dimension();
+  667:   int state_dimension = step_info.state_dimension();
+  668: 
+  669:   // Check offset validity to avoid memory overflow
+  670:   TFLITE_DCHECK_LE(step_info.InputOffset() + num_batches * input_dimension,
+  671:                    tflite::micro::GetTensorShape(input).FlatSize());
+  672:   TFLITE_DCHECK_LE(
+  673:       step_info.HiddenStateOffset() + num_batches * state_dimension,
+  674:       tflite::micro::GetTensorShape(recurrent).FlatSize());
+HEADER OUTPUT CAPPED AT 25 FILES
+
+Matching header files: 25
+
+=== COMPLETE REDUCE REGISTRATION SOURCE ===
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce.cc ---
+    1: /* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+    2: 
+    3: Licensed under the Apache License, Version 2.0 (the "License");
+    4: you may not use this file except in compliance with the License.
+    5: You may obtain a copy of the License at
+    6: 
+    7:     http://www.apache.org/licenses/LICENSE-2.0
+    8: 
+    9: Unless required by applicable law or agreed to in writing, software
+   10: distributed under the License is distributed on an "AS IS" BASIS,
+   11: WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   12: See the License for the specific language governing permissions and
+   13: limitations under the License.
+   14: ==============================================================================*/
+   15: 
+   16: #include "tensorflow/lite/kernels/internal/reference/reduce.h"
+   17: 
+   18: #include "tensorflow/lite/c/builtin_op_data.h"
+   19: #include "tensorflow/lite/c/common.h"
+   20: #include "tensorflow/lite/kernels/internal/quantization_util.h"
+   21: #include "tensorflow/lite/kernels/internal/reference/integer_ops/mean.h"
+   22: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   23: #include "tensorflow/lite/kernels/internal/types.h"
+   24: #include "tensorflow/lite/kernels/kernel_util.h"
+   25: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   26: #include "tensorflow/lite/micro/kernels/reduce.h"
+   27: #include "tensorflow/lite/micro/micro_utils.h"
+   28: 
+   29: namespace tflite {
+   30: 
+   31: void* InitReduce(TfLiteContext* context, const char* buffer, size_t length) {
+   32:   void* op_data =
+   33:       context->AllocatePersistentBuffer(context, sizeof(OpDataReduce));
+   34:   return new (op_data) OpDataReduce();
+   35: }
+   36: 
+   37: TfLiteStatus PrepareMax(TfLiteContext* context, TfLiteNode* node) {
+   38:   return PrepareMaxHelper(context, node,
+   39:                           static_cast<OpDataReduce*>(node->user_data));
+   40: }
+   41: 
+   42: TfLiteStatus PrepareMeanOrSum(TfLiteContext* context, TfLiteNode* node) {
+   43:   return PrepareMeanOrSumHelper(context, node,
+   44:                                 static_cast<OpDataReduce*>(node->user_data));
+   45: }
+   46: 
+   47: TfLiteStatus EvalMean(TfLiteContext* context, TfLiteNode* node) {
+   48:   return EvalMeanHelper(context, node,
+   49:                         static_cast<OpDataReduce*>(node->user_data));
+   50: }
+   51: 
+   52: TfLiteStatus EvalMax(TfLiteContext* context, TfLiteNode* node) {
+   53:   OpDataReduce* op_data = static_cast<OpDataReduce*>(node->user_data);
+   54:   return EvalMaxHelper(context, node, op_data);
+   55: }
+   56: 
+   57: TfLiteStatus EvalSum(TfLiteContext* context, TfLiteNode* node) {
+   58:   return EvalSumHelper(context, node,
+   59:                        static_cast<OpDataReduce*>(node->user_data));
+   60: }
+   61: 
+   62: TFLMRegistration Register_MEAN() {
+   63:   return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalMean);
+   64: }
+   65: 
+   66: TFLMRegistration Register_REDUCE_MAX() {
+   67:   return tflite::micro::RegisterOp(InitReduce, PrepareMax, EvalMax);
+   68: }
+   69: 
+   70: TFLMRegistration Register_SUM() {
+   71:   return tflite::micro::RegisterOp(InitReduce, PrepareMeanOrSum, EvalSum);
+   72: }
+   73: 
+   74: }  // namespace tflite
+
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/reduce_common.h ---
+FILE NOT FOUND
+
+=== LIVE CAST AND SUM REGISTRATION BLOCK ===
+
+--- /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:570-665 ---
+  570: namespace tflite {
+  571: TFLMRegistration
+  572: RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+  573: }
+  574: 
+  575: /*
+  576:  * The heat-stress BiLSTM uses the compact 29-populated-input layout.
+  577:  * Keep its existing parser and implementation unchanged.
+  578:  */
+  579: #if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+  580: namespace tflite {
+  581: TFLMRegistration RegisterHeatstrokeLayerNormQuantize();
+  582: }
+  583: #endif
+  584: 
+  585: TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+  586:     const tflite::Operator* op,
+  587:     tflite::ErrorReporter* error_reporter,
+  588:     tflite::BuiltinDataAllocator* allocator,
+  589:     void** builtin_data)
+  590: {
+  591:     return tflite::ParseOpData(
+  592:         op,
+  593:         tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+  594:         error_reporter,
+  595:         allocator,
+  596:         builtin_data);
+  597: }
+  598: 
+  599: bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+  600: {
+  601: #define HS_ADD_REQUIRED(method)                                      \
+  602:     do {                                                              \
+  603:         const TfLiteStatus status = this->m_opResolver.method();      \
+  604:         if (status != kTfLiteOk) {                                    \
+  605:             printf_err(                                               \
+  606:                 "Failed to register heat-stress operator: %s\n",     \
+  607:                 #method);                                             \
+  608:             return false;                                             \
+  609:         }                                                             \
+  610:     } while (0)
+  611: 
+  612:     /*
+  613:      * 28 stock ordinary built-in operators; GATHER is registered separately below.
+  614:      * These CPU registrations must remain available with Ethos-U enabled.
+  615:      */
+  616:     HS_ADD_REQUIRED(AddAdd);
+  617:     HS_ADD_REQUIRED(AddBroadcastArgs);
+  618:     HS_ADD_REQUIRED(AddBroadcastTo);
+  619:     HS_ADD_REQUIRED(AddCast);
+  620:     HS_ADD_REQUIRED(AddConcatenation);
+  621:     HS_ADD_REQUIRED(AddCumSum);
+  622:     HS_ADD_REQUIRED(AddDequantize);
+  623:     HS_ADD_REQUIRED(AddDiv);
+  624:     HS_ADD_REQUIRED(AddEqual);
+  625:     HS_ADD_REQUIRED(AddFloorMod);
+  626:     /*
+  627:      * Application-local GATHER replacement supporting INT32 and INT64
+  628:      * indices. It reuses the existing output tensor and allocates no
+  629:      * index-conversion or scratch buffer.
+  630:      */
+  631:     {
+  632:         const TFLMRegistration registration =
+  633:             tflite::RegisterHeatstrokeGatherKernel();
+  634: 
+  635:         if (this->m_opResolver.AddBuiltin(
+  636:                 tflite::BuiltinOperator_GATHER,
+  637:                 registration,
+  638:                 tflite::ParseGather) != kTfLiteOk) {
+  639:             printf_err(
+  640:                 "Failed to register heat-stress INT64 GATHER.\n");
+  641:             return false;
+  642:         }
+  643:     }
+  644:     HS_ADD_REQUIRED(AddGreater);
+  645:     HS_ADD_REQUIRED(AddLogicalAnd);
+  646:     HS_ADD_REQUIRED(AddLogicalNot);
+  647:     HS_ADD_REQUIRED(AddMaximum);
+  648:     HS_ADD_REQUIRED(AddMean);
+  649:     HS_ADD_REQUIRED(AddMul);
+  650:     HS_ADD_REQUIRED(AddNeg);
+  651:     HS_ADD_REQUIRED(AddQuantize);
+  652:     HS_ADD_REQUIRED(AddReshape);
+  653:     HS_ADD_REQUIRED(AddRsqrt);
+  654:     HS_ADD_REQUIRED(AddSelectV2);
+  655:     HS_ADD_REQUIRED(AddSoftmax);
+  656:     HS_ADD_REQUIRED(AddSplitV);
+  657:     HS_ADD_REQUIRED(AddSqrt);
+  658:     HS_ADD_REQUIRED(AddSquare);
+  659:     HS_ADD_REQUIRED(AddSub);
+  660:     HS_ADD_REQUIRED(AddSum);
+  661:     HS_ADD_REQUIRED(AddTopKV2);
+  662: 
+  663: #undef HS_ADD_REQUIRED
+  664: 
+  665:     /*
+
+--- /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc:665-735 ---
+  665:     /*
+  666:      * Custom SIGN registration under the built-in SIGN opcode.
+  667:      */
+  668:     {
+  669:         const TFLMRegistration registration =
+  670:             RegisterHeatstrokeSignKernel();
+  671: 
+  672:         if (this->m_opResolver.AddBuiltin(
+  673:                 tflite::BuiltinOperator_SIGN,
+  674:                 registration,
+  675:                 ParseHeatstrokeSign) != kTfLiteOk) {
+  676:             printf_err("Failed to register heat-stress SIGN.\n");
+  677:             return false;
+  678:         }
+  679:     }
+  680: 
+  681:     /*
+  682:      * Select the application-local BiLSTM implementation.
+  683:      * Experimental mode is opt-in and paired with the repaired model.
+  684:      */
+  685:     {
+  686: #if defined(HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+  687:         const TFLMRegistration registration =
+  688:             tflite::RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+  689: #else
+  690:         const TFLMRegistration registration =
+  691:             tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+  692: #endif
+  693: 
+  694:         if (this->m_opResolver.AddBuiltin(
+  695:                 tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+  696:                 registration,
+  697:                 ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+  698:             printf_err(
+  699:                 "Failed to register heat-stress bidirectional LSTM.\n");
+  700:             return false;
+  701:         }
+  702:     }
+  703: 
+  704:     /*
+  705:      * Ethos-U registration.
+  706:      *
+  707:      * AddEthosU() in this SDK can report success even when the hardware
+  708:      * registration is null. Therefore, explicitly verify FindOp().
+  709:      */
+  710:     if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+  711:         printf_err("Failed to add Ethos-U to the resolver.\n");
+  712:         return false;
+  713:     }
+  714: 
+  715:     const char* ethos_name = tflite::GetString_ETHOSU();
+  716: 
+  717:     if (ethos_name == nullptr ||
+  718:         this->m_opResolver.FindOp(ethos_name) == nullptr) {
+  719:         printf_err(
+  720:             "Ethos-U registration is missing from the resolver.\n");
+  721:         return false;
+  722:     }
+  723: 
+  724: #if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+  725:     {
+  726:         const TFLMRegistration registration =
+  727:             tflite::RegisterHeatstrokeLayerNormQuantize();
+  728: 
+  729:         if (this->m_opResolver.AddCustom(
+  730:                 "HeatstrokeLayerNormQuantize",
+  731:                 &registration) != kTfLiteOk) {
+  732:             printf_err(
+  733:                 "Failed to register fused heat-stress LayerNorm operator.\n");
+  734:             return false;
+  735:         }
+
+=== APPLICATION SOURCE DECLARATIONS ===
+
+--- /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp ---
+#ifndef POLYU_MODEL1_HPP
+#define POLYU_MODEL1_HPP
+
+#include "mlek/fwk/tflm/TflmModel.hpp"
+
+namespace arm::app::asr {
+extern const int g_FrameLength;
+extern const int g_FrameStride;
+extern const float g_ScoreThreshold;
+extern const int g_ctxLen;
+} // namespace arm::app::asr
+
+namespace arm::app::fwk::tflm {
+
+class PolyUModel1 : public TflmModel {
+
+public:
+    /* Indices for the expected model - based on input and output tensor shapes */
+    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    static constexpr uint32_t ms_inputColsIdx  = 2;
+    static constexpr uint32_t ms_outputRowsIdx = 2;
+    static constexpr uint32_t ms_outputColsIdx = 3;
+
+    /* Model specific constants. */
+    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    static constexpr uint32_t ms_numMfccFeatures = 13;
+
+protected:
+    /** @brief   Gets the reference to op resolver interface class. */
+    const tflite::MicroOpResolver& GetOpResolver() override;
+
+    /** @brief   Adds operations to the op resolver instance. */
+    bool EnlistOperations() override;
+
+private:
+    /* Maximum number of individual operations that can be enlisted. */
+    #if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+    static constexpr int ms_maxOpCnt = 33;
+#else
+    static constexpr int ms_maxOpCnt = 32;
+#endif
+
+    /* A mutable op resolver instance. */
+    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+};
+
+} /* namespace arm::app::fwk::tflm */
+
+#endif /* POLYU_MODEL1_HPP */
+
+
+=== EXACT API RESOLUTION COMPLETE ===
