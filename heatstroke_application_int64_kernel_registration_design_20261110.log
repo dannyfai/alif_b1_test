@@ -1,0 +1,505 @@
+=== LIVE APPLICATION RESOLVER ===
+File: /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc
+    1: /*
+    2:  * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+    3:  * SPDX-License-Identifier: Apache-2.0
+    4:  *
+    5:  * Application-local heat-stress TFLM operator registrations.
+    6:  */
+    7: 
+    8: #include "PolyUModel1.hpp"
+    9: 
+   10: #include <cstdint>
+   11: 
+   12: #include <cstddef>
+   13: #include <cstring>
+   14: #include <limits>
+   15: 
+   16: #include "tensorflow/lite/c/builtin_op_data.h"
+   17: #include "tensorflow/lite/c/common.h"
+   18: #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+   19: #include "tensorflow/lite/kernels/kernel_util.h"
+   20: #include "tensorflow/lite/micro/micro_utils.h"
+   21: 
+   22: #include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+   23: #include "tensorflow/lite/micro/kernels/kernel_util.h"
+   24: #include "tensorflow/lite/micro/micro_log.h"
+   25: 
+   26: #include "mlek/log/log_macros.h"
+   27: #include "heatstroke_bidirectional_lstm.h"
+   28: 
+   29: const tflite::MicroOpResolver&
+   30: arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+   31: {
+   32:     return this->m_opResolver;
+   33: }
+   34: 
+   35: namespace
+   36: {
+   37: 
+   38: /*
+   39:  * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+   40:  * required by this implementation. Validate its options type and leave
+   41:  * builtin_data null.
+   42:  */
+   43: TfLiteStatus ParseHeatstrokeSign(
+   44:     const tflite::Operator* op,
+   45:     tflite::ErrorReporter*,
+   46:     tflite::BuiltinDataAllocator*,
+   47:     void** builtin_data)
+   48: {
+   49:     if (builtin_data != nullptr) {
+   50:         *builtin_data = nullptr;
+   51:     }
+   52: 
+   53:     if (op == nullptr ||
+   54:         op->builtin_options_type() !=
+   55:             tflite::BuiltinOptions_SignOptions) {
+   56:         return kTfLiteError;
+   57:     }
+   58: 
+   59:     return kTfLiteOk;
+   60: }
+   61: 
+   62: /*
+   63:  * Application-local INT32 SIGN implementation.
+   64:  *
+   65:  * y = -1 when x < 0
+   66:  * y =  0 when x = 0
+   67:  * y =  1 when x > 0
+   68:  *
+   69:  * No temporary buffer or scratch allocation is required.
+   70:  */
+   71: TfLiteStatus HeatstrokeSignEval(
+   72:     TfLiteContext* context,
+   73:     TfLiteNode* node)
+   74: {
+   75:     if (context == nullptr || node == nullptr) {
+   76:         return kTfLiteError;
+   77:     }
+   78: 
+   79:     const TfLiteEvalTensor* input =
+   80:         tflite::micro::GetEvalInput(context, node, 0);
+   81: 
+   82:     TfLiteEvalTensor* output =
+   83:         tflite::micro::GetEvalOutput(context, node, 0);
+   84: 
+   85:     if (input == nullptr || output == nullptr) {
+   86:         return kTfLiteError;
+   87:     }
+   88: 
+   89:     if (input->type != kTfLiteInt32 ||
+   90:         output->type != kTfLiteInt32) {
+   91:         MicroPrintf(
+   92:             "Heatstroke SIGN requires INT32 input/output. "
+   93:             "Input=%d Output=%d",
+   94:             input->type,
+   95:             output->type);
+   96:         return kTfLiteError;
+   97:     }
+   98: 
+   99:     const auto input_shape =
+  100:         tflite::micro::GetTensorShape(input);
+  101: 
+  102:     const auto output_shape =
+  103:         tflite::micro::GetTensorShape(output);
+  104: 
+  105:     const int input_count = input_shape.FlatSize();
+  106:     const int output_count = output_shape.FlatSize();
+  107: 
+  108:     if (input_count < 0 || input_count != output_count) {
+  109:         MicroPrintf(
+  110:             "Heatstroke SIGN tensor element-count mismatch.");
+  111:         return kTfLiteError;
+  112:     }
+  113: 
+  114:     const int32_t* input_data =
+  115:         tflite::micro::GetTensorData<int32_t>(input);
+  116: 
+  117:     int32_t* output_data =
+  118:         tflite::micro::GetTensorData<int32_t>(output);
+  119: 
+  120:     if (input_count > 0 &&
+  121:         (input_data == nullptr || output_data == nullptr)) {
+  122:         MicroPrintf(
+  123:             "Heatstroke SIGN received a null tensor data pointer.");
+  124:         return kTfLiteError;
+  125:     }
+  126: 
+  127:     for (int i = 0; i < input_count; ++i) {
+  128:         const int32_t value = input_data[i];
+  129: 
+  130:         output_data[i] =
+  131:             (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+  132:     }
+  133: 
+  134:     return kTfLiteOk;
+  135: }
+  136: 
+  137: TFLMRegistration RegisterHeatstrokeSignKernel()
+  138: {
+  139:     return tflite::micro::RegisterOp(
+  140:         nullptr,
+  141:         nullptr,
+  142:         HeatstrokeSignEval);
+  143: }
+  144: 
+  145: } // namespace
+  146: 
+  147: 
+  148: namespace tflite {
+  149: namespace {
+  150: 
+  151: constexpr int kHsGatherInput = 0;
+  152: constexpr int kHsGatherIndices = 1;
+  153: constexpr int kHsGatherOutput = 0;
+  154: 
+  155: bool HeatstrokeGatherCheckedMultiply(
+  156:     size_t a, size_t b, size_t* result)
+  157: {
+  158:     if (result == nullptr ||
+  159:         (b != 0U &&
+  160:          a > (std::numeric_limits<size_t>::max)() / b)) {
+  161:         return false;
+  162:     }
+  163: 
+  164:     *result = a * b;
+  165:     return true;
+  166: }
+  167: 
+  168: template <typename InputT, typename IndexT>
+  169: TfLiteStatus HeatstrokeGatherCopy(
+  170:     const TfLiteGatherParams* params,
+  171:     const TfLiteEvalTensor* input,
+  172:     const TfLiteEvalTensor* indices,
+  173:     TfLiteEvalTensor* output)
+  174: {
+  175:     if (params == nullptr || input == nullptr ||
+  176:         indices == nullptr || output == nullptr ||
+  177:         input->dims == nullptr || indices->dims == nullptr ||
+  178:         output->dims == nullptr) {
+  179:         MicroPrintf("Heatstroke GATHER received invalid tensor metadata.");
+  180:         return kTfLiteError;
+  181:     }
+  182: 
+  183:     const TfLiteIntArray* input_dims = input->dims;
+  184:     const TfLiteIntArray* index_dims = indices->dims;
+  185: 
+  186:     const int input_rank = input_dims->size;
+  187:     const int index_rank = index_dims->size;
+  188: 
+  189:     if (input_rank <= 0 || index_rank < 0) {
+  190:         MicroPrintf("Heatstroke GATHER received an invalid tensor rank.");
+  191:         return kTfLiteError;
+  192:     }
+  193: 
+  194:     int axis = params->axis;
+  195:     if (axis < 0) {
+  196:         axis += input_rank;
+  197:     }
+  198: 
+  199:     if (axis < 0 || axis >= input_rank) {
+  200:         MicroPrintf("Heatstroke GATHER axis is out of range.");
+  201:         return kTfLiteError;
+  202:     }
+  203: 
+  204:     int batch_dims = params->batch_dims;
+  205:     if (batch_dims < 0) {
+  206:         batch_dims += index_rank;
+  207:     }
+  208: 
+  209:     if (batch_dims < 0 ||
+  210:         batch_dims > axis ||
+  211:         batch_dims >= input_rank ||
+  212:         batch_dims > index_rank) {
+  213:         MicroPrintf("Heatstroke GATHER batch_dims is invalid.");
+  214:         return kTfLiteError;
+  215:     }
+  216: 
+  217:     for (int i = 0; i < input_rank; ++i) {
+  218:         if (input_dims->data[i] < 0) {
+  219:             MicroPrintf("Heatstroke GATHER has a negative input dimension.");
+  220:             return kTfLiteError;
+  221:         }
+  222:     }
+  223: 
+  224:     for (int i = 0; i < index_rank; ++i) {
+  225:         if (index_dims->data[i] < 0) {
+  226:             MicroPrintf("Heatstroke GATHER has a negative index dimension.");
+  227:             return kTfLiteError;
+  228:         }
+  229:     }
+  230: 
+  231:     for (int i = 0; i < batch_dims; ++i) {
+  232:         if (input_dims->data[i] != index_dims->data[i]) {
+  233:             MicroPrintf("Heatstroke GATHER batch dimensions do not match.");
+  234:             return kTfLiteError;
+  235:         }
+  236:     }
+  237: 
+  238:     const int axis_size = input_dims->data[axis];
+  239: 
+  240:     size_t batch_size = 1U;
+  241:     size_t outer_size = 1U;
+  242:     size_t inner_size = 1U;
+  243:     size_t coord_size = 1U;
+  244: 
+  245:     for (int i = 0; i < batch_dims; ++i) {
+  246:         if (!HeatstrokeGatherCheckedMultiply(
+  247:                 batch_size,
+  248:                 static_cast<size_t>(input_dims->data[i]),
+  249:                 &batch_size)) {
+  250:             MicroPrintf("Heatstroke GATHER batch size overflow.");
+  251:             return kTfLiteError;
+  252:         }
+  253:     }
+  254: 
+  255:     for (int i = batch_dims; i < axis; ++i) {
+  256:         if (!HeatstrokeGatherCheckedMultiply(
+  257:                 outer_size,
+  258:                 static_cast<size_t>(input_dims->data[i]),
+  259:                 &outer_size)) {
+  260:             MicroPrintf("Heatstroke GATHER outer size overflow.");
+  261:             return kTfLiteError;
+  262:         }
+  263:     }
+  264: 
+  265:     for (int i = axis + 1; i < input_rank; ++i) {
+  266:         if (!HeatstrokeGatherCheckedMultiply(
+  267:                 inner_size,
+  268:                 static_cast<size_t>(input_dims->data[i]),
+  269:                 &inner_size)) {
+  270:             MicroPrintf("Heatstroke GATHER inner size overflow.");
+  271:             return kTfLiteError;
+  272:         }
+  273:     }
+  274: 
+  275:     for (int i = batch_dims; i < index_rank; ++i) {
+  276:         if (!HeatstrokeGatherCheckedMultiply(
+  277:                 coord_size,
+  278:                 static_cast<size_t>(index_dims->data[i]),
+  279:                 &coord_size)) {
+  280:             MicroPrintf("Heatstroke GATHER coordinate size overflow.");
+  281:             return kTfLiteError;
+  282:         }
+  283:     }
+  284: 
+  285:     size_t input_elements = batch_size;
+  286:     size_t output_elements = batch_size;
+  287:     size_t index_count = 0U;
+  288:     size_t copy_bytes = 0U;
+  289: 
+  290:     if (!HeatstrokeGatherCheckedMultiply(
+  291:             input_elements, outer_size, &input_elements) ||
+  292:         !HeatstrokeGatherCheckedMultiply(
+  293:             input_elements, static_cast<size_t>(axis_size),
+  294:             &input_elements) ||
+  295:         !HeatstrokeGatherCheckedMultiply(
+  296:             input_elements, inner_size, &input_elements) ||
+  297:         !HeatstrokeGatherCheckedMultiply(
+  298:             output_elements, outer_size, &output_elements) ||
+  299:         !HeatstrokeGatherCheckedMultiply(
+  300:             output_elements, coord_size, &output_elements) ||
+  301:         !HeatstrokeGatherCheckedMultiply(
+  302:             output_elements, inner_size, &output_elements) ||
+  303:         !HeatstrokeGatherCheckedMultiply(
+  304:             batch_size, coord_size, &index_count) ||
+  305:         !HeatstrokeGatherCheckedMultiply(
+  306:             inner_size, sizeof(InputT), &copy_bytes)) {
+  307:         MicroPrintf("Heatstroke GATHER tensor size overflow.");
+  308:         return kTfLiteError;
+  309:     }
+  310: 
+  311:     const InputT* input_data =
+  312:         tflite::micro::GetTensorData<InputT>(input);
+  313: 
+  314:     const IndexT* index_data =
+  315:         tflite::micro::GetTensorData<IndexT>(indices);
+  316: 
+  317:     InputT* output_data =
+  318:         tflite::micro::GetTensorData<InputT>(output);
+  319: 
+  320:     if ((input_elements != 0U && input_data == nullptr) ||
+  321:         (index_count != 0U && index_data == nullptr) ||
+  322:         (output_elements != 0U && output_data == nullptr)) {
+  323:         MicroPrintf("Heatstroke GATHER received a null tensor data pointer.");
+  324:         return kTfLiteError;
+  325:     }
+  326: 
+  327:     for (size_t batch = 0; batch < batch_size; ++batch) {
+  328:         for (size_t outer = 0; outer < outer_size; ++outer) {
+  329:             for (size_t coord = 0; coord < coord_size; ++coord) {
+  330:                 const int64_t selected_index =
+  331:                     static_cast<int64_t>(
+  332:                         index_data[batch * coord_size + coord]);
+  333: 
+  334:                 if (selected_index < 0 ||
+  335:                     selected_index >= static_cast<int64_t>(axis_size)) {
+  336:                     MicroPrintf(
+  337:                         "Heatstroke GATHER index is out of bounds.");
+  338:                     return kTfLiteError;
+  339:                 }
+  340: 
+  341:                 if (copy_bytes == 0U) {
+  342:                     continue;
+  343:                 }
+  344: 
+  345:                 const size_t destination_offset =
+  346:                     (((batch * outer_size) + outer) * coord_size + coord) *
+  347:                     inner_size;
+  348: 
+  349:                 const size_t source_offset =
+  350:                     (((batch * outer_size) + outer) *
+  351:                          static_cast<size_t>(axis_size) +
+  352:                      static_cast<size_t>(selected_index)) *
+  353:                     inner_size;
+  354: 
+  355:                 std::memcpy(
+  356:                     output_data + destination_offset,
+  357:                     input_data + source_offset,
+  358:                     copy_bytes);
+  359:             }
+  360:         }
+
+=== MLEK RESOLVER IMPLEMENTATIONS ===
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroNetKwsModel.hpp:52: tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp:65: tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/AdModel.hpp:50: tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/VisualWakeWordModel.hpp:45: tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.hpp:31: * @return MicroMutableOpResolver containing all TFLite Micro Ops registered.
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.hpp:33: tflite::MicroMutableOpResolver<kNumberOperators> CreateAllOpsResolver();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/YoloFastestModel.hpp:54: tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:23: /* Create our own AllOpsResolver by adding all Ops to MicroMutableOpResolver. */
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:24: tflite::MicroMutableOpResolver<kNumberOperators> CreateAllOpsResolver()
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:26: tflite::MicroMutableOpResolver<kNumberOperators> mutableAllOpResolver;
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:40: mutableAllOpResolver.AddCast();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:61: mutableAllOpResolver.AddFloorMod();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:63: mutableAllOpResolver.AddGather();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:64: mutableAllOpResolver.AddGatherNd();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:85: mutableAllOpResolver.AddMul();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:110: mutableAllOpResolver.AddSplitV();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:116: mutableAllOpResolver.AddSub();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MicroMutableAllOpsResolver.cc:117: mutableAllOpResolver.AddSum();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TestModel.hpp:35: tflite::MicroMutableOpResolver<kNumberOperators> m_opResolver;
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/MobileNetModel.hpp:44: tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:31: this->m_opResolver.AddSplitV();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:34: this->m_opResolver.AddMul();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.cc:35: this->m_opResolver.AddSub();
+
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/Wav2LetterModel.hpp:56: tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+
+/home/user/sdk-alif/modules/lib/openthread/src/posix/platform/multicast_routing.hpp:120: otError AddMulticastForwardingCache(const Ip6::Address &aSrcAddr, const Ip6::Address &aGroupAddr, MifIndex aIif);
+
+/home/user/sdk-alif/modules/lib/openthread/src/posix/platform/multicast_routing.cpp:284: error = AddMulticastForwardingCache(src, dst, static_cast<MifIndex>(mrt6msg->im6_mif));
+
+/home/user/sdk-alif/modules/lib/openthread/src/posix/platform/multicast_routing.cpp:290: otError MulticastRoutingManager::AddMulticastForwardingCache(const Ip6::Address &aSrcAddr,
+
+/home/user/sdk-alif/modules/lib/chre/apps/tflm_demo/src/model.cc:31: void RegisterSelectedOps(::tflite::MicroMutableOpResolver *resolver) {
+
+/home/user/sdk-alif/modules/lib/chre/apps/tflm_demo/src/model.cc:46: tflite::MicroMutableOpResolver resolver;
+
+/home/user/sdk-alif/modules/lib/matter/examples/lighting-app/telink/src/tflm/micro_speech/tflite_micro_micro_speech.cpp:65: using MicroSpeechOpResolver       = tflite::MicroMutableOpResolver<4>;
+
+/home/user/sdk-alif/modules/lib/matter/examples/lighting-app/telink/src/tflm/micro_speech/tflite_micro_micro_speech.cpp:66: using AudioPreprocessorOpResolver = tflite::MicroMutableOpResolver<18>;
+
+/home/user/sdk-alif/modules/lib/matter/examples/lighting-app/telink/src/tflm/micro_speech/tflite_micro_micro_speech.cpp:80: TF_LITE_ENSURE_STATUS(op_resolver.AddCast());
+
+/home/user/sdk-alif/modules/lib/matter/examples/lighting-app/telink/src/tflm/micro_speech/tflite_micro_micro_speech.cpp:83: TF_LITE_ENSURE_STATUS(op_resolver.AddMul());
+
+/home/user/sdk-alif/modules/lib/matter/src/app/clusters/operational-credentials-server/operational-credentials-server.cpp:89: ReturnErrorOnFailure(entry.AddSubject(nullptr, subject));
+
+/home/user/sdk-alif/modules/lib/matter/src/app/app-platform/ContentAppPlatform.cpp:698: ReturnErrorOnFailure(entry.AddSubject(nullptr, subjectNodeId));
+
+/home/user/sdk-alif/modules/lib/matter/src/app/server/AclStorage.cpp:259: ReturnErrorOnFailure(mEntry.AddSubject(nullptr, subject));
+
+/home/user/sdk-alif/modules/lib/matter/src/access/AccessControl.h:101: virtual CHIP_ERROR AddSubject(size_t * index, NodeId subject) { return CHIP_ERROR_NOT_IMPLEMENTED; }
+
+/home/user/sdk-alif/modules/lib/matter/src/access/AccessControl.h:171: CHIP_ERROR AddSubject(size_t * index, NodeId subject) { return mDelegate->AddSubject(index, subject); }
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessRestrictionProvider.cpp:157: ReturnErrorOnFailure(entry.AddSubject(nullptr, entryData.subject));
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:489: CHIP_ERROR AddSubject(size_t * index, NodeId subject) override
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:594: void AddSubject(size_t * index, NodeId subject)
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:700: ReturnErrorOnFailure(entry.AddSubject(nullptr, entryData.subjects[i]));
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:1116: EXPECT_EQ(entry.AddSubject(nullptr, kOperationalNodeId0), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:1136: EXPECT_EQ(entry.AddSubject(nullptr, kOperationalNodeId0), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:1299: EXPECT_EQ(entry.AddSubject(nullptr, kOperationalNodeId0), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:1335: EXPECT_EQ(entry.AddSubject(nullptr, kOperationalNodeId0), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:1373: EXPECT_EQ(entry.AddSubject(nullptr, kOperationalNodeId0), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:1964: EXPECT_EQ(entry.AddSubject(nullptr, subject), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:2026: EXPECT_EQ(entry.AddSubject(nullptr, kOperationalNodeId1), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:2036: EXPECT_EQ(entry.AddSubject(nullptr, kGroup2), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:2104: EXPECT_EQ(entry.AddSubject(nullptr, 0x11111111AAAAAAAA), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:2105: EXPECT_EQ(entry.AddSubject(nullptr, 0x22222222BBBBBBBB), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:2106: EXPECT_EQ(entry.AddSubject(nullptr, 0x33333333CCCCCCCC), CHIP_NO_ERROR);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/tests/TestAccessControl.cpp:2182: updateData.AddSubject(nullptr, subjects[i % MATTER_ARRAY_SIZE(authModes)][i % MATTER_ARRAY_SIZE(subjects[0])]);
+
+/home/user/sdk-alif/modules/lib/matter/src/access/examples/ExampleAccessControlDelegate.cpp:601: CHIP_ERROR AddSubject(size_t * index, NodeId subject) override
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/CHIPCryptoPALOpenSSL.cpp:1584: CHIP_ERROR Spake2p_P256_SHA256_HKDF_HMAC::PointAddMul(void * R, const void * P1, const void * fe1, const void * P2,
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/CHIPCryptoPALPSA.cpp:1089: CHIP_ERROR Spake2p_P256_SHA256_HKDF_HMAC::PointAddMul(void * R, const void * P1, const void * fe1, const void * P2,
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/CHIPCryptoPAL.h:1365: virtual CHIP_ERROR PointAddMul(void * R, const void * P1, const void * fe1, const void * P2, const void * fe2) = 0;
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/CHIPCryptoPAL.h:1565: CHIP_ERROR PointAddMul(void * R, const void * P1, const void * fe1, const void * P2, const void * fe2) override;
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/CHIPCryptoPAL.cpp:377: SuccessOrExit(error = PointAddMul(XY, G, xy, MN, w0));
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/CHIPCryptoPAL.cpp:427: SuccessOrExit(error = PointAddMul(Z, XY, xy, MN, tempbn));
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/CHIPCryptoPAL.cpp:433: SuccessOrExit(error = PointAddMul(V, XY, w1, MN, tempbn));
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/CHIPCryptoPALmbedTLS.cpp:1063: CHIP_ERROR Spake2p_P256_SHA256_HKDF_HMAC::PointAddMul(void * R, const void * P1, const void * fe1, const void * P2,
+
+/home/user/sdk-alif/modules/lib/matter/src/crypto/tests/TestChipCryptoPAL.cpp:1793: err = spake2p.PointAddMul(spake2p.L, spake2p.X, spake2p.w0, spake2p.Y, spake2p.w1);
+
+/home/user/sdk-alif/modules/lib/matter/src/lib/dnssd/platform/tests/TestPlatform.cpp:48: .AddSubtype("_IBEEFBEEFF00DF00D");
+
+/home/user/sdk-alif/modules/lib/matter/src/lib/dnssd/platform/tests/TestPlatform.cpp:62: .AddSubtype("_I5555666677778888")
+
+/home/user/sdk-alif/modules/lib/matter/src/lib/dnssd/platform/tests/TestPlatform.cpp:82: .AddSubtype("_S15")
+
+/home/user/sdk-alif/modules/lib/matter/src/lib/dnssd/platform/tests/TestPlatform.cpp:83: .AddSubtype("_L4094");
+
+/home/user/sdk-alif/modules/lib/matter/src/lib/dnssd/platform/tests/TestPlatform.cpp:118: .AddSubtype("_S2")
+
+/home/user/sdk-alif/modules/lib/matter/src/lib/dnssd/platform/tests/TestPlatform.cpp:119: .AddSubtype("_L22")
+OUTPUT CAPPED AT 70 MATCHES
