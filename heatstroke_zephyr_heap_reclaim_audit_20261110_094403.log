@@ -1,0 +1,1518 @@
+============================================================
+ZEHPYR HEAP RECLAIM AND DTCM AUDIT
+============================================================
+
+1. Newlib heap calculation implementation
+     1	/*
+     2	 * Copyright (c) 2015, Intel Corporation.
+     3	 *
+     4	 * SPDX-License-Identifier: Apache-2.0
+     5	 */
+     6	
+     7	#include <zephyr/arch/cpu.h>
+     8	#include <errno.h>
+     9	#include <stdio.h>
+    10	#include <malloc.h>
+    11	#include <zephyr/sys/__assert.h>
+    12	#include <zephyr/posix/sys/stat.h>
+    13	#include <zephyr/linker/linker-defs.h>
+    14	#include <zephyr/sys/util.h>
+    15	#include <zephyr/sys/errno_private.h>
+    16	#include <zephyr/sys/heap_listener.h>
+    17	#include <zephyr/sys/libc-hooks.h>
+    18	#include <zephyr/internal/syscall_handler.h>
+    19	#include <zephyr/app_memory/app_memdomain.h>
+    20	#include <zephyr/init.h>
+    21	#include <zephyr/sys/sem.h>
+    22	#include <zephyr/sys/mutex.h>
+    23	#include <zephyr/kernel/mm.h>
+    24	#include <sys/time.h>
+    25	
+    26	int _fstat(int fd, struct stat *st);
+    27	int _read(int fd, void *buf, int nbytes);
+    28	int _write(int fd, const void *buf, int nbytes);
+    29	int _open(const char *name, int flags, ...);
+    30	int _close(int file);
+    31	int _lseek(int file, int ptr, int dir);
+    32	int _kill(int pid, int sig);
+    33	int _getpid(void);
+    34	
+    35	#ifndef CONFIG_NEWLIB_LIBC_CUSTOM_SBRK
+    36	
+    37	#define LIBC_BSS	K_APP_BMEM(z_libc_partition)
+    38	#define LIBC_DATA	K_APP_DMEM(z_libc_partition)
+    39	
+    40	/*
+    41	 * End result of this thorny set of ifdefs is to define:
+    42	 *
+    43	 * - HEAP_BASE base address of the heap arena
+    44	 * - MAX_HEAP_SIZE size of the heap arena
+    45	 */
+    46	
+    47	#ifdef CONFIG_MMU
+    48		#ifdef CONFIG_USERSPACE
+    49			struct k_mem_partition z_malloc_partition;
+    50		#endif
+    51	
+    52		LIBC_BSS static unsigned char *heap_base;
+    53		LIBC_BSS static size_t max_heap_size;
+    54	
+    55		#define HEAP_BASE		heap_base
+    56		#define MAX_HEAP_SIZE		max_heap_size
+    57		#define USE_MALLOC_PREPARE	1
+    58	#elif CONFIG_NEWLIB_LIBC_ALIGNED_HEAP_SIZE
+    59		/* Arena size expressed in Kconfig, due to power-of-two size/align
+    60		 * requirements of certain MPUs.
+    61		 *
+    62		 * We use an automatic memory partition instead of setting this up
+    63		 * in malloc_prepare().
+    64		 */
+    65		K_APPMEM_PARTITION_DEFINE(z_malloc_partition);
+    66		#define MALLOC_BSS	K_APP_BMEM(z_malloc_partition)
+    67	
+    68		/* Compiler will throw an error if the provided value isn't a
+    69		 * power of two
+    70		 */
+    71		MALLOC_BSS static unsigned char
+    72			__aligned(CONFIG_NEWLIB_LIBC_ALIGNED_HEAP_SIZE)
+    73			heap_base[CONFIG_NEWLIB_LIBC_ALIGNED_HEAP_SIZE];
+    74		#define MAX_HEAP_SIZE CONFIG_NEWLIB_LIBC_ALIGNED_HEAP_SIZE
+    75		#define HEAP_BASE heap_base
+    76	#else /* Not MMU or CONFIG_NEWLIB_LIBC_ALIGNED_HEAP_SIZE */
+    77		#define USED_RAM_END_ADDR   POINTER_TO_UINT(&_end)
+    78	
+    79		#ifdef Z_MALLOC_PARTITION_EXISTS
+    80			/* Start of malloc arena needs to be aligned per MPU
+    81			 * requirements
+    82			 */
+    83			struct k_mem_partition z_malloc_partition;
+    84	
+    85			#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+    86				#define HEAP_BASE	ROUND_UP(USED_RAM_END_ADDR, \
+    87					 CONFIG_ARM_MPU_REGION_MIN_ALIGN_AND_SIZE)
+    88			#elif defined(CONFIG_ARC)
+    89				#define HEAP_BASE	ROUND_UP(USED_RAM_END_ADDR, \
+    90								  Z_ARC_MPU_ALIGN)
+    91			#else
+    92				#error "Unsupported platform"
+    93			#endif /* CONFIG_<arch> */
+    94			#define USE_MALLOC_PREPARE	1
+    95		#else
+    96			/* End of kernel image */
+    97			#define HEAP_BASE		USED_RAM_END_ADDR
+    98		#endif
+    99	
+   100		/* End of the malloc arena is the end of physical memory */
+   101		#if defined(CONFIG_XTENSA)
+   102			/* TODO: Why is xtensa a special case? */
+   103			extern char _heap_sentry[];
+   104			#define MAX_HEAP_SIZE	(POINTER_TO_UINT(&_heap_sentry) - \
+   105						 HEAP_BASE)
+   106		#else
+   107			#define MAX_HEAP_SIZE	(KB(CONFIG_SRAM_SIZE) - (HEAP_BASE - \
+   108						 CONFIG_SRAM_BASE_ADDRESS))
+   109		#endif /* CONFIG_XTENSA */
+   110	#endif
+   111	
+   112	static int malloc_prepare(void)
+   113	{
+   114	
+   115	#ifdef USE_MALLOC_PREPARE
+   116	#ifdef CONFIG_MMU
+   117		max_heap_size = MIN(CONFIG_NEWLIB_LIBC_MAX_MAPPED_REGION_SIZE,
+   118				    k_mem_free_get());
+   119	
+   120		if (max_heap_size != 0) {
+   121			heap_base = k_mem_map(max_heap_size, K_MEM_PERM_RW);
+   122			__ASSERT(heap_base != NULL,
+   123				 "failed to allocate heap of size %zu", max_heap_size);
+   124	
+   125		}
+   126	#endif /* CONFIG_MMU */
+   127	
+   128	#ifdef Z_MALLOC_PARTITION_EXISTS
+   129		z_malloc_partition.start = (uintptr_t)HEAP_BASE;
+   130		z_malloc_partition.size = (size_t)MAX_HEAP_SIZE;
+   131		z_malloc_partition.attr = K_MEM_PARTITION_P_RW_U_RW;
+   132	#endif /* Z_MALLOC_PARTITION_EXISTS */
+   133	#endif /* USE_MALLOC_PREPARE */
+   134	
+   135		/*
+   136		 * Validate that the memory space available for the newlib heap is
+   137		 * greater than the minimum required size.
+   138		 */
+   139		__ASSERT(MAX_HEAP_SIZE >= CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE,
+   140			 "memory space available for newlib heap is less than the "
+   141			 "minimum required size specified by "
+   142			 "CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE");
+   143	
+   144		return 0;
+   145	}
+   146	
+   147	SYS_INIT(malloc_prepare, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_LIBC);
+   148	
+   149	/* Current offset from HEAP_BASE of unused memory */
+   150	LIBC_BSS static size_t heap_sz;
+   151	#endif /* CONFIG_NEWLIB_LIBC_CUSTOM_SBRK */
+   152	
+   153	static int _stdout_hook_default(int c)
+   154	{
+   155		(void)(c);  /* Prevent warning about unused argument */
+
+2. Heap-related Kconfig definitions
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-1-# Copyright (c) 2020 EPAM Systems
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-2-# SPDX-License-Identifier: Apache-2.0
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-3-
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-4-if BOARD_XENVM
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-5-
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-6-config BUILD_OUTPUT_BIN
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-7-	default y
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-8-
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig:9:config HEAP_MEM_POOL_SIZE
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-10-	default 16384
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-11-
+/home/user/sdk-alif/zephyr/boards/xen/xenvm/Kconfig.defconfig-12-endif # BOARD_XENVM
+--
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-14-config NEWLIB_LIBC_MAX_MAPPED_REGION_SIZE
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-15-	int "Maximum memory mapped for newlib heap"
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-16-	depends on MMU
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-17-	default 1048576
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-18-	help
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-19-	  On MMU-based systems, indicates the maximum amount of memory which
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-20-	  will be used for the newlib malloc() heap. The actual amount of
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-21-	  memory used will be the minimum of this value and the amount of
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-22-	  free physical memory at kernel boot.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-23-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig:24:config NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-25-	int "Newlib minimum required heap size"
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-26-	default 2048 if NEWLIB_LIBC_NANO
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-27-	default 8192 if !NEWLIB_LIBC_NANO
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-28-	help
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-29-	  Specifies the amount of memory space that must be available for the
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-30-	  newlib heap. An assertion failure message will be displayed during
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-31-	  initialization if the memory space available for the newlib heap is
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-32-	  smaller than this value.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-33-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-34-config NEWLIB_LIBC_ALIGNED_HEAP_SIZE
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-35-	int "Newlib aligned heap size"
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-36-	depends on MPU_REQUIRES_POWER_OF_TWO_ALIGNMENT
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-37-	depends on USERSPACE
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-38-	default 0
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-39-	help
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-40-	  If user mode is enabled, and MPU hardware has requirements that
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-41-	  regions be sized to a power of two and aligned to their size,
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-42-	  and user mode threads need to access this heap, then this is necessary
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-43-	  to properly define an MPU region for the heap.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-44-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-45-	  If this is left at 0, then remaining system RAM will be used for this
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-46-	  area and it may not be possible to program it as an MPU region.
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-47-
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-48-config NEWLIB_LIBC_FLOAT_PRINTF
+/home/user/sdk-alif/zephyr/lib/libc/newlib/Kconfig-49-	bool "Build with newlib float printf"
+--
+/home/user/sdk-alif/zephyr/kernel/Kconfig-729-config KERNEL_MEM_POOL
+/home/user/sdk-alif/zephyr/kernel/Kconfig-730-	bool "Use Kernel Memory Pool"
+/home/user/sdk-alif/zephyr/kernel/Kconfig-731-	default y
+/home/user/sdk-alif/zephyr/kernel/Kconfig-732-	help
+/home/user/sdk-alif/zephyr/kernel/Kconfig-733-	  Enable the use of kernel memory pool.
+/home/user/sdk-alif/zephyr/kernel/Kconfig-734-
+/home/user/sdk-alif/zephyr/kernel/Kconfig-735-	  Say y if unsure.
+/home/user/sdk-alif/zephyr/kernel/Kconfig-736-
+/home/user/sdk-alif/zephyr/kernel/Kconfig-737-if KERNEL_MEM_POOL
+/home/user/sdk-alif/zephyr/kernel/Kconfig-738-
+/home/user/sdk-alif/zephyr/kernel/Kconfig:739:config HEAP_MEM_POOL_SIZE
+/home/user/sdk-alif/zephyr/kernel/Kconfig-740-	int "Heap memory pool size (in bytes)"
+/home/user/sdk-alif/zephyr/kernel/Kconfig-741-	default 0
+/home/user/sdk-alif/zephyr/kernel/Kconfig-742-	help
+/home/user/sdk-alif/zephyr/kernel/Kconfig-743-	  This option specifies the size of the heap memory pool used when
+/home/user/sdk-alif/zephyr/kernel/Kconfig-744-	  dynamically allocating memory using k_malloc(). The maximum size of
+/home/user/sdk-alif/zephyr/kernel/Kconfig-745-	  the memory pool is only limited to available memory. If subsystems
+/home/user/sdk-alif/zephyr/kernel/Kconfig-746-	  specify HEAP_MEM_POOL_ADD_SIZE_* options, these will be added together
+/home/user/sdk-alif/zephyr/kernel/Kconfig-747-	  and the sum will be compared to the HEAP_MEM_POOL_SIZE value.
+/home/user/sdk-alif/zephyr/kernel/Kconfig-748-	  If the sum is greater than the HEAP_MEM_POOL_SIZE option (even if this
+/home/user/sdk-alif/zephyr/kernel/Kconfig-749-	  has the default 0 value), then the actual heap size will be rounded up
+/home/user/sdk-alif/zephyr/kernel/Kconfig-750-	  to the sum of the individual requirements (unless the
+/home/user/sdk-alif/zephyr/kernel/Kconfig-751-	  HEAP_MEM_POOL_IGNORE_MIN option is enabled). If the final value, after
+/home/user/sdk-alif/zephyr/kernel/Kconfig-752-	  considering both this option as well as sum of the custom
+/home/user/sdk-alif/zephyr/kernel/Kconfig-753-	  requirements, ends up being zero, then no system heap will be
+/home/user/sdk-alif/zephyr/kernel/Kconfig-754-	  available.
+/home/user/sdk-alif/zephyr/kernel/Kconfig-755-
+/home/user/sdk-alif/zephyr/kernel/Kconfig-756-config HEAP_MEM_POOL_IGNORE_MIN
+/home/user/sdk-alif/zephyr/kernel/Kconfig-757-	bool "Ignore the minimum heap memory pool requirement"
+/home/user/sdk-alif/zephyr/kernel/Kconfig-758-	help
+/home/user/sdk-alif/zephyr/kernel/Kconfig-759-	  This option can be set to force setting a smaller heap memory pool
+/home/user/sdk-alif/zephyr/kernel/Kconfig-760-	  size than what's specified by enabled subsystems. This can be useful
+/home/user/sdk-alif/zephyr/kernel/Kconfig-761-	  when optimizing memory usage and a more precise minimum heap size
+/home/user/sdk-alif/zephyr/kernel/Kconfig-762-	  is known for a given application.
+/home/user/sdk-alif/zephyr/kernel/Kconfig-763-
+/home/user/sdk-alif/zephyr/kernel/Kconfig-764-endif # KERNEL_MEM_POOL
+--
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-12-#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-13-#   See the License for the specific language governing permissions and
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-14-#   limitations under the License.
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-15-#
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-16-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-17-# The purpose of this file is to define new default values of settings used when building hci_rpmsg child image for Matter samples.
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-18-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-19-config LOG
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-20-    default n
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-21-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults:22:config HEAP_MEM_POOL_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-23-    default 8192
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-24-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-25-config MAIN_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-26-    default 2048
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-27-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-28-config SYSTEM_WORKQUEUE_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-29-    default 2048
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-30-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-31-config BT
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-32-    default y
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-33-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-34-config BT_HCI_RAW
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-35-    default y
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-36-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-37-config BT_MAX_CONN
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-38-    default 1
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-39-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-40-config BT_PERIPHERAL
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-41-    default y
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-42-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-43-config BT_CENTRAL
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-44-    default n
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-45-
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-46-config BT_BUF_ACL_RX_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/alif/chip-module/Kconfig.hci_rpmsg.defaults-47-    default 502
+--
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-341-# aligned here to match OpenThread config
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-342-config NET_MAX_ROUTERS
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-343-	default 1
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-344-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-345-config NET_MAX_CONN
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-346-	default 10
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-347-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-348-config SHELL_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-349-	default 1536
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-350-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults:351:config HEAP_MEM_POOL_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-352-	default 122880
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-353-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-354-config CHIP_MALLOC_SYS_HEAP_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-355-	default 28672 # 28 kB
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-356-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-357-config ETH_DRIVER
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-358-	default n
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-359-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-360-endif
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-361-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-362-if CHIP_ETHERNET || CHIP_WIFI
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-363-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-364-choice LIBC_IMPLEMENTATION
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-365-	default NEWLIB_LIBC
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-366-endchoice
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-367-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-368-endif
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-369-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-370-if CHIP_ETHERNET
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-371-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-372-config NET_SOCKETS_POLL_MAX
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-373-	default 7
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-374-
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-375-endif
+/home/user/sdk-alif/modules/lib/matter/config/nxp/chip-module/Kconfig.defaults-376-
+--
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-13-#   See the License for the specific language governing permissions and
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-14-#   limitations under the License.
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-15-#
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-16-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-17-# The purpose of this file is to define new default values of settings used when building multiprotocol_rpmsg child image for Matter samples.
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-18-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-19-config LOG
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-20-	bool
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-21-	default n
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-22-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults:23:config HEAP_MEM_POOL_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-24-	int
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-25-	default 8192
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-26-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-27-config MAIN_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-28-	int
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-29-	default 2048
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-30-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-31-config SYSTEM_WORKQUEUE_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-32-	int
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-33-	default 2048
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-34-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-35-config BT
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-36-	bool
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-37-	default y
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-38-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-39-config BT_HCI_RAW
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-40-	bool
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-41-	default y
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-42-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-43-config BT_MAX_CONN
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-44-	int
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-45-	default 1
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-46-
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-47-config BT_PERIPHERAL
+/home/user/sdk-alif/modules/lib/matter/config/zephyr/chip-module/Kconfig.multiprotocol_rpmsg.defaults-48-	bool
+--
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-75-config IDLE_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-76-    default 512 if PM || SOC_RISCV_TELINK_TL321X || SOC_RISCV_TELINK_W91
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-77-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-78-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-79-config ISR_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-80-    default 592 if PM || SOC_RISCV_TELINK_TL321X || SOC_RISCV_TELINK_W91
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-81-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-82-config SYSTEM_WORKQUEUE_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-83-    default 616 if PM
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-84-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults:85:config HEAP_MEM_POOL_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-86-    default 256 if ZEPHYR_VERSION_3_3
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-87-    default 1280
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-88-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-89-config COMMON_LIBC_MALLOC_ARENA_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-90-    default 20716 if SOC_SERIES_RISCV_TELINK_B9X_RETENTION || (SOC_RISCV_TELINK_TL321X && ZEPHYR_VERSION_3_3) || (SOC_RISCV_TELINK_TL721X && SOC_SERIES_RISCV_TELINK_TLX_RETENTION)
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-91-    default 16954 if (SOC_RISCV_TELINK_TL321X && !ZEPHYR_VERSION_3_3)
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-92-    default 18000 if SOC_RISCV_TELINK_TL721X
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-93-    default 29448 if SOC_RISCV_TELINK_W91
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-94-    default 12288
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-95-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-96-config NET_IPV6_MLD
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-97-    default n if PM
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-98-    default y
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-99-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-100-config NET_IF_MCAST_IPV6_ADDR_COUNT
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-101-    default 8 if PM
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-102-    default 15
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-103-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-104-# Network buffers
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-105-config NET_PKT_RX_COUNT
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-106-    default 4 if PM || SOC_RISCV_TELINK_TL321X || SOC_RISCV_TELINK_W91
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-107-    default 8
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-108-
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-109-config NET_PKT_TX_COUNT
+/home/user/sdk-alif/modules/lib/matter/config/telink/chip-module/Kconfig.defaults-110-    default 4 if PM || SOC_RISCV_TELINK_TL321X || SOC_RISCV_TELINK_W91
+--
+/home/user/sdk-alif/modules/lib/matter/config/nrfconnect/chip-module/Kconfig.defaults-46-config MAIN_STACK_SIZE
+/home/user/sdk-alif/modules/lib/matter/config/nrfconnect/chip-module/Kconfig.defaults-47-    default 6144
+/home/user/sdk-alif/modules/lib/matter/config/nrfconnect/chip-module/Kconfig.defaults-48-
+/home/user/sdk-alif/modules/lib/matter/config/nrfconnect/chip-module/Kconfig.defaults-49-config INIT_STACKS
+/home/user/sdk-alif/modules/lib/matter/config/nrfconnect/chip-module/Kconfig.defaults-50-    default y
+
+3. Where the 160 KiB heap settings originate
+/home/user/sdk-alif/beeinventor/test_heatstroke/prj.conf:9:CONFIG_HEAP_MEM_POOL_SIZE=163840
+/home/user/sdk-alif/beeinventor/test_heatstroke/prj.conf:17:CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=163840
+/home/user/sdk-alif/alif/samples/modules/tflite-micro/alif_asr/prj.conf:9:CONFIG_HEAP_MEM_POOL_SIZE=163840
+/home/user/sdk-alif/alif/samples/modules/tflite-micro/alif_asr/prj.conf:17:CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=163840
+/home/user/sdk-alif/beeinventor/alif_asr/prj.conf:9:CONFIG_HEAP_MEM_POOL_SIZE=163840
+/home/user/sdk-alif/beeinventor/alif_asr/prj.conf:17:CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=163840
+/home/user/sdk-alif/beeinventor/test_heatstroke_bak1/prj.conf:9:CONFIG_HEAP_MEM_POOL_SIZE=163840
+/home/user/sdk-alif/beeinventor/test_heatstroke_bak1/prj.conf:17:CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=163840
+/home/user/sdk-alif/beeinventor/test_heatstroke/prj.conf:9:CONFIG_HEAP_MEM_POOL_SIZE=163840
+/home/user/sdk-alif/beeinventor/test_heatstroke/prj.conf:17:CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=163840
+
+4. Kernel heap allocations in application and MLEK
+
+5. C/C++ dynamic allocations in application and MLEK
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-260-	 */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-261-	const size_t i2s_block_bytes = AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHANNELS * SAMPLE_SIZE;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-262-	const uint32_t i2s_num_blocks = WORD_SIZE / SAMPLE_SIZE; /* = 8 */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-263-#if (IS_ENABLED(CONFIG_SOC_SERIES_E1C) || IS_ENABLED(CONFIG_SOC_SERIES_B1))
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-264-	char *my_slab_buffer =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:265:		(char *)malloc(AUDIO_CHANNELS * WORD_SIZE * AUDIO_CHUNK_SIZE_SAMPLES);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-266-#endif
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-267-	k_mem_slab_init(&mem_slab, my_slab_buffer, i2s_block_bytes, i2s_num_blocks);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-268-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-269-	if (!device_is_ready(i2s_dev_tx)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-270-		LOG_ERR("%s is not ready", i2s_dev_tx->name);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-271-		return 0;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-272-	}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-273-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-274-	if (!device_is_ready(codec_dev)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-275-		LOG_ERR("%s is not ready", codec_dev->name);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-276-		return 0;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-277-	}
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-341-			LOG_ERR("Failed to drop I2S output: %d", err);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-342-		}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-343-	}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-344-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-345-#if (IS_ENABLED(CONFIG_SOC_SERIES_E1C) || IS_ENABLED(CONFIG_SOC_SERIES_B1))
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:346:	free(my_slab_buffer);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-347-#endif
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-348-	audio_codec_stop_output(codec_dev);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-349-	audio_codec_clear_errors(codec_dev);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-350-#endif /* CONFIG_OUTPUT_TO_LINE_OUT */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-351-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-352-	/* Audio clip needs enough samples to produce at least 1 MFCC feature. */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-353-	if (audioArrSize < mfccFrameLen) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-354-		LOG_ERR("Not enough audio samples, minimum needed is %" PRIu32 "\n", mfccFrameLen);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-355-		return false;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-356-	}
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-357-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-358-	/* Creating a sliding window through the whole audio clip. */
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-60-        {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-61-            /* Attribute exists; reset the smart pointer */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-62-            if (this->Has(name)) {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-63-              this->m_attributes.at(name).reset();
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-64-            }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp:65:            this->m_attributes[name] = std::make_unique<Attribute<T>>(object);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-66-        }
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-67-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-68-        /**
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-69-         * @brief      Gets the saved attribute from the context by the given name.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-70-         * @tparam     T value type.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-71-         * @param[in]  name   Context attribute name.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-72-         * @return     Value saved in the context.
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-73-         */
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-74-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-75-        template <typename T>
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-76-        T Get(const std::string& name)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/AppContext.hpp-77-        {
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-131-         *                             imaginary pairs of elements. NOTE: this vector
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-132-         *                             does not contain the mirror image (conjugates)
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-133-         *                             part of the spectrum.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-134-         * @param[out]   energy        Computed energy for each band in the Bark scale.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-135-         * @param[out]   analysisMem   Buffer sequentially, but partially,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp:136:         *                             populated with new audio data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-137-         **/
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-138-        void FrameAnalysis(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-139-            const vec1D32F& audioWindow,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-140-            vec1D32F& fft,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-141-            vec1D32F& energy,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-142-            vec1D32F& analysisMem);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-143-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-144-        /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-145-         * @brief               Applies the window function, in-place, over the given
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-146-         *                      floating point buffer.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-147-         * @param[in,out]   x   Buffer the window will be applied to.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/noise_reduction/RNNoiseFeatureProcessor.hpp-148-         **/
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-87-    if (!input || inputSize < this->m_audioDataWindowSize) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-88-        printf_err("Invalid input provided for pre-processing\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-89-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-90-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-91-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc:92:    /* We moved to the next window - set the features sliding to the new address. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-93-    this->m_melWindowSlider.Reset(static_cast<const int16_t*>(input));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-94-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-95-    /* The first window does not have cache ready. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-96-    const bool useCache = this->m_audioWindowIndex > 0 && this->m_numReusedFeatureVectors > 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-97-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-98-    /* Start calculating features inside one audio sliding window. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-99-    while (this->m_melWindowSlider.HasNext()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-100-        const int16_t* melSpecWindow = this->m_melWindowSlider.Next();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-101-        std::vector<int16_t> melSpecAudioData = std::vector<int16_t>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-102-                melSpecWindow,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-103-                melSpecWindow + this->m_melSpectrogramFrameLen);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/ad/AdProcessing.cc-104-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-71-    {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-72-        if (data == nullptr) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-73-            printf_err("Data pointer is null");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-74-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-75-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc:76:        /* Set the features sliding window to the new address. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-77-        auto input = static_cast<const int16_t*>(data);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-78-        this->m_mfccSlidingWindow.Reset(input);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-79-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-80-        /* Cache is only usable if we have more than 1 inference to do and it's not the first inference. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-81-        bool useCache = inferenceIndex > 0 && this->m_numReusedMfccVectors > 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-82-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-83-        /* Use a sliding window to calculate MFCC features frame by frame. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-84-        while (this->m_mfccSlidingWindow.HasNext()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-85-            const int16_t* mfccWindow = this->m_mfccSlidingWindow.Next();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-86-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-87-            std::vector<int16_t> mfccFrameAudioData = std::vector<int16_t>(mfccWindow,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/use_case/kws/KwsProcessing.cc-88-                    mfccWindow + this->m_mfccFrameLength);
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-29-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-30-class RNNoiseModel : public TflmModel {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-31-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-32-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-33-     * @brief Sets GRU input states to zeros.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp:34:     * Call this method before starting processing the new sequence of logically related data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-35-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-36-    void ResetGruState();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-37-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-38-    /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-39-     * @brief Copy current GRU output states to input states.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-40-     * Call this method before starting processing the next sequence of logically related data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-41-     */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-42-    bool CopyGruStates() const;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-43-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-44-    /* Which index of model outputs does the main output (gains) come from. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-45-    const size_t m_indexForModelOutput = 1;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/RNNoiseModel.hpp-46-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-156-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-157-        if (!this->m_backendData.m_pAllocator) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-158-            printf_err("Failed to create allocator\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-159-            return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-160-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:161:        debug("Created new allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-162-    } else {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-163-        debug("Using existing allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-164-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-165-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:166:    this->m_backendData.m_pInterpreter = std::make_unique<tflite::MicroInterpreter>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-167-        this->m_backendData.m_pModel, this->GetOpResolver(), this->m_backendData.m_pAllocator);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-168-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-169-    if (!this->m_backendData.m_pInterpreter) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-170-        printf_err("Failed to allocate interpreter\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-171-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-172-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-173-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-174-    /* Allocate memory from the tensor_arena for the model's tensors. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-175-    info("Allocating tensors\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-176-    TfLiteStatus allocate_status = this->m_backendData.m_pInterpreter->AllocateTensors();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-177-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-178-    if (allocate_status != kTfLiteOk) {
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-182-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-183-    /* Get information about the memory area to use for the model's input. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-184-    this->m_input.resize(this->GetNumInputs());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-185-    for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-186-        this->m_input[inIndex] =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:187:            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->input(inIndex));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-188-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-189-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-190-    this->m_output.resize(this->GetNumOutputs());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-191-    for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-192-        this->m_output[outIndex] =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc:193:            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->output(outIndex));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-194-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-195-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-196-    if (this->m_input.empty() || this->m_output.empty()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-197-        printf_err("failed to get tensors\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-198-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-199-    } else {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-200-        this->m_type = this->m_input[0]->Type(); /* Input 0 should be the main input */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-201-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-202-        /* Clear the input & output tensors */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-203-        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-204-            std::memset(this->m_input[inIndex]->GetData(), 0, this->m_input[inIndex]->Bytes());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc-205-        }
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-129-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-130-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-131-    info("Model PTE file loaded. Size: %zu bytes.\n", nnModel.size);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-132-    auto loader = executorch::extension::BufferDataLoader(nnModel.data, nnModel.size);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-133-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:134:    this->m_backendData.m_program = std::make_shared<Result<Program>>(Program::load(&loader));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-135-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-136-    if (!this->m_backendData.m_program->ok()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-137-        printf_err("Program loading failed @ 0x%p: 0x%" PRIx32 "\n",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-138-                   nnModel.data,
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-139-                   static_cast<uint32_t>(this->m_backendData.m_program->error()));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-140-        return false;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-141-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-142-    info("Model buffer loaded, has %zu methods\n",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-143-         this->m_backendData.m_program->get().num_methods());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-144-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-145-    if (this->m_backendData.m_methodName.empty()) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-146-        const auto methodNameResult = this->m_backendData.m_program->get().get_method_name(0);
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-162-    info("Setting up method allocator pool. Base: %p, size: %zu bytes.\n",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-163-         computeBuffer.data, computeBuffer.size);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-164-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-165-    if (!this->m_backendData.m_methodAllocPtr) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-166-        this->m_backendData.m_methodAllocPtr =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:167:            std::make_shared<EtMemoryAllocator>(computeBuffer.size, computeBuffer.data);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-168-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-169-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-170-    std::vector<executorch::runtime::Span<uint8_t>> plannedSpans; // Passed to the allocator
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-171-    const size_t numMemoryPlannedBuffers = methodMeta->num_memory_planned_buffers();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-172-    size_t plannedMemBeforeMark          = this->m_backendData.m_methodAllocPtr->UsedSizeCurrent();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-173-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-174-    for (size_t id = 0; id < numMemoryPlannedBuffers; ++id) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-175-        size_t bufferSize = static_cast<size_t>(methodMeta->memory_planned_buffer_size(id).get());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-176-        info("Setting up planned buffer %zu, size %zu.\n", id, bufferSize);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-177-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-178-        /* Move to its own allocator when MemoryPlanner is in place. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-179-        uint8_t* buffer =
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-190-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-191-    info("Total planned memory allocated: %zu bytes\n",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-192-         this->m_backendData.m_methodAllocPtr->UsedSizeCurrent() - plannedMemBeforeMark);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-193-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-194-    if (!this->m_backendData.m_plannedMemAllocPtr) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:195:        this->m_backendData.m_plannedMemAllocPtr = std::make_shared<HierarchicalAllocator>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-196-            executorch::runtime::Span{plannedSpans.data(), plannedSpans.size()});
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-197-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-198-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-199-    if (!this->m_backendData.m_tmpAllocPtr) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-200-         info("Setting up temporary allocator pool. Base: %p, size: %zu bytes.\n",
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-201-            sTmpAllocationPool, sTmpAllocationPoolSz);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-202-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-203-        this->m_backendData.m_tmpAllocPtr =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:204:            std::make_shared<EtMemoryAllocator>(sTmpAllocationPoolSz, sTmpAllocationPool);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-205-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-206-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-207-    if (!this->m_backendData.m_memMgrPtr) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-208-        this->m_backendData.m_memMgrPtr =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:209:            std::make_shared<MemoryManager>(this->m_backendData.m_methodAllocPtr.get(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-210-                                            this->m_backendData.m_plannedMemAllocPtr.get(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-211-                                            this->m_backendData.m_tmpAllocPtr.get());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-212-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-213-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-214-    size_t methodMemBeforeMark = this->m_backendData.m_methodAllocPtr->UsedSizeCurrent();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-215-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-216-    executorch::runtime::EventTracer* eventTracerPtr = nullptr;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-217-    static auto method =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-218-        this->m_backendData.m_program->get().load_method(this->m_backendData.m_methodName.c_str(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-219-                                                         this->m_backendData.m_memMgrPtr.get(),
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-220-                                                         eventTracerPtr);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-221-
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-259-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-260-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-261-    for (size_t i = 0; i < outputs.size(); ++i) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-262-        this->m_outputTensor.emplace_back(outputs[i].toTensor());
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-263-        this->m_output.emplace_back(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:264:            std::make_shared<EtTensor>(this->m_outputTensor[this->m_outputTensor.size() - 1]));
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-265-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-266-    info("Outputs prepared\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-267-    this->m_inited = true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-268-    this->LogInterpreterInfo();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-269-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-270-    info("Model initialisation complete\n");
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-271-    return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-272-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-273-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-274-std::shared_ptr<iface::TensorIface> EtModel::GetInputTensor(size_t index) const
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-275-{
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-276-    if (index < this->GetNumInputs()) {
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-571-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-572-    this->m_input = std::vector<std::shared_ptr<iface::TensorIface>>(
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-573-        this->m_inputTensorImplMap.size(), nullptr);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-574-    for (size_t i = 0; i < this->m_inputTensorImplMap.size(); i++) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-575-        this->m_input[this->m_inputTensorImplMap[i].second] =
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc:576:            std::make_shared<EtTensor>(&this->m_inputTensorImplMap[i].first);
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-577-    }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-578-    return true;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-579-}
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/executorch/EtModel.cc-580-} /* namespace arm::app::fwk::et */
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-94-        virtual void Reset() {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-95-            m_count = 0;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-96-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-97-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-98-        /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:99:         * @brief     Resets the slider to the start of the new data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:100:         *            New data size MUST be the same as the old one.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:101:         * @param[in] newStart   Pointer to the new data to slide through.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-102-         */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-103-        virtual void Reset(T *newStart) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-104-            m_start = newStart;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-105-            Reset();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-106-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-107-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-108-        /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:109:         * @brief     Resets the slider to the start of the new data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:110:         * @param[in] newStart   Pointer to the new data to slide through.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-111-         * @param[in] dataSize   Size in T type elements wise.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-112-         */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-113-        virtual void Reset(T *newStart, size_t dataSize) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-114-            m_start = newStart;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-115-            m_dataSize = dataSize;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-116-            Reset();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-117-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-118-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-119-        /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-120-         * @brief  Gets current index of the sliding window.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-121-         * @return Current position of the sliding window in number of strides.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-122-         */
+--
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-134-            return m_count == 0 ? 0: m_count * m_stride;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-135-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-136-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-137-        /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-138-         * @brief     Go to given sliding window index.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp:139:         * @param[in] index   New position of the sliding window. If index is invalid
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-140-         *                    (greater than possible range of strides) then next call to Next() will return nullptr.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-141-         */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-142-        void FastForward(size_t index) {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-143-            m_count = index;
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-144-        }
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-145-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-146-        /**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-147-         * @brief  Calculates whole number of times the window can stride through the given data.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-148-         * @return Maximum number of whole strides.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-149-         */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-150-         size_t TotalStrides() {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/common/AudioSlidingWindow.hpp-151-            if (m_windowSize > m_dataSize) {
+
+6. Audio allocation and its actual requested size
+   235	
+   236			if (!button_pressed) {
+   237				break;
+   238			}
+   239	
+   240			if (audio_idx >= (AUDIO_CHUNKS - 1)) {
+   241				break;
+   242			}
+   243			audio_idx++;
+   244		}
+   245		LOG_INF("Audio capture finished.\n");
+   246	
+   247		int16_t *audioArr = audio_inf;
+   248		uint32_t audioArrSize = (audio_idx + 1) * AUDIO_CHUNK_SIZE_SAMPLES;
+   249	
+   250	#if CONFIG_OUTPUT_TO_LINE_OUT
+   251		const struct device *const codec_dev = DEVICE_DT_GET(CODEC_CFG_NODE);
+   252		const struct device *const i2s_dev_tx = DEVICE_DT_GET(I2S_TX_NODE);
+   253	
+   254		/* Each block is one stereo chunk: AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHANNELS * SAMPLE_SIZE.
+   255		 * With 2ch 16-bit: 8000 * 2 * 2 = 32000 bytes.
+   256		 * num_blocks = sizeof(my_slab_buffer) / i2s_block_bytes
+   257		 *            = (AUDIO_CHANNELS*WORD_SIZE*AUDIO_CHUNK_SIZE_SAMPLES) /
+   258		 * (AUDIO_CHUNK_SIZE_SAMPLES*AUDIO_CHANNELS*SAMPLE_SIZE) = WORD_SIZE / SAMPLE_SIZE = 16/2
+   259		 * = 8.
+   260		 */
+   261		const size_t i2s_block_bytes = AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHANNELS * SAMPLE_SIZE;
+   262		const uint32_t i2s_num_blocks = WORD_SIZE / SAMPLE_SIZE; /* = 8 */
+   263	#if (IS_ENABLED(CONFIG_SOC_SERIES_E1C) || IS_ENABLED(CONFIG_SOC_SERIES_B1))
+   264		char *my_slab_buffer =
+   265			(char *)malloc(AUDIO_CHANNELS * WORD_SIZE * AUDIO_CHUNK_SIZE_SAMPLES);
+   266	#endif
+   267		k_mem_slab_init(&mem_slab, my_slab_buffer, i2s_block_bytes, i2s_num_blocks);
+   268	
+   269		if (!device_is_ready(i2s_dev_tx)) {
+   270			LOG_ERR("%s is not ready", i2s_dev_tx->name);
+   271			return 0;
+   272		}
+   273	
+   274		if (!device_is_ready(codec_dev)) {
+   275			LOG_ERR("%s is not ready", codec_dev->name);
+   276			return 0;
+   277		}
+   278		if (!configure_streams(i2s_dev_tx)) {
+   279			return 0;
+   280		}
+   281	
+   282		audio_codec_start_output(codec_dev);
+   283	
+   284		int xx = 0;
+   285		bool trigger_started = false;
+   286		while (xx < audio_idx) {
+   287			void *slab_block;
+   288			/* Wait up to 2s for a block to be freed by the I2S ISR. */
+   289			if (k_mem_slab_alloc(&mem_slab, &slab_block, K_MSEC(2000)) < 0) {
+   290				LOG_ERR("Failed to allocate TX slab block");
+   291				break;
+   292			}
+   293	
+   294			// we have 16bit mono audio, but I2S is configured for stereo, so we need to
+   295			// duplicate samples for left and right channels
+   296			int16_t *stereo_buffer = (int16_t *)slab_block;
+   297			for (size_t i = 0; i < AUDIO_CHUNK_SIZE_SAMPLES; i++) {
+   298				stereo_buffer[2 * i] = audio_inf_ptr[xx * AUDIO_CHUNK_SIZE_SAMPLES + i];
+   299				stereo_buffer[2 * i + 1] = audio_inf_ptr[xx * AUDIO_CHUNK_SIZE_SAMPLES + i];
+   300			}
+   301	
+   302			err = i2s_write(i2s_dev_tx, slab_block, i2s_block_bytes);
+   303			if (err < 0) {
+   304				LOG_ERR("Failed to write data: %d", err);
+   305				break;
+   306			}
+   307			xx++;
+   308	
+   309			/* Start the I2S output on the first chunk. */
+   310			if (!trigger_started) {
+   311				err = i2s_trigger(i2s_dev_tx, I2S_DIR_TX, I2S_TRIGGER_START);
+   312				if (err < 0) {
+   313					LOG_ERR("Failed to start I2S output: %d", err);
+   314					return 0;
+   315				}
+   316				trigger_started = true;
+   317			}
+   318		}
+   319	
+   320		{
+   321			uint32_t block_ms = (AUDIO_CHUNK_SIZE_SAMPLES * 1000U) / AUDIO_RATE;
+   322			/* The feed loop above is paced by the i2s_num_blocks-deep slab
+   323			 * (k_mem_slab_alloc blocks until the ISR frees a played block),
+   324			 * so most of the audio has already played by the time we get
+   325			 * here. At most i2s_num_blocks are still queued, so only wait
+   326			 * for those remaining blocks rather than the whole stream. */
+   327			uint32_t queued_blocks =
+   328				((uint32_t)xx < i2s_num_blocks) ? (uint32_t)xx : i2s_num_blocks;
+   329			k_sleep(K_MSEC(queued_blocks * block_ms + 200U));
+   330		}
+   331	
+   332		/* Bring the TX stream back to the READY state. When the queued
+   333		 * blocks finish playing the DW driver underruns and leaves the
+   334		 * stream in I2S_STATE_ERROR (or RUNNING). i2s_configure() only
+   335		 * accepts READY/NOT_READY, so without this the next button press
+   336		 * would fail with "invalid state" (-EINVAL). I2S_TRIGGER_DROP is
+   337		 * valid from any state except NOT_READY and resets it to READY. */
+   338		if (trigger_started) {
+   339			err = i2s_trigger(i2s_dev_tx, I2S_DIR_TX, I2S_TRIGGER_DROP);
+   340			if (err < 0) {
+   341				LOG_ERR("Failed to drop I2S output: %d", err);
+   342			}
+   343		}
+   344	
+   345	#if (IS_ENABLED(CONFIG_SOC_SERIES_E1C) || IS_ENABLED(CONFIG_SOC_SERIES_B1))
+   346		free(my_slab_buffer);
+   347	#endif
+   348		audio_codec_stop_output(codec_dev);
+   349		audio_codec_clear_errors(codec_dev);
+   350	#endif /* CONFIG_OUTPUT_TO_LINE_OUT */
+   351	
+   352		/* Audio clip needs enough samples to produce at least 1 MFCC feature. */
+   353		if (audioArrSize < mfccFrameLen) {
+   354			LOG_ERR("Not enough audio samples, minimum needed is %" PRIu32 "\n", mfccFrameLen);
+   355			return false;
+   356		}
+   357	
+   358		/* Creating a sliding window through the whole audio clip. */
+   359		auto audioDataSlider = audio::FractionalSlidingWindow<const int16_t>(
+   360			audioArr, audioArrSize, audioDataWindowLen, audioDataWindowStride);
+   361	
+   362		/* Declare a container for final results. */
+   363		std::vector<asr::AsrResult> finalResults;
+   364		size_t inferenceWindowLen = audioDataWindowLen;
+   365	
+
+7. Audio buffer macro definitions
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-56-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-57-LOG_MODULE_REGISTER(UseCaseHandlerTflm);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-58-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-59-#define AUDIO_RATE               (16000)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:60:#define AUDIO_CHUNK_SIZE_SAMPLES (8000) // 0.5s of audio at 16KHz
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-61-#define AUDIO_CHUNKS             (20)   // ~10s max
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-62-#define AUDIO_SAMPLES            (AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHUNKS)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-63-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-64-#define SAMPLE_SIZE    sizeof(int16_t)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:65:#define WORD_SIZE      (SAMPLE_SIZE * 8)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:66:#define AUDIO_CHANNELS CONFIG_AUDIO_CHANNELS
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-67-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-68-#if (IS_ENABLED(CONFIG_SOC_SERIES_E1C) || IS_ENABLED(CONFIG_SOC_SERIES_B1))
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-69-static int16_t audio_inf[AUDIO_SAMPLES + AUDIO_CHUNK_SIZE_SAMPLES];
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-70-#else
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-71-static int16_t audio_inf[AUDIO_SAMPLES + AUDIO_CHUNK_SIZE_SAMPLES]
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-72-	__attribute__((section("SRAM0.audio_inf")));
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-73-#if CONFIG_OUTPUT_TO_LINE_OUT
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-74-static char __aligned(8) my_slab_buffer[AUDIO_CHANNELS * WORD_SIZE * AUDIO_CHUNK_SIZE_SAMPLES]
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-88-static bool configure_streams(const struct device *i2s_dev_tx)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-89-{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-90-	struct i2s_config config;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-91-
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:92:	config.word_size = WORD_SIZE;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-93-	config.channels = AUDIO_CHANNELS;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-94-	config.format = I2S_FMT_DATA_FORMAT_I2S;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-95-	config.options = I2S_OPT_BIT_CLK_MASTER | I2S_OPT_FRAME_CLK_MASTER;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-96-	config.frame_clk_freq = AUDIO_RATE;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-97-	config.mem_slab = &mem_slab;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-98-	config.block_size = AUDIO_CHUNK_SIZE_SAMPLES * AUDIO_CHANNELS * SAMPLE_SIZE;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-99-	config.timeout = 1000;
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-100-
+--
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-111-		.dai_cfg =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-112-			{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-113-				.i2s =
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-114-					{
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc:115:						.word_size = AUDIO_PCM_WIDTH_16_BITS,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-116-						.channels = 2,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-117-						.format = I2S_FMT_DATA_FORMAT_I2S,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-118-						.options = 0,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-119-						.frame_clk_freq = AUDIO_RATE,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-120-						.mem_slab = NULL,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-121-						.block_size = 0,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-122-						.timeout = 0,
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/UseCaseHandlerTflm.cc-123-					},
+
+8. MLEK model object construction and lifecycle
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021-2026 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#include "mlek/fwk/tflm/TflmModel.hpp"
+    18	#include "mlek/fwk/iface/Model.hpp"
+    19	#include "mlek/fwk/tflm/TflmTensor.hpp"
+    20	#include "mlek/log/log_macros.h"
+    21	
+    22	#include <cinttypes>
+    23	#include <cstring>
+    24	#include <memory>
+    25	#include <string>
+    26	
+    27	namespace arm::app::fwk::tflm {
+    28	namespace {
+    29	/**
+    30	 * @brief   Infer Arm Ethos-U NPU memory mode from Ethos-U operator inputs.
+    31	 * @param[in] model     Pointer the the model object.
+    32	 * @return  Memory mode string if detected, or empty string otherwise.
+    33	 */
+    34	std::string InferNpuMemoryModeFromEthosUOp(const tflite::Model* model)
+    35	{
+    36	    if (!model || !model->subgraphs() || model->subgraphs()->size() == 0 ||
+    37	        !model->operator_codes()) {
+    38	        return {};
+    39	    }
+    40	
+    41	    const tflite::SubGraph* subgraph = model->subgraphs()->Get(0);
+    42	    if (!subgraph || !subgraph->operators()) {
+    43	        return {};
+    44	    }
+    45	
+    46	    int ethos_u_opcode = -1;
+    47	    for (uint32_t i = 0; i < model->operator_codes()->size(); ++i) {
+    48	        const tflite::OperatorCode* opcode = model->operator_codes()->Get(i);
+    49	        if (!opcode || opcode->builtin_code() != tflite::BuiltinOperator_CUSTOM) {
+    50	            continue;
+    51	        }
+    52	        const auto* custom = opcode->custom_code();
+    53	        if (custom && (std::strcmp(custom->c_str(), "ethos-u") == 0)) {
+    54	            ethos_u_opcode = static_cast<int>(i);
+    55	            break;
+    56	        }
+    57	    }
+    58	
+    59	    if (ethos_u_opcode < 0) {
+    60	        return {};
+    61	    }
+    62	
+    63	    for (uint32_t i = 0; i < subgraph->operators()->size(); ++i) {
+    64	        const tflite::Operator* op = subgraph->operators()->Get(i);
+    65	        if (!op || op->opcode_index() != ethos_u_opcode) {
+    66	            continue;
+    67	        }
+    68	        const auto* inputs = op->inputs();
+    69	        if (!inputs || inputs->size() <= 3) {
+    70	            continue;
+    71	        }
+    72	
+    73	        /* Vela places tensor arena at index 2 and fast scratch buffer at index 3. */
+    74	        const int32_t arena_idx = inputs->Get(2);
+    75	        const int32_t scratch_idx = inputs->Get(3);
+    76	        if (arena_idx < 0 || scratch_idx < 0) {
+    77	            continue;
+    78	        }
+    79	
+    80	        const tflite::Tensor* arena = subgraph->tensors()->Get(arena_idx);
+    81	        const tflite::Tensor* scratch = subgraph->tensors()->Get(scratch_idx);
+    82	        if (!arena || !scratch) {
+    83	            continue;
+    84	        }
+    85	
+    86	        const auto arena_shape = arena->shape();
+    87	        const auto scratch_shape = scratch->shape();
+    88	        if (!arena_shape || !scratch_shape || arena_shape->size() < 1 ||
+    89	            scratch_shape->size() < 1 || arena_shape->Get(0) < 1) {
+    90	            continue;
+    91	        }
+    92	
+    93	        if (arena_shape->Get(0) == scratch_shape->Get(0)) {
+    94	            return "Sram_Only/Shared_Sram";
+    95	        }
+    96	        return "Dedicated_Sram";
+    97	    }
+    98	
+    99	    return {};
+   100	}
+   101	} /* anonymous namespace */
+   102	
+   103	TflmModel::TflmModel() {}
+   104	
+   105	/* Initialise the model */
+   106	bool TflmModel::Init(iface::MemoryRegion& computeBuffer,
+   107	                     iface::MemoryRegion& nnModel,
+   108	                     const void* backendData)
+   109	{
+   110	    /* Following tf lite micro example:
+   111	     * Map the model into a usable data structure. This doesn't involve any
+   112	     * copying or parsing, it's a very lightweight operation. */
+   113	    debug("loading model from @ 0x%p\n", nnModel.data);
+   114	    debug("model size: %" PRIu32 " bytes.\n", nnModel.size);
+   115	
+   116	    /* Enable logging before we start interacting with the framework. */
+   117	    EnableTFLMLog();
+   118	
+   119	    this->m_backendData.m_pModel = ::tflite::GetModel(nnModel.data);
+   120	
+   121	    if (this->m_backendData.m_pModel->version() != TFLITE_SCHEMA_VERSION) {
+   122	        printf_err("Model's schema version %" PRIu32 " is not equal "
+   123	                   "to supported version %d.",
+   124	                   this->m_backendData.m_pModel->version(),
+   125	                   TFLITE_SCHEMA_VERSION);
+   126	        return false;
+   127	    }
+   128	
+   129	    this->m_computeBuffer = computeBuffer;
+   130	    this->m_modelBuffer   = nnModel;
+   131	
+   132	    /* Pull in only the operation implementations we need.
+   133	     * This relies on a complete list of all the ops needed by this graph.
+   134	     * An easier approach is to just use the AllOpsResolver, but this will
+   135	     * incur some penalty in code space for op implementations that are not
+   136	     * needed by this graph.
+   137	     * static ::tflite::ops::micro::AllOpsResolver resolver; */
+   138	    /* NOLINTNEXTLINE(runtime-global-variables) */
+   139	    debug("loading op resolver\n");
+   140	
+   141	    this->EnlistOperations();
+   142	
+   143	    /** If backend data has been provided, re-use the allocator */
+   144	    if (backendData) {
+   145	        this->m_backendData.m_pAllocator =
+   146	            reinterpret_cast<const TflmBackendData*>(backendData)->m_pAllocator;
+   147	    }
+   148	
+   149	    /* Create allocator instance, if it doesn't exist */
+   150	    if (!this->m_backendData.m_pAllocator) {
+   151	        /* Create an allocator instance */
+   152	        info("Creating allocator using tensor arena at 0x%p\n", computeBuffer.data);
+   153	
+   154	        this->m_backendData.m_pAllocator =
+   155	            tflite::MicroAllocator::Create(computeBuffer.data, computeBuffer.size);
+   156	
+   157	        if (!this->m_backendData.m_pAllocator) {
+   158	            printf_err("Failed to create allocator\n");
+   159	            return false;
+   160	        }
+   161	        debug("Created new allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   162	    } else {
+   163	        debug("Using existing allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   164	    }
+   165	
+   166	    this->m_backendData.m_pInterpreter = std::make_unique<tflite::MicroInterpreter>(
+   167	        this->m_backendData.m_pModel, this->GetOpResolver(), this->m_backendData.m_pAllocator);
+   168	
+   169	    if (!this->m_backendData.m_pInterpreter) {
+   170	        printf_err("Failed to allocate interpreter\n");
+   171	        return false;
+   172	    }
+   173	
+   174	    /* Allocate memory from the tensor_arena for the model's tensors. */
+   175	    info("Allocating tensors\n");
+   176	    TfLiteStatus allocate_status = this->m_backendData.m_pInterpreter->AllocateTensors();
+   177	
+   178	    if (allocate_status != kTfLiteOk) {
+   179	        printf_err("tensor allocation failed!\n");
+   180	        return false;
+   181	    }
+   182	
+   183	    /* Get information about the memory area to use for the model's input. */
+   184	    this->m_input.resize(this->GetNumInputs());
+   185	    for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   186	        this->m_input[inIndex] =
+   187	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->input(inIndex));
+   188	    }
+   189	
+   190	    this->m_output.resize(this->GetNumOutputs());
+   191	    for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+   192	        this->m_output[outIndex] =
+   193	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->output(outIndex));
+   194	    }
+   195	
+   196	    if (this->m_input.empty() || this->m_output.empty()) {
+   197	        printf_err("failed to get tensors\n");
+   198	        return false;
+   199	    } else {
+   200	        this->m_type = this->m_input[0]->Type(); /* Input 0 should be the main input */
+   201	
+   202	        /* Clear the input & output tensors */
+   203	        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   204	            std::memset(this->m_input[inIndex]->GetData(), 0, this->m_input[inIndex]->Bytes());
+   205	        }
+   206	        for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+   207	            std::memset(this->m_output[outIndex]->GetData(), 0, this->m_output[outIndex]->Bytes());
+   208	        }
+   209	
+   210	        this->LogInterpreterInfo();
+   211	    }
+   212	
+   213	    this->m_inited = true;
+   214	    return true;
+   215	}
+   216	
+   217	std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+   218	{
+   219	    if (index < this->GetNumInputs()) {
+   220	        return this->m_input.at(index);
+   221	    }
+   222	    return {};
+   223	}
+   224	
+   225	std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+   226	{
+   227	    if (index < this->GetNumOutputs()) {
+   228	        return this->m_output.at(index);
+   229	    }
+   230	    return nullptr;
+   231	}
+   232	
+   233	void TflmModel::LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor)
+   234	{
+   235	    if (!tensor) {
+   236	        printf_err("Invalid tensor\n");
+   237	        assert(tensor);
+   238	        return;
+   239	    }
+   240	
+   241	    debug("\ttensor is assigned to 0x%p\n", tensor.get());
+   242	    info("\ttensor type is %s\n", GetTensorDataTypeName(tensor->Type()));
+   243	    info("\ttensor occupies %zu bytes with dimensions\n", tensor->Bytes());
+   244	    const auto shape = tensor->Shape();
+   245	    for (size_t i = 0; i < shape.size(); ++i) {
+   246	        info("\t\t%zu: %3d\n", i, static_cast<int>(shape[i]));
+   247	    }
+   248	
+   249	    const auto quant = tensor->GetQuantParams();
+   250	    info("Scale = %f\n", quant.scale);
+   251	    info("ZeroPoint = %d\n", quant.offset);
+   252	}
+   253	
+   254	void TflmModel::LogInterpreterInfo()
+   255	{
+   256	    if (!this->m_backendData.m_pInterpreter) {
+   257	        printf_err("Invalid interpreter\n");
+   258	        return;
+   259	    }
+   260	
+
+9. Heap symbols in the current experimental ELF
+2147665380 00000002 W ethosu_inference_end
+2147643408 00000002 T _ZN6tflite26SingleArenaBufferAllocatorD1Ev
+2147643408 00000002 T _ZN6tflite26SingleArenaBufferAllocatorD2Ev
+538162596 00000004 b heap_sz
+538164252 00000004 B __malloc_max_sbrked_mem
+538164248 00000004 B __malloc_max_total_mem
+536915224 00000004 D __malloc_sbrk_base
+538164256 00000004 B __malloc_top_pad
+536915228 00000004 D __malloc_trim_threshold
+2147643442 00000004 T _ZNK6tflite26SingleArenaBufferAllocator23GetOverlayMemoryAddressEv
+2147643624 00000004 T _ZThn4_N6tflite26SingleArenaBufferAllocatorD1Ev
+2147669040 00000008 r __init_malloc_prepare
+2147664014 00000008 T k_malloc
+2147641018 00000008 W _ZN6tflite39MicroContextRequestScratchBufferInArenaEP13TfLiteContextjPi
+2147643466 00000008 T _ZNK6tflite26SingleArenaBufferAllocator22GetPersistentUsedBytesEv
+2147643590 00000008 T _ZThn4_N6tflite26SingleArenaBufferAllocator24AllocatePersistentBufferEjj
+2147643496 00000008 T _ZThn4_N6tflite26SingleArenaBufferAllocatorD0Ev
+2147643474 00000008 T _ZThn4_NK6tflite26SingleArenaBufferAllocator22GetPersistentUsedBytesEv
+2147619628 00000012 T __malloc_lock
+2147619640 00000012 T __malloc_unlock
+2147643428 00000014 T _ZN6tflite26SingleArenaBufferAllocator14DeallocateTempEPh
+2147643628 00000014 T _ZN6tflite26SingleArenaBufferAllocatorC1EPhj
+2147643628 00000014 T _ZN6tflite26SingleArenaBufferAllocatorC2EPhj
+2147643482 00000014 T _ZN6tflite26SingleArenaBufferAllocatorD0Ev
+2147617516 00000016 T malloc
+2147641386 00000018 T _ZN6tflite23MicroInterpreterContext27RequestScratchBufferInArenaEjPi
+2147643410 00000018 T _ZN6tflite26SingleArenaBufferAllocator25DeallocateResizableBufferEPh
+536915800 00000020 D __lock___malloc_recursive_mutex
+2147643446 00000020 T _ZNK6tflite26SingleArenaBufferAllocator25GetNonPersistentUsedBytesEv
+2147664022 00000022 T k_heap_init
+536915776 00000024 D _system_heap
+2147691474 00000024 r _ZN6tflite12_GLOBAL__N_1L24kOfflineMemAllocMetadataE
+2147643598 00000026 T _ZNK6tflite26SingleArenaBufferAllocator18GetAvailableMemoryEj
+2147552108 00000032 T _ZN6tflite26SingleArenaBufferAllocatorC1EPhS1_
+2147552108 00000032 T _ZN6tflite26SingleArenaBufferAllocatorC2EPhS1_
+2147620532 00000036 T _sbrk_r
+2147503124 00000036 t _ZL11out_of_heapv
+2147551988 00000036 T _ZN6tflite26SingleArenaBufferAllocator20IsAllTempDeallocatedEv
+2147552024 00000036 T _ZN6tflite26SingleArenaBufferAllocator20ResetTempAllocationsEv
+2147643552 00000038 T _ZN6tflite26SingleArenaBufferAllocator33ReserveNonPersistentOverlayMemoryEjj
+538164208 00000040 B __malloc_current_mallinfo
+2147529236 00000040 T _sbrk
+2147529236 00000040 W sbrk
+2147551272 00000048 T _ZN6tflite14MicroAllocator6CreateEPNS_26SingleArenaBufferAllocatorEPNS_18MicroMemoryPlannerE
+2147643504 00000048 T _ZN6tflite26SingleArenaBufferAllocator23AllocateResizableBufferEjj
+2147552060 00000048 T _ZN6tflite26SingleArenaBufferAllocator24AllocatePersistentBufferEjj
+2147666662 00000050 T __gnu_end_cleanup
+2147551928 00000060 T _ZN6tflite26SingleArenaBufferAllocator12AllocateTempEjj
+2147529068 00000068 t malloc_prepare
+2147666852 00000072 T __cxa_end_catch
+2147552140 00000076 T _ZN6tflite26SingleArenaBufferAllocator6CreateEPhj
+2147632584 00000082 T sys_heap_alloc
+2147551840 00000088 T _ZN6tflite26SingleArenaBufferAllocator12ResizeBufferEPhjj
+2147676824 00000092 R _ZTVN6tflite26SingleArenaBufferAllocatorE
+2147607944 00000104 t z_heap_aligned_alloc
+2147551528 00000112 T _ZN6tflite14MicroAllocator27RequestScratchBufferInArenaEjiPi
+2147513320 00000140 T sys_heap_free
+2147622636 00000156 T _malloc_trim_r
+2147608624 00000168 T k_heap_free
+2147630726 00000180 t _ZN6tflite12_GLOBAL__N_129InitializeFloatLstmParametersEPNS_10OpDataLSTMEbiiii21TfLiteFusedActivationf.constprop.0
+2147601940 00000244 T move_thread_to_end_of_prio_q
+2147513460 00000260 T sys_heap_aligned_alloc
+2147553460 00000264 T _ZN6tflite33CalculateActivationRangeQuantizedEP13TfLiteContext21TfLiteFusedActivationP12TfLiteTensorPiS5_
+2147631138 00000270 W _ZN6tflite13lstm_internal17CalculateLstmGateIffffEEvRKNS0_15LstmStepManagerERKNS_14GateParametersEPK16TfLiteEvalTensorSA_SA_SA_SA_SA_PT1_SC_21TfLiteFusedActivation
+2147513720 00000284 T sys_heap_init
+2147608308 00000316 T k_heap_aligned_alloc
+536912528 00001032 D __malloc_av_
+2147617548 00001408 T _malloc_r
+538175664 00163840 B kheap__system_heap
+536916224 01245184 b _ZN3arm3appL13activationBufE
+
+10. Linker map heap and activation symbols
+1164-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_op.o)
+1165-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o) (operator delete(void*))
+1166-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_alloc.o)
+1167-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(guard.o) (__cxa_allocate_exception)
+1168-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+1169:                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(functexcept.o) (__cxa_end_cleanup)
+1170-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+1171-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o) (__cxa_begin_catch)
+1172-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_exception.o)
+1173-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(guard_error.o) (std::exception::~exception())
+1174-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_globals.o)
+1175-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o) (__cxa_get_globals_fast)
+1176-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_personality.o)
+1177-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o) (__gxx_personality_v0)
+1178-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_term_handler.o)
+1179-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o) (__cxxabiv1::__terminate_handler)
+1180-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_throw.o)
+1181-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(guard.o) (__cxa_throw)
+--
+12433- .text          0x0000000000000000        0x0 zephyr/kernel/libkernel.a(sched.c.obj)
+12434- .data          0x0000000000000000        0x0 zephyr/kernel/libkernel.a(sched.c.obj)
+12435- .bss           0x0000000000000000        0x0 zephyr/kernel/libkernel.a(sched.c.obj)
+12436- .text.z_requeue_current
+12437-                0x0000000000000000       0x78 zephyr/kernel/libkernel.a(sched.c.obj)
+12438: .text.z_move_thread_to_end_of_prio_q
+12439-                0x0000000000000000       0x8c zephyr/kernel/libkernel.a(sched.c.obj)
+12440- .text.z_impl_k_thread_suspend
+12441-                0x0000000000000000      0x1e4 zephyr/kernel/libkernel.a(sched.c.obj)
+12442- .rodata.z_pend_thread.str1.1
+12443-                0x0000000000000000       0x3d zephyr/kernel/libkernel.a(sched.c.obj)
+12444- .text.z_pend_thread
+12445-                0x0000000000000000       0xe8 zephyr/kernel/libkernel.a(sched.c.obj)
+12446- .text.z_unpend1_no_timeout
+12447-                0x0000000000000000       0x9c zephyr/kernel/libkernel.a(sched.c.obj)
+12448- .text.z_impl_k_thread_resume
+12449-                0x0000000000000000       0xa4 zephyr/kernel/libkernel.a(sched.c.obj)
+12450- .text.z_swap_next_thread
+--
+14211-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+14212- .ARM.extab.text.__cxa_type_match
+14213-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+14214- .ARM.extab.text.__cxa_begin_cleanup
+14215-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+14216: .ARM.extab.text.__gnu_end_cleanup
+14217-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+14218- .text          0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14219- .data          0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14220- .bss           0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14221- .ARM.extab.text._ZN10__cxxabiv1L24__is_gxx_exception_classEPc
+14222-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14223- .text.__cxa_get_exception_ptr
+14224-                0x0000000000000000        0x4 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14225- .ARM.extab.text.__cxa_get_exception_ptr
+14226-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14227- .ARM.exidx.text.__cxa_get_exception_ptr
+14228-                0x0000000000000000        0x8 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14229: .ARM.extab.text.__cxa_end_catch
+14230-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14231- .text._ZSt18uncaught_exceptionv
+14232-                0x0000000000000000       0x10 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14233- .ARM.extab.text._ZSt18uncaught_exceptionv
+14234-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14235- .ARM.exidx.text._ZSt18uncaught_exceptionv
+14236-                0x0000000000000000        0x8 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14237- .text._ZSt19uncaught_exceptionsv
+14238-                0x0000000000000000        0xa /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14239- .ARM.extab.text._ZSt19uncaught_exceptionsv
+14240-                0x0000000000000000        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+14241- .ARM.exidx.text._ZSt19uncaught_exceptionsv
+--
+17015-.rel.plt        0x0000000080000000        0x0
+17016- *(SORT_BY_ALIGNMENT(.rel.plt))
+17017-                [!provide]                        PROVIDE (__rel_iplt_start = .)
+17018- *(SORT_BY_ALIGNMENT(.rel.iplt))
+17019- .rel.iplt      0x0000000080000000        0x0 zephyr/CMakeFiles/zephyr_final.dir/isr_tables.c.obj
+17020:                [!provide]                        PROVIDE (__rel_iplt_end = .)
+17021-
+17022-.rela.plt       0x0000000000000000        0x0
+17023- *(SORT_BY_ALIGNMENT(.rela.plt))
+17024-                [!provide]                        PROVIDE (__rela_iplt_start = .)
+17025- *(SORT_BY_ALIGNMENT(.rela.iplt))
+17026:                [!provide]                        PROVIDE (__rela_iplt_end = .)
+17027-
+17028-.rel.dyn
+17029- *(SORT_BY_ALIGNMENT(.rel.*))
+17030-
+17031-.rela.dyn
+17032- *(SORT_BY_ALIGNMENT(.rela.*))
+17033-
+17034-/DISCARD/
+17035- *(SORT_BY_ALIGNMENT(.plt))
+17036-
+17037-/DISCARD/
+17038- *(SORT_BY_ALIGNMENT(.iplt))
+--
+17050- *(SORT_BY_ALIGNMENT(.exc_vector_table.*))
+17051- .exc_vector_table._vector_table_section
+17052-                0x0000000080000000       0x40 zephyr/arch/arch/arm/core/cortex_m/libarch__arm__core__cortex_m.a(vector_table.S.obj)
+17053-                0x0000000080000000                _vector_table
+17054- *(SORT_BY_ALIGNMENT(.vectors))
+17055:                0x00000000800007c0                _vector_end = .
+17056-                0x0000000080000040                . = ALIGN (0x4)
+17057- *(SORT_BY_ALIGNMENT(.gnu.linkonce.irq_vector_table*))
+17058- .gnu.linkonce.irq_vector_table
+17059-                0x0000000080000040      0x780 zephyr/CMakeFiles/zephyr_final.dir/isr_tables.c.obj
+17060-                0x0000000080000040                _irq_vector_table
+17061:                0x00000000800007c0                _vector_end = .
+17062-
+17063-text            0x00000000800007c0    0x2c85c
+17064-                0x00000000800007c0                __text_region_start = .
+17065- *(SORT_BY_ALIGNMENT(.text))
+17066- .text          0x00000000800007c0       0x40 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v8-m.main+dp/hard/libgcc.a(_fixunsdfdi.o)
+17067-                0x00000000800007c0                __aeabi_d2ulz
+17068-                0x00000000800007c0                __fixunsdfdi
+17069- .text          0x0000000080000800       0xec /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-memcpy.o)
+17070-                0x0000000080000800                memcpy
+17071- .text          0x00000000800008ec      0x1bc /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-strcmp.o)
+17072-                0x00000000800008ec                strcmp
+17073- .text          0x0000000080000aa8      0x378 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/../lib/gcc/arm-zephyr-eabi/12.2.0/thumb/v8-m.main+dp/hard/libgcc.a(_arm_addsubdf3.o)
+--
+18463-                0x000000008001cc64       0xa4 zephyr/kernel/libkernel.a(sched.c.obj)
+18464- .text.unpend_thread_no_timeout
+18465-                0x000000008001cd08       0x38 zephyr/kernel/libkernel.a(sched.c.obj)
+18466- .text.ready_thread
+18467-                0x000000008001cd40       0xd4 zephyr/kernel/libkernel.a(sched.c.obj)
+18468: .text.move_thread_to_end_of_prio_q
+18469-                0x000000008001ce14       0xf4 zephyr/kernel/libkernel.a(sched.c.obj)
+18470:                0x000000008001ce14                move_thread_to_end_of_prio_q
+18471- .text.z_ready_thread
+18472-                0x000000008001cf08       0x8c zephyr/kernel/libkernel.a(sched.c.obj)
+18473-                0x000000008001cf08                z_ready_thread
+18474- .text.z_unpend_thread_no_timeout
+18475-                0x000000008001cf94       0x90 zephyr/kernel/libkernel.a(sched.c.obj)
+18476-                0x000000008001cf94                z_unpend_thread_no_timeout
+18477- .text.z_sched_wake_thread
+18478-                0x000000008001d024       0xb8 zephyr/kernel/libkernel.a(sched.c.obj)
+18479-                0x000000008001d024                z_sched_wake_thread
+18480- .text.z_pend_curr
+18481-                0x000000008001d0dc      0x10c zephyr/kernel/libkernel.a(sched.c.obj)
+18482-                0x000000008001d0dc                z_pend_curr
+--
+20631- .text.ethosu_reset_job
+20632-                0x000000008002c5d8        0xa modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20633- .text.ethosu_inference_begin
+20634-                0x000000008002c5e2        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20635-                0x000000008002c5e2                ethosu_inference_begin
+20636: .text.ethosu_inference_end
+20637-                0x000000008002c5e4        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20638:                0x000000008002c5e4                ethosu_inference_end
+20639- .text.ethosu_irq_handler
+20640-                0x000000008002c5e6       0x24 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20641-                0x000000008002c5e6                ethosu_irq_handler
+20642- .text.ethosu_get_driver_version
+20643-                0x000000008002c60a        0xc modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20644-                0x000000008002c60a                ethosu_get_driver_version
+20645- .text.ethosu_invoke_v3
+20646-                0x000000008002c616       0x30 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20647-                0x000000008002c616                ethosu_invoke_v3
+20648- .text.ethosu_dev_run_command_stream
+20649-                0x000000008002c646       0x6c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+20650-                0x000000008002c646                ethosu_dev_run_command_stream
+--
+20748- .text._ZdlPv   0x000000008002ca36        0x4 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_op.o)
+20749-                0x000000008002ca36                operator delete(void*)
+20750- .text.__cxa_allocate_exception
+20751-                0x000000008002ca3a       0x2c /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_alloc.o)
+20752-                0x000000008002ca3a                __cxa_allocate_exception
+20753: .text.__cxa_end_cleanup
+20754-                0x000000008002ca66        0xc /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+20755:                0x000000008002ca66                __cxa_end_cleanup
+20756- .text._ZN10__cxxabiv1L24__is_gxx_exception_classEPc
+20757-                0x000000008002ca72       0x3a /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+20758- .text.__cxa_begin_cleanup
+20759-                0x000000008002caac       0x3a /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+20760-                0x000000008002caac                __cxa_begin_cleanup
+20761: .text.__gnu_end_cleanup
+20762-                0x000000008002cae6       0x32 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+20763:                0x000000008002cae6                __gnu_end_cleanup
+20764- .text._ZN10__cxxabiv1L24__is_gxx_exception_classEPc
+20765-                0x000000008002cb18       0x3a /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+20766- .text.__cxa_begin_catch
+20767-                0x000000008002cb52       0x52 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+20768-                0x000000008002cb52                __cxa_begin_catch
+20769: .text.__cxa_end_catch
+20770-                0x000000008002cba4       0x48 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+20771:                0x000000008002cba4                __cxa_end_catch
+20772- .text._ZNSt9exceptionD2Ev
+20773-                0x000000008002cbec        0x2 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_exception.o)
+20774-                0x000000008002cbec                std::exception::~exception()
+20775-                0x000000008002cbec                std::exception::~exception()
+20776- .text._ZNSt13bad_exceptionD2Ev
+20777-                0x000000008002cbee        0x2 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_exception.o)
+20778-                0x000000008002cbee                std::bad_exception::~bad_exception()
+20779-                0x000000008002cbee                std::bad_exception::~bad_exception()
+20780- .text._ZNSt13bad_exceptionD0Ev
+20781-                0x000000008002cbf0        0xe /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_exception.o)
+20782-                0x000000008002cbf0                std::bad_exception::~bad_exception()
+20783- .text._ZN12_GLOBAL__N_113constant_initD2Ev
+--
+20852- *(SORT_BY_ALIGNMENT(.vfp11_veneer))
+20853- .vfp11_veneer  0x000000008002d01c        0x0 linker stubs
+20854- *(SORT_BY_ALIGNMENT(.v4_bx))
+20855- .v4_bx         0x000000008002d01c        0x0 linker stubs
+20856-                0x000000008002d01c                . = ALIGN (0x4)
+20857:                0x000000008002d01c                __text_region_end = .
+20858-
+20859-.ARM.extab      0x000000008002d01c      0x13c
+20860- *(SORT_BY_ALIGNMENT(.ARM.extab*) SORT_BY_ALIGNMENT(.gnu.linkonce.armextab.*))
+20861- .ARM.extab.text._ZN10__cxxabiv111__terminateEPFvvE
+20862-                0x000000008002d01c       0x1c /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o)
+20863- .ARM.extab.text._ZN10__cxxabiv112__unexpectedEPFvvE
+20864-                0x000000008002d038        0xc /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o)
+20865- .ARM.extab.text._ZSt10unexpectedv
+20866-                0x000000008002d044        0xc /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o)
+20867- .ARM.extab.text.unlikely._ZSt17__throw_bad_allocv
+20868-                0x000000008002d050        0xc /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(functexcept.o)
+20869- .ARM.extab.text.unlikely._ZSt28__throw_bad_array_new_lengthv
+--
+21116-                0x000000008002d328        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+21117-                                          0x8 (size before relaxing)
+21118- .ARM.exidx.text.__cxa_begin_cleanup
+21119-                0x000000008002d328        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+21120-                                          0x8 (size before relaxing)
+21121: .ARM.exidx.text.__gnu_end_cleanup
+21122-                0x000000008002d328        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_arm.o)
+21123-                                          0x8 (size before relaxing)
+21124- .ARM.exidx.text._ZN10__cxxabiv1L24__is_gxx_exception_classEPc
+21125-                0x000000008002d328        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+21126-                                          0x8 (size before relaxing)
+21127- .ARM.exidx.text.__cxa_begin_catch
+21128-                0x000000008002d328        0x8 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+21129: .ARM.exidx.text.__cxa_end_catch
+21130-                0x000000008002d330        0x8 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_catch.o)
+21131- .ARM.exidx.text._ZNSt9exceptionD2Ev
+21132-                0x000000008002d338        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_exception.o)
+21133-                                          0x8 (size before relaxing)
+21134- .ARM.exidx.text._ZNSt13bad_exceptionD2Ev
+21135-                0x000000008002d338        0x0 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_exception.o)
+21136-                                          0x8 (size before relaxing)
+21137- .ARM.exidx.text._ZNSt13bad_exceptionD0Ev
+
+11. Heap-related allocation references in compiled firmware
+
+12. Current memory configuration
+CONFIG_HEAP_MEM_POOL_SIZE=163840
+CONFIG_NEWLIB_LIBC_MIN_REQUIRED_HEAP_SIZE=163840
+CONFIG_ACTIVATION_BUF_SZ=0x130000
+
+============================================================
+AUDIT COMPLETE - NO FILES MODIFIED
+============================================================
