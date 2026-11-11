@@ -1,0 +1,262 @@
+=== ACTUAL TFLM REGISTRATION STRUCTURE ===
+     1	/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	#ifndef THIRD_PARTY_TFLITE_MICRO_TENSORFLOW_LITE_MICRO_MICRO_COMMON_H_
+    16	#define THIRD_PARTY_TFLITE_MICRO_TENSORFLOW_LITE_MICRO_MICRO_COMMON_H_
+    17	
+    18	#include "tensorflow/lite/c/common.h"
+    19	
+    20	// TFLMRegistration defines the API that TFLM kernels need to implement.
+    21	// This will be replacing the current TfLiteRegistration_V1 struct with
+    22	// something more compatible Embedded enviroment TFLM is used in.
+    23	struct TFLMRegistration {
+    24	  void* (*init)(TfLiteContext* context, const char* buffer, size_t length);
+    25	  void (*free)(TfLiteContext* context, void* buffer);
+    26	  TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node);
+    27	  TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node);
+    28	  void (*reset)(TfLiteContext* context, void* buffer);
+    29	  int32_t builtin_code;
+    30	  const char* custom_name;
+    31	};
+    32	
+    33	struct TFLMInferenceRegistration {
+    34	  TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node);
+    35	  void (*reset)(TfLiteContext* context, void* buffer);
+    36	};
+    37	
+    38	#endif  // THIRD_PARTY_TFLITE_MICRO_TENSORFLOW_LITE_MICRO_MICRO_COMMON_H_
+
+=== BIDIRECTIONAL SEQUENCE LSTM REGISTRATION API ===
+
+=== ADD BUILTIN IMPLEMENTATION AND ACCESS ===
+680-  TfLiteStatus AddZerosLike() {
+681-    return AddBuiltin(BuiltinOperator_ZEROS_LIKE, Register_ZEROS_LIKE(),
+682-                      ParseZerosLike);
+683-  }
+684-
+685-  unsigned int GetRegistrationLength() { return registrations_len_; }
+686-
+687- public:
+688:  TfLiteStatus AddBuiltin(tflite::BuiltinOperator op,
+689-                          const TFLMRegistration& registration,
+690-                          TfLiteBridgeBuiltinParseFunction parser) {
+691-    if (op == BuiltinOperator_CUSTOM) {
+692-      MicroPrintf("Invalid parameter BuiltinOperator_CUSTOM to the ");
+693-      MicroPrintf("AddBuiltin function.");
+694-      return kTfLiteError;
+695-    }
+696-
+697-    if (FindOp(op) != nullptr) {
+698-      MicroPrintf("Calling AddBuiltin with the same op more than ");
+699-      MicroPrintf("once is not supported (Op: #%d).", op);
+700-      return kTfLiteError;
+701-    }
+702-
+703-    if (registrations_len_ >= tOpCount) {
+704-      MicroPrintf("Couldn't register builtin op #%d, resolver size ", op);
+705-      MicroPrintf("is too small (%d).", tOpCount);
+706-      return kTfLiteError;
+707-    }
+708-
+709-    registrations_[registrations_len_] = registration;
+710-    // Strictly speaking, the builtin_code is not necessary for TFLM but
+
+=== APPLICATION MODEL RESOLVER IMPLEMENTATION ===
+45-#include "tensorflow/lite/micro/micro_utils.h"
+46-
+47-#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+48-#include "tensorflow/lite/micro/kernels/kernel_util.h"
+49-#include "tensorflow/lite/micro/micro_log.h"
+50-
+51-#include "mlek/log/log_macros.h"
+52-#include "heatstroke_bidirectional_lstm.h"
+53-
+54-const tflite::MicroOpResolver&
+55:arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+56-{
+57-    return this->m_opResolver;
+58-}
+59-
+60-namespace
+61-{
+62-
+63-/*
+64- * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+65- * required by this implementation. Validate its options type and leave
+66- * builtin_data null.
+67- */
+--
+608-#endif
+609-
+610-TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+611-    const tflite::Operator* op,
+612-    tflite::ErrorReporter* error_reporter,
+613-    tflite::BuiltinDataAllocator* allocator,
+614-    void** builtin_data)
+615-{
+616-    return tflite::ParseOpData(
+617-        op,
+618:        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+619-        error_reporter,
+620-        allocator,
+621-        builtin_data);
+622-}
+623-
+624-bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+625-{
+626-#define HS_ADD_REQUIRED(method)                                      \
+627-    do {                                                              \
+628-        const TfLiteStatus status = this->m_opResolver.method();      \
+629-        if (status != kTfLiteOk) {                                    \
+630-            printf_err(                                               \
+--
+805-    {
+806-#if defined(HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+807-        const TFLMRegistration registration =
+808-            tflite::RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+809-#else
+810-        const TFLMRegistration registration =
+811-            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+812-#endif
+813-
+814-        if (this->m_opResolver.AddBuiltin(
+815:                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+816-                registration,
+817-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+818-            printf_err(
+819-                "Failed to register heat-stress bidirectional LSTM.\n");
+820-            return false;
+821-        }
+822-    }
+823-
+824-    /*
+825-     * Ethos-U registration.
+826-     *
+827:     * AddEthosU() in this SDK can report success even when the hardware
+828-     * registration is null. Therefore, explicitly verify FindOp().
+829-     */
+830:    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+831-        printf_err("Failed to add Ethos-U to the resolver.\n");
+832-        return false;
+833-    }
+834-
+835-    const char* ethos_name = tflite::GetString_ETHOSU();
+836-
+837-    if (ethos_name == nullptr ||
+838-        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+839-        printf_err(
+840-            "Ethos-U registration is missing from the resolver.\n");
+841-        return false;
+842-    }
+843-
+844-#if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+845-    {
+846-        const TFLMRegistration registration =
+847-            tflite::RegisterHeatstrokeLayerNormQuantize();
+848-
+849:        if (this->m_opResolver.AddCustom(
+850-                "HeatstrokeLayerNormQuantize",
+851-                &registration) != kTfLiteOk) {
+852-            printf_err(
+853-                "Failed to register fused heat-stress LayerNorm operator.\n");
+854-            return false;
+855-        }
+856-
+857-        if (this->m_opResolver.FindOp(
+858-                "HeatstrokeLayerNormQuantize") == nullptr) {
+859-            printf_err(
+860-                "Fused heat-stress LayerNorm registration is missing.\n");
+861-            return false;
+--
+891-        tflite::BuiltinOperator_RSQRT,
+892-        tflite::BuiltinOperator_SELECT_V2,
+893-        tflite::BuiltinOperator_SIGN,
+894-        tflite::BuiltinOperator_SOFTMAX,
+895-        tflite::BuiltinOperator_SPLIT_V,
+896-        tflite::BuiltinOperator_SQRT,
+897-        tflite::BuiltinOperator_SQUARE,
+898-        tflite::BuiltinOperator_SUB,
+899-        tflite::BuiltinOperator_SUM,
+900-        tflite::BuiltinOperator_TOPK_V2,
+901:        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+902-    };
+903-
+904-    for (const auto op : required_ops) {
+905-        if (this->m_opResolver.FindOp(op) == nullptr) {
+906-            printf_err(
+907-                "Required heat-stress builtin registration is missing: %d\n",
+908-                static_cast<int>(op));
+909-            return false;
+910-        }
+911-
+912-        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+913-            printf_err(
+
+=== APPLICATION MODEL CLASS VISIBILITY ===
+     1	#ifndef POLYU_MODEL1_HPP
+     2	#define POLYU_MODEL1_HPP
+     3	
+     4	#include "mlek/fwk/tflm/TflmModel.hpp"
+     5	
+     6	namespace arm::app::asr {
+     7	extern const int g_FrameLength;
+     8	extern const int g_FrameStride;
+     9	extern const float g_ScoreThreshold;
+    10	extern const int g_ctxLen;
+    11	} // namespace arm::app::asr
+    12	
+    13	namespace arm::app::fwk::tflm {
+    14	
+    15	class PolyUModel1 : public TflmModel {
+    16	
+    17	public:
+    18	    /* Indices for the expected model - based on input and output tensor shapes */
+    19	    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    20	    static constexpr uint32_t ms_inputColsIdx  = 2;
+    21	    static constexpr uint32_t ms_outputRowsIdx = 2;
+    22	    static constexpr uint32_t ms_outputColsIdx = 3;
+    23	
+    24	    /* Model specific constants. */
+    25	    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    26	    static constexpr uint32_t ms_numMfccFeatures = 13;
+    27	
+    28	protected:
+    29	    /** @brief   Gets the reference to op resolver interface class. */
+    30	    const tflite::MicroOpResolver& GetOpResolver() override;
+    31	
+    32	    /** @brief   Adds operations to the op resolver instance. */
+    33	    bool EnlistOperations() override;
+    34	
+    35	private:
+    36	    /* Maximum number of individual operations that can be enlisted. */
+    37	    #if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+    38	    static constexpr int ms_maxOpCnt = 33;
+    39	#else
+    40	    static constexpr int ms_maxOpCnt = 32;
+    41	#endif
+    42	
+    43	    /* A mutable op resolver instance. */
+    44	    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+    45	};
+    46	
+    47	} /* namespace arm::app::fwk::tflm */
+    48	
+    49	#endif /* POLYU_MODEL1_HPP */
+
+=== ACTIVE CYCLE COUNTER CONFIGURATION ===
+19:CONFIG_SYS_CLOCK_TICKS_PER_SEC=1000
+1184:CONFIG_TIMER_HAS_64BIT_CYCLE_COUNTER=y
+
+=== END PREFLIGHT ===
