@@ -1,0 +1,481 @@
+=== ZEPHYR ETHOS-U IRQ AND DEVICE INITIALIZATION ===
+	unsigned int irqn;
+	void (*irq_config)(void);
+	const struct device *clk_dev;
+	clock_control_subsys_t clk_id;
+};
+
+struct ethosu_data {
+	struct ethosu_driver drv;
+};
+
+void ethosu_zephyr_irq_handler(const struct device *dev)
+{
+	struct ethosu_data *data = dev->data;
+	struct ethosu_driver *drv = &data->drv;
+
+	ethosu_irq_handler(drv);
+}
+
+static int ethosu_zephyr_init(const struct device *dev)
+{
+	const struct ethosu_dts_info *config = dev->config;
+	struct ethosu_data *data = dev->data;
+	struct ethosu_driver *drv = &data->drv;
+	struct ethosu_driver_version version;
+
+	LOG_DBG("Ethos-U DTS info. base_address=0x%p, secure_enable=%u, privilege_enable=%u",
+		config->base_addr, config->secure_enable, config->privilege_enable);
+
+	if (config->clk_dev != NULL) {
+		if (!device_is_ready(config->clk_dev)) {
+			LOG_ERR("Clock device not ready");
+			return -ENODEV;
+		}
+		if (clock_control_on(config->clk_dev, config->clk_id)) {
+			LOG_ERR("Failed to enable NPU clock");
+			return -EIO;
+		}
+	}
+
+	ethosu_get_driver_version(&version);
+
+	LOG_DBG("Version. major=%u, minor=%u, patch=%u", version.major, version.minor,
+		version.patch);
+
+	if (ethosu_init(drv, config->base_addr, NULL, 0, config->secure_enable,
+			config->privilege_enable)) {
+		LOG_ERR("Failed to initialize NPU with ethosu_init().");
+		return -EINVAL;
+	}
+
+	config->irq_config();
+
+	return 0;
+}
+
+#if defined(CONFIG_PM_DEVICE)
+/**
+ * @brief Ethos-U PM device action handler
+ *
+ * Handles power management state transitions for the Ethos-U device.
+ * Coordinates with power domain via PM framework.
+ *
+ * @param dev Ethos-U device struct
+ * @param action PM device action
+ *
+ * @return 0 if successful, negative errno otherwise
+ */
+static int ethosu_pm_action(const struct device *dev, enum pm_device_action action)
+{
+	int ret = 0;
+	const struct ethosu_dts_info *config = dev->config;
+	struct ethosu_data *data = dev->data;
+	struct ethosu_driver *drv = &data->drv;
+
+	switch (action) {
+	case PM_DEVICE_ACTION_RESUME:
+		return ethosu_zephyr_init(dev);
+
+	case PM_DEVICE_ACTION_SUSPEND:
+		/*
+		 * Refuse to suspend while the NPU is reserved or an inference is
+		 * in flight. Tearing down in that state would free the driver
+		 * semaphore under an active job, and ethosu_deregister_driver()
+		 * would block on the global handle semaphore while holding the
+		 * driver mutex, deadlocking the subsystem.
+		 */
+		if (drv->reserved || drv->job.state != ETHOSU_JOB_IDLE) {
+			return -EBUSY;
+		}
+
+		/*
+
+=== ZEPHYR ETHOS-U IRQ CONFIGURATION MACRO ===
+242-	case PM_DEVICE_ACTION_TURN_ON:
+243-		break;
+244-
+245-	default:
+246-		ret = -ENOTSUP;
+247-		break;
+248-	}
+249-
+250-	return ret;
+251-}
+252-#endif /* CONFIG_PM_DEVICE */
+253-
+254:#define ETHOSU_DEVICE_INIT(n)                                                                      \
+255-	static struct ethosu_data ethosu_data_##n;                                                 \
+256-                                                                                                   \
+257-	static void ethosu_zephyr_irq_config_##n(void)                                             \
+258-	{                                                                                          \
+259:		IRQ_CONNECT(DT_INST_IRQN(n), DT_INST_IRQ(n, priority), ethosu_zephyr_irq_handler,  \
+260-			    DEVICE_DT_INST_GET(n), 0);                                             \
+261-		irq_enable(DT_INST_IRQN(n));                                                       \
+262-	}                                                                                          \
+263-                                                                                                   \
+264-	static const struct ethosu_dts_info ethosu_dts_info_##n = {                                \
+265-		.base_addr = (void *)DT_INST_REG_ADDR(n),                                          \
+266-		.secure_enable = DT_INST_PROP(n, secure_enable),                                   \
+267-		.privilege_enable = DT_INST_PROP(n, privilege_enable),                             \
+268-		.irqn = DT_INST_IRQN(n),                                                           \
+269-		.irq_config = &ethosu_zephyr_irq_config_##n,                                       \
+270-		.clk_dev = COND_CODE_1(DT_INST_NODE_HAS_PROP(n, clocks),                           \
+271-			(DEVICE_DT_GET(DT_INST_CLOCKS_CTLR(n))), (NULL)),			   \
+272-		.clk_id = COND_CODE_1(DT_INST_NODE_HAS_PROP(n, clocks),                            \
+273-			((clock_control_subsys_t)DT_INST_CLOCKS_CELL(n, clkid)), (NULL)),	   \
+274-	};                                                                                         \
+275-                                                                                                   \
+276-	PM_DEVICE_DT_INST_DEFINE(n, ethosu_pm_action);                                             \
+277-                                                                                                   \
+278-	DEVICE_DT_INST_DEFINE(n, ethosu_zephyr_init, PM_DEVICE_DT_INST_GET(n), &ethosu_data_##n,   \
+279-			      &ethosu_dts_info_##n, POST_KERNEL,                                   \
+280-			      CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, NULL);
+281-
+282:DT_INST_FOREACH_STATUS_OKAY(ETHOSU_DEVICE_INIT);
+
+=== HAL ETHOS-U IRQ HANDLER SOURCE ===
+375-    ethosu_dev_run_command_stream(&drv->dev, cmd_stream, cms_bytes, drv->job.base_addr, drv->job.num_base_addr);
+376-
+377-    return 0;
+378-}
+379-
+380-/******************************************************************************
+381- * Weak functions - Interrupt handler
+382- ******************************************************************************/
+383:void __attribute__((weak)) ethosu_irq_handler(struct ethosu_driver *drv)
+384-{
+385-    // Prevent race condition where interrupt triggered after a timeout waiting
+386-    // for semaphore, but before NPU is reset.
+387-    if (drv->job.result == ETHOSU_JOB_RESULT_TIMEOUT)
+388-    {
+389-        return;
+390-    }
+391-
+392-    drv->job.state  = ETHOSU_JOB_DONE;
+393-    drv->job.result = ethosu_dev_handle_interrupt(&drv->dev) ? ETHOSU_JOB_RESULT_OK : ETHOSU_JOB_RESULT_ERROR;
+394-    ethosu_semaphore_give(drv->semaphore);
+395-}
+396-
+397-/******************************************************************************
+398- * Functions API
+399- ******************************************************************************/
+400-
+401-void ethosu_set_basep_cache_mask(struct ethosu_driver *drv, uint8_t flush_mask, uint8_t invalidate_mask)
+402-{
+403-    drv->basep_flush_mask      = flush_mask;
+404-    drv->basep_invalidate_mask = invalidate_mask;
+405-}
+406-
+407-int ethosu_init(struct ethosu_driver *drv,
+408-                void *const base_address,
+409-                const void *fast_memory,
+410-                const size_t fast_memory_size,
+411-                uint32_t secure_enable,
+412-                uint32_t privilege_enable)
+413-{
+414-    LOG_INFO("Initializing NPU: base_address=%p, fast_memory=%p, fast_memory_size=%zu, secure=%" PRIu32
+415-             ", privileged=%" PRIu32,
+416-             base_address,
+417-             fast_memory,
+418-             fast_memory_size,
+419-             secure_enable,
+420-             privilege_enable);
+421-
+422-    if (!ethosu_mutex)
+423-    {
+
+=== HAL INTERRUPT DISPATCH IMPLEMENTATION ===
+196-    dev->reg->CMD.word = cmd.word;
+197-    LOG_DEBUG("CMD=0x%08" PRIx32, cmd.word);
+198-}
+199-
+200-void ethosu_dev_print_err_status(struct ethosu_device *dev)
+201-{
+202-    LOG_ERR("NPU status=0x%08" PRIx32 ", qread=%" PRIu32 ", cmd_end_reached=%u",
+203-            dev->reg->STATUS.word,
+204-            dev->reg->QREAD.word,
+205-            dev->reg->STATUS.cmd_end_reached);
+206-}
+207-
+208:bool ethosu_dev_handle_interrupt(struct ethosu_device *dev)
+209-{
+210-    struct cmd_r cmd;
+211-
+212-    // Clear interrupt
+213-    cmd.word           = dev->reg->CMD.word & NPU_CMD_PWR_CLK_MASK;
+214-    cmd.clear_irq      = 1;
+215-    dev->reg->CMD.word = cmd.word;
+216-
+217-    // If a fault has occured, the NPU needs to be reset
+218-    if (dev->reg->STATUS.bus_status || dev->reg->STATUS.cmd_parse_error || dev->reg->STATUS.wd_fault ||
+219-        dev->reg->STATUS.ecc_fault || !dev->reg->STATUS.cmd_end_reached)
+220-    {
+221-        return false;
+222-    }
+223-
+224-    return true;
+225-}
+226-
+227-bool ethosu_dev_verify_access_state(struct ethosu_device *dev)
+228-{
+229-    if (dev->reg->PROT.active_CSL != (dev->secure ? SECURITY_LEVEL_SECURE : SECURITY_LEVEL_NON_SECURE) ||
+230-        dev->reg->PROT.active_CPL != (dev->privileged ? PRIVILEGE_LEVEL_PRIVILEGED : PRIVILEGE_LEVEL_USER))
+231-    {
+232-        return false;
+233-    }
+234-    return true;
+235-}
+236-
+237-enum ethosu_error_codes ethosu_dev_soft_reset(struct ethosu_device *dev)
+238-{
+239-    // Note that after a soft-reset, the NPU is unconditionally
+240-    // powered until the next CMD gets written.
+241-
+242-    struct reset_r reset;
+243-
+244-    reset.word        = 0;
+245-    reset.pending_CPL = dev->privileged ? PRIVILEGE_LEVEL_PRIVILEGED : PRIVILEGE_LEVEL_USER;
+246-    reset.pending_CSL = dev->secure ? SECURITY_LEVEL_SECURE : SECURITY_LEVEL_NON_SECURE;
+247-
+248-    // Reset and set security level
+249-    LOG_INFO("Soft reset NPU");
+250-    dev->reg->RESET.word = reset.word;
+251-
+252-    // Wait until reset status indicates that reset has been completed
+253-    for (int i = 0; i < 100000 && dev->reg->STATUS.reset_status != 0; i++)
+254-    {
+255-    }
+256-
+257-    if (dev->reg->STATUS.reset_status != 0)
+258-    {
+259-        LOG_ERR("Soft reset timed out");
+260-        return ETHOSU_GENERIC_FAILURE;
+261-    }
+262-
+263-    // Verify that NPU has switched security state and privilege level
+
+=== ZEPHYR SEMAPHORE TAKE/GIVE SOURCE ===
+	return 0;
+}
+
+int ethosu_mutex_unlock(void *mutex)
+{
+	k_mutex_unlock((struct k_mutex *)mutex);
+	return 0;
+}
+
+void *ethosu_semaphore_create(void)
+{
+	struct k_sem *sem;
+
+	sem = k_malloc(sizeof(*sem));
+	if (sem == NULL) {
+		LOG_ERR("Failed to allocate semaphore");
+		return NULL;
+	}
+
+	k_sem_init(sem, 0, 100);
+
+	return (void *)sem;
+}
+
+int ethosu_semaphore_take(void *sem, uint64_t timeout)
+{
+	int status;
+
+	status = k_sem_take((struct k_sem *)sem, (timeout == ETHOSU_SEMAPHORE_WAIT_FOREVER)
+							 ? K_FOREVER
+							 : Z_TIMEOUT_TICKS(timeout));
+
+	if (status != 0) {
+		/* The Ethos-U driver expects the semaphore implementation to never fail except for
+		 * when a timeout occurs, and the current ethosu_semaphore_take implementation makes
+		 * no distinction, in terms of return codes, between a timeout and other semaphore
+		 * take failures. Also, note that a timeout is virtually indistinguishable from
+		 * other failures if the driver logging is disabled. Handling errors other than a
+		 * timeout is therefore not covered here and is deferred to the application
+		 * developer if necessary.
+		 */
+		if (status != -EAGAIN) {
+			LOG_ERR("Failed to take semaphore with error - %d", status);
+		}
+		return -1;
+	}
+
+	return 0;
+}
+
+int ethosu_semaphore_give(void *sem)
+{
+	k_sem_give((struct k_sem *)sem);
+	return 0;
+}
+
+void ethosu_semaphore_destroy(void *sem)
+{
+
+=== GENERATED INTERRUPT TABLE: ETHOS-U ===
+
+=== LINKER MAP: IRQ CONFIGURATION AND HANDLER SYMBOLS ===
+1134-modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmTensor.cc.obj)
+1135-                              modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj) (arm::app::fwk::tflm::TflmTensor::TflmTensor(TfLiteTensor*))
+1136-modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TensorFlowLiteMicro.cc.obj)
+1137-                              modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj) (arm::app::fwk::tflm::EnableTFLMLog())
+1138-modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+1139:                              zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj) (ethosu_irq_handler)
+1140-modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+1141-                              modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj) (ethosu_dev_run_command_stream)
+1142-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o)
+1143-                              app/libapp.a(MainLoop.cc.obj) (operator delete(void*, unsigned int))
+1144-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o)
+1145-                              app/libapp.a(Main.cc.obj) (std::terminate())
+1146-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_unex_handler.o)
+1147-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o) (__cxxabiv1::__unexpected_handler)
+--
+19410- .text._fstat   0x0000000080026242        0xa zephyr/lib/libc/newlib/liblib__libc__newlib.a(libc-hooks.c.obj)
+19411-                0x0000000080026242                fstat
+19412-                0x0000000080026242                _fstat
+19413- .text.__errno  0x000000008002624c        0x4 zephyr/lib/libc/newlib/liblib__libc__newlib.a(libc-hooks.c.obj)
+19414-                0x000000008002624c                __errno
+19415: .text.ethosu_zephyr_irq_handler
+19416-                0x0000000080026250        0x6 zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj)
+19417:                0x0000000080026250                ethosu_zephyr_irq_handler
+19418- .text.ethosu_zephyr_irq_config_0
+19419-                0x0000000080026256       0x16 zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj)
+19420- .text.z_log_msg_runtime_create.constprop.0
+19421-                0x000000008002626c       0x20 zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj)
+19422- .text.ethosu_pm_action
+19423-                0x000000008002628c       0x52 zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj)
+19424- .text.ethosu_mutex_unlock
+19425-                0x00000000800262de        0xa zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj)
+--
+20775-                0x000000008002dd40        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20776-                0x000000008002dd40                ethosu_inference_begin
+20777- .text.ethosu_inference_end
+20778-                0x000000008002dd42        0x2 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20779-                0x000000008002dd42                ethosu_inference_end
+20780: .text.ethosu_irq_handler
+20781-                0x000000008002dd44       0x24 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20782:                0x000000008002dd44                ethosu_irq_handler
+20783- .text.ethosu_get_driver_version
+20784-                0x000000008002dd68        0xc modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20785-                0x000000008002dd68                ethosu_get_driver_version
+20786- .text.ethosu_invoke_v3
+20787-                0x000000008002dd74       0x30 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+20788-                0x000000008002dd74                ethosu_invoke_v3
+20789- .text.ethosu_dev_run_command_stream
+20790-                0x000000008002dda4       0x6c modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+20791-                0x000000008002dda4                ethosu_dev_run_command_stream
+20792: .text.ethosu_dev_handle_interrupt
+20793-                0x000000008002de10       0x44 modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+20794:                0x000000008002de10                ethosu_dev_handle_interrupt
+20795- .text.ethosu_dev_verify_access_state
+20796-                0x000000008002de54       0x2e modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+20797-                0x000000008002de54                ethosu_dev_verify_access_state
+20798- .text.ethosu_dev_set_clock_and_power
+20799-                0x000000008002de82       0x3a modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+20800-                0x000000008002de82                ethosu_dev_set_clock_and_power
+20801- .text._ZdlPvj  0x000000008002debc        0x4 /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o)
+20802-                0x000000008002debc                operator delete(void*, unsigned int)
+
+=== LINKED SYMBOL TABLE ===
+8000cf60 00000048 T ethosu_semaphore_take
+80020548 0000010c T ethosu_wait
+80026250 00000006 T ethosu_zephyr_irq_handler
+800262e8 0000000a T ethosu_semaphore_give
+8002dd44 00000024 W ethosu_irq_handler
+8002dd74 00000030 T ethosu_invoke_v3
+8002dda4 0000006c T ethosu_dev_run_command_stream
+8002de10 00000044 T ethosu_dev_handle_interrupt
+
+=== LINKED IRQ HANDLER DISASSEMBLY ===
+
+/home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.elf:     file format elf32-littlearm
+
+
+Disassembly of section text:
+
+8002dd44 <ethosu_irq_handler>:
+8002dd44:	b510      	push	{r4, lr}
+8002dd46:	7c43      	ldrb	r3, [r0, #17]
+8002dd48:	4604      	mov	r4, r0
+8002dd4a:	2b01      	cmp	r3, #1
+8002dd4c:	d00b      	beq.n	8002dd66 <ethosu_irq_handler+0x22>
+8002dd4e:	2302      	movs	r3, #2
+8002dd50:	7403      	strb	r3, [r0, #16]
+8002dd52:	f000 f85d 	bl	8002de10 <ethosu_dev_handle_interrupt>
+8002dd56:	f080 0301 	eor.w	r3, r0, #1
+8002dd5a:	005b      	lsls	r3, r3, #1
+8002dd5c:	b2db      	uxtb	r3, r3
+8002dd5e:	6ae0      	ldr	r0, [r4, #44]	; 0x2c
+8002dd60:	7463      	strb	r3, [r4, #17]
+8002dd62:	f7f8 fac1 	bl	800262e8 <ethosu_semaphore_give>
+8002dd66:	bd10      	pop	{r4, pc}
+
+8002dd68 <ethosu_get_driver_version>:
+8002dd68:	2300      	movs	r3, #0
+8002dd6a:	2210      	movs	r2, #16
+8002dd6c:	7003      	strb	r3, [r0, #0]
+8002dd6e:	7042      	strb	r2, [r0, #1]
+8002dd70:	7083      	strb	r3, [r0, #2]
+8002dd72:	4770      	bx	lr
+
+=== LINKED ETHOS-U SEMAPHORE DISASSEMBLY ===
+
+/home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.elf:     file format elf32-littlearm
+
+
+Disassembly of section text:
+
+8000cf60 <ethosu_semaphore_take>:
+8000cf60:	f1b3 3fff 	cmp.w	r3, #4294967295	; 0xffffffff
+8000cf64:	bf08      	it	eq
+8000cf66:	f1b2 3fff 	cmpeq.w	r2, #4294967295	; 0xffffffff
+8000cf6a:	b51f      	push	{r0, r1, r2, r3, r4, lr}
+8000cf6c:	bf04      	itt	eq
+8000cf6e:	f04f 32ff 	moveq.w	r2, #4294967295	; 0xffffffff
+8000cf72:	4613      	moveq	r3, r2
+8000cf74:	f010 ff60 	bl	8001de38 <z_impl_k_sem_take>
+8000cf78:	b178      	cbz	r0, 8000cf9a <ethosu_semaphore_take+0x3a>
+8000cf7a:	f110 0f0b 	cmn.w	r0, #11
+8000cf7e:	d00a      	beq.n	8000cf96 <ethosu_semaphore_take+0x36>
+8000cf80:	4b07      	ldr	r3, [pc, #28]	; (8000cfa0 <ethosu_semaphore_take+0x40>)
+8000cf82:	9003      	str	r0, [sp, #12]
+8000cf84:	9302      	str	r3, [sp, #8]
+8000cf86:	2300      	movs	r3, #0
+8000cf88:	2201      	movs	r2, #1
+8000cf8a:	4618      	mov	r0, r3
+8000cf8c:	e9cd 3300 	strd	r3, r3, [sp]
+8000cf90:	4904      	ldr	r1, [pc, #16]	; (8000cfa4 <ethosu_semaphore_take+0x44>)
+8000cf92:	f019 f96b 	bl	8002626c <z_log_msg_runtime_create.constprop.0>
+8000cf96:	f04f 30ff 	mov.w	r0, #4294967295	; 0xffffffff
+8000cf9a:	b005      	add	sp, #20
+8000cf9c:	f85d fb04 	ldr.w	pc, [sp], #4
+8000cfa0:	800418ab 	.word	0x800418ab
+8000cfa4:	8002fd20 	.word	0x8002fd20
+
+=== LINKED IRQ WRAPPER DISASSEMBLY ===
+WARNING: Zephyr IRQ wrapper symbol not found.
+
+=== ETHOS-U INTERRUPT CONFIGURATION IN FINAL DTS ===
+59-			reg-names = "cgu", "clkctl_per_mst", "clkctl_per_slv", "aon", "vbat", "m55he_cfg", "m55hp_cfg";
+60-			#clock-cells = < 0x1 >;
+61-			status = "okay";
+62-			phandle = < 0x6 >;
+63-		};
+64:		ethosu0: ethosu55@400e1000 {
+65-			compatible = "arm,ethos-u";
+66-			reg = < 0x400e1000 0x1000 >;
+67-			interrupts = < 0x37 0x0 >;
+68-			interrupt-parent = < &nvic >;
+69-			secure-enable;
+70-			privilege-enable;
+71-			status = "okay";
+72-			phandle = < 0x61 >;
+73-		};
+74-		mram_flash: mram_flash@80000000 {
+75-			compatible = "alif,mram-flash-controller";
+76-			#address-cells = < 0x1 >;
+
+=== END AUDIT ===
