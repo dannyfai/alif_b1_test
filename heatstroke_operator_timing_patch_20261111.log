@@ -1,0 +1,260 @@
+=== HEATSTROKE OPERATOR TIMING PATCH ===
+Timestamp: 20261111_174318
+Scope: application source only
+
+=== BACKUPS ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/source_backups/PolyUModel1.hpp.pre_operator_timing_20261111_174318.bak
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/source_backups/PolyUModel1.cc.pre_operator_timing_20261111_174318.bak
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/source_backups/MainLoop.cc.pre_operator_timing_20261111_174318.bak
+
+=== PATCH SUMMARY ===
+PolyUModel1.hpp: added profiling control declarations
+PolyUModel1.cc: added Ethos-U and BiLSTM invoke wrappers
+PolyUModel1.cc: modifies public resolver registration entries
+MainLoop.cc: resets counters before inference and logs after inference
+Timing: k_cycle_get_64() plus k_uptime_get()
+No model, SDK, Kconfig, arena, or heap files modified
+
+=== UNIFIED DIFFS ===
+--- /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp.before
++++ /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/include/PolyUModel1.hpp.after
+@@ -11,6 +11,9 @@
+ } // namespace arm::app::asr
+ 
+ namespace arm::app::fwk::tflm {
++
++void ResetHeatstrokeOperatorTiming();
++void LogHeatstrokeOperatorTiming();
+ 
+ class PolyUModel1 : public TflmModel {
+ 
+
+--- /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.before
++++ /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.after
+@@ -38,6 +38,8 @@
+ #include <cstring>
+ #include <limits>
+ 
++#include <zephyr/kernel.h>
++
+ #include "tensorflow/lite/c/builtin_op_data.h"
+ #include "tensorflow/lite/c/common.h"
+ #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+@@ -51,11 +53,199 @@
+ #include "mlek/log/log_macros.h"
+ #include "heatstroke_bidirectional_lstm.h"
+ 
++
++namespace
++{
++using HeatstrokeInvokeFunction =
++    TfLiteStatus (*)(TfLiteContext*, TfLiteNode*);
++
++struct HeatstrokeOperatorTiming
++{
++    std::uint32_t calls{0};
++    std::uint64_t total_cycles{0};
++    std::uint64_t total_wall_ms{0};
++    std::uint64_t max_wall_ms{0};
++};
++
++HeatstrokeInvokeFunction g_heatstrokeOriginalEthosUInvoke = nullptr;
++HeatstrokeInvokeFunction g_heatstrokeOriginalBiLstmInvoke = nullptr;
++
++HeatstrokeOperatorTiming g_heatstrokeEthosUTiming{};
++HeatstrokeOperatorTiming g_heatstrokeBiLstmTiming{};
++
++bool g_heatstrokeTimingHookStatusLogged = false;
++
++void RecordHeatstrokeOperatorTiming(
++    HeatstrokeOperatorTiming& stats,
++    std::uint64_t elapsed_cycles,
++    std::uint64_t elapsed_ms)
++{
++    ++stats.calls;
++    stats.total_cycles += elapsed_cycles;
++    stats.total_wall_ms += elapsed_ms;
++
++    if (elapsed_ms > stats.max_wall_ms) {
++        stats.max_wall_ms = elapsed_ms;
++    }
++}
++
++TfLiteStatus HeatstrokeTimedEthosUInvoke(
++    TfLiteContext* context,
++    TfLiteNode* node)
++{
++    if (g_heatstrokeOriginalEthosUInvoke == nullptr) {
++        return kTfLiteError;
++    }
++
++    const std::uint64_t cycles_start = k_cycle_get_64();
++    const std::int64_t time_start_ms = k_uptime_get();
++
++    const TfLiteStatus result =
++        g_heatstrokeOriginalEthosUInvoke(context, node);
++
++    const std::int64_t time_end_ms = k_uptime_get();
++    const std::uint64_t cycles_end = k_cycle_get_64();
++
++    const std::uint64_t elapsed_ms =
++        (time_end_ms >= time_start_ms)
++            ? static_cast<std::uint64_t>(time_end_ms - time_start_ms)
++            : 0U;
++
++    RecordHeatstrokeOperatorTiming(
++        g_heatstrokeEthosUTiming,
++        cycles_end - cycles_start,
++        elapsed_ms);
++
++    return result;
++}
++
++TfLiteStatus HeatstrokeTimedBiLstmInvoke(
++    TfLiteContext* context,
++    TfLiteNode* node)
++{
++    if (g_heatstrokeOriginalBiLstmInvoke == nullptr) {
++        return kTfLiteError;
++    }
++
++    const std::uint64_t cycles_start = k_cycle_get_64();
++    const std::int64_t time_start_ms = k_uptime_get();
++
++    const TfLiteStatus result =
++        g_heatstrokeOriginalBiLstmInvoke(context, node);
++
++    const std::int64_t time_end_ms = k_uptime_get();
++    const std::uint64_t cycles_end = k_cycle_get_64();
++
++    const std::uint64_t elapsed_ms =
++        (time_end_ms >= time_start_ms)
++            ? static_cast<std::uint64_t>(time_end_ms - time_start_ms)
++            : 0U;
++
++    RecordHeatstrokeOperatorTiming(
++        g_heatstrokeBiLstmTiming,
++        cycles_end - cycles_start,
++        elapsed_ms);
++
++    return result;
++}
++} // namespace
++
+ const tflite::MicroOpResolver&
+ arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+ {
++    const char* ethos_name = tflite::GetString_ETHOSU();
++
++    /*
++     * The resolver's registrations_ array is public and mutable in this
++     * SDK version. Modify its entries directly before the interpreter
++     * captures their registration pointers.
++     *
++     * Keep every original callback and replace only invoke.
++     */
++    for (unsigned int i = 0;
++         i < this->m_opResolver.registrations_len_;
++         ++i) {
++
++        TFLMRegistration& registration =
++            this->m_opResolver.registrations_[i];
++
++        if (registration.builtin_code ==
++            tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM) {
++
++            if (registration.invoke != nullptr &&
++                registration.invoke != &HeatstrokeTimedBiLstmInvoke) {
++
++                g_heatstrokeOriginalBiLstmInvoke = registration.invoke;
++                registration.invoke = &HeatstrokeTimedBiLstmInvoke;
++            }
++        }
++
++        if (registration.builtin_code ==
++                tflite::BuiltinOperator_CUSTOM &&
++            ethos_name != nullptr &&
++            registration.custom_name != nullptr &&
++            std::strcmp(registration.custom_name, ethos_name) == 0) {
++
++            if (registration.invoke != nullptr &&
++                registration.invoke != &HeatstrokeTimedEthosUInvoke) {
++
++                g_heatstrokeOriginalEthosUInvoke = registration.invoke;
++                registration.invoke = &HeatstrokeTimedEthosUInvoke;
++            }
++        }
++    }
++
++    if (!g_heatstrokeTimingHookStatusLogged) {
++        info(
++            "HEATSTROKE_PROFILE_HOOKS: Ethos-U=%s BiLSTM=%s\n",
++            g_heatstrokeOriginalEthosUInvoke != nullptr
++                ? "installed" : "missing",
++            g_heatstrokeOriginalBiLstmInvoke != nullptr
++                ? "installed" : "missing");
++
++        g_heatstrokeTimingHookStatusLogged = true;
++    }
++
+     return this->m_opResolver;
+ }
++
++namespace arm::app::fwk::tflm
++{
++
++void ResetHeatstrokeOperatorTiming()
++{
++    g_heatstrokeEthosUTiming = {};
++    g_heatstrokeBiLstmTiming = {};
++}
++
++void LogHeatstrokeOperatorTiming()
++{
++    info(
++        "HEATSTROKE_OPERATOR_TIMING EthosU "
++        "calls=%u wall_ms=%llu max_wall_ms=%llu cycles=%llu\n",
++        static_cast<unsigned int>(g_heatstrokeEthosUTiming.calls),
++        static_cast<unsigned long long>(
++            g_heatstrokeEthosUTiming.total_wall_ms),
++        static_cast<unsigned long long>(
++            g_heatstrokeEthosUTiming.max_wall_ms),
++        static_cast<unsigned long long>(
++            g_heatstrokeEthosUTiming.total_cycles));
++
++    info(
++        "HEATSTROKE_OPERATOR_TIMING BiLSTM "
++        "calls=%u wall_ms=%llu max_wall_ms=%llu cycles=%llu\n",
++        static_cast<unsigned int>(g_heatstrokeBiLstmTiming.calls),
++        static_cast<unsigned long long>(
++            g_heatstrokeBiLstmTiming.total_wall_ms),
++        static_cast<unsigned long long>(
++            g_heatstrokeBiLstmTiming.max_wall_ms),
++        static_cast<unsigned long long>(
++            g_heatstrokeBiLstmTiming.total_cycles));
++}
++
++} // namespace arm::app::fwk::tflm
++
++
+ 
+ namespace
+ {
+
+--- /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc.before
++++ /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc.after
+@@ -463,11 +463,13 @@
+         return false;
+     }
+ 
++    arm::app::fwk::tflm::ResetHeatstrokeOperatorTiming();
+     const std::int64_t startMs = k_uptime_get();
+     LOG_INF("HEATSTROKE_DIAG: entering TFLM RunInference()");
+     StartHeatstrokeEthosuMonitor();
+     const bool inferenceOk = model.RunInference();
+     StopHeatstrokeEthosuMonitor();
++    arm::app::fwk::tflm::LogHeatstrokeOperatorTiming();
+     if (!inferenceOk) {
+         LOG_ERR("TFLM RunInference() returned false");
+         return false;
+
