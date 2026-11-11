@@ -1,0 +1,466 @@
+=== COMPLETE MLEK TFLM MODEL HEADER ===
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021-2023, 2025 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#ifndef MLEK_TFLM_MODEL_HPP
+    18	#define MLEK_TFLM_MODEL_HPP
+    19	
+    20	#include "mlek/fwk/iface/Model.hpp"
+    21	#include "mlek/fwk/tflm/TensorFlowLiteMicro.hpp"
+    22	#include <cstdint>
+    23	
+    24	namespace arm::app::fwk::tflm {
+    25	
+    26	/**
+    27	 * Backend data for TensorFlow Lite Micro framework.
+    28	 */
+    29	struct TflmBackendData {
+    30	    const tflite::Model* m_pModel{nullptr};        /**< Tflite model pointer. */
+    31	    tflite::MicroAllocator* m_pAllocator{nullptr}; /**< Tflite micro allocator. */
+    32	
+    33	    /** Tflite interpreter. */
+    34	    std::unique_ptr<tflite::MicroInterpreter> m_pInterpreter{nullptr};
+    35	};
+    36	
+    37	/**
+    38	 * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+    39	 */
+    40	class TflmModel : public iface::Model {
+    41	public:
+    42	    /** @brief Constructor. */
+    43	    TflmModel();
+    44	
+    45	    /** @brief Destructor. */
+    46	    virtual ~TflmModel() = default;
+    47	
+    48	    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+    49	    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+    50	
+    51	    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+    52	    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+    53	
+    54	    /** @brief  Gets the model's data type. */
+    55	    iface::TensorType GetType() const override;
+    56	
+    57	    /** @brief  Gets the pointer to the model's input shape. */
+    58	    std::vector<size_t> GetInputShape(size_t index) const override;
+    59	
+    60	    /** @brief  Gets the pointer to the model's output shape at given output index. */
+    61	    std::vector<size_t> GetOutputShape(size_t index) const override;
+    62	
+    63	    /** @brief  Gets the number of input tensors the model has. */
+    64	    size_t GetNumInputs() const override;
+    65	
+    66	    /** @brief  Gets the number of output tensors the model has. */
+    67	    size_t GetNumOutputs() const override;
+    68	
+    69	    /** @brief  Logs the tensor information to stdout. */
+    70	    void LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor) override;
+    71	
+    72	    /** @brief  Logs the interpreter information to stdout. */
+    73	    void LogInterpreterInfo() override;
+    74	
+    75	    /** @brief      Initialise the model class object.
+    76	     *  @return     true if initialisation succeeds, false otherwise.
+    77	     **/
+    78	    bool Init(iface::MemoryRegion& computeBuffer,
+    79	              iface::MemoryRegion& nnModel,
+    80	              const void* backendData = nullptr) override;
+    81	
+    82	    /** @brief  Checks if this object has been initialised. */
+    83	    bool IsInited() const override;
+    84	
+    85	    /** @brief  Checks if the model uses signed data. */
+    86	    bool IsDataSigned() const override;
+    87	
+    88	    /** @brief Checks if the model uses Ethos-U operator */
+    89	    bool ContainsEthosUOperator() const override;
+    90	
+    91	    /** @brief  Runs the inference (invokes the interpreter). */
+    92	    bool RunInference() override;
+    93	
+    94	    /**
+    95	     * @brief   Gets memory region information for the backend's compute buffer.
+    96	     * @return  Const reference to MemoryRegion object.
+    97	     */
+    98	    const iface::MemoryRegion& GetComputeBuffer() const override;
+    99	
+   100	    /**
+   101	     * @brief   Gets memory region information for neural network model.
+   102	     * @return  Const reference to MemoryRegion object.
+   103	     */
+   104	    const iface::MemoryRegion& GetModelBuffer() const override;
+   105	
+   106	    /**
+   107	     * @brief       Gets TensorFlow Lite Micro backend data.
+   108	     * @return      Backend data, with pointers to the model, memory allocator and interpreter.
+   109	     **/
+   110	    const TflmBackendData& GetBackendData() const;
+   111	
+   112	protected:
+   113	    /**
+   114	     * @brief       Gets the op resolver for the model instance.
+   115	     * @return      const reference to a tflite::MicroOpResolver object.
+   116	     **/
+   117	    virtual const tflite::MicroOpResolver& GetOpResolver() = 0;
+   118	
+   119	    /**
+   120	     * @brief       Add all the operators required for the given model.
+   121	     *              Implementation of this should come from the use case.
+   122	     * @return      true is ops are successfully added, false otherwise.
+   123	     **/
+   124	    virtual bool EnlistOperations() = 0;
+   125	
+   126	private:
+   127	    TflmBackendData m_backendData{};
+   128	    bool m_inited{false}; /* Indicates whether this object has been initialised. */
+   129	    iface::MemoryRegion m_computeBuffer{};
+   130	    iface::MemoryRegion m_modelBuffer{};
+   131	
+   132	    std::vector<std::shared_ptr<iface::TensorIface>> m_input{}; /* Model's input tensor pointers. */
+   133	    std::vector<std::shared_ptr<iface::TensorIface>>
+   134	        m_output{};                                       /* Model's output tensor pointers. */
+   135	    iface::TensorType m_type{iface::TensorType::INVALID}; /* Model's data type. */
+   136	};
+   137	} /* namespace arm::app::fwk::tflm */
+   138	
+   139	#endif /* MLEK_TFLM_MODEL_HPP */
+
+=== MLEK TFLM MODEL IMPLEMENTATION ===
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021-2026 Arm Limited and/or its affiliates
+     3	 * <open-source-office@arm.com> SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Licensed under the Apache License, Version 2.0 (the "License");
+     6	 * you may not use this file except in compliance with the License.
+     7	 * You may obtain a copy of the License at
+     8	 *
+     9	 *     http://www.apache.org/licenses/LICENSE-2.0
+    10	 *
+    11	 * Unless required by applicable law or agreed to in writing, software
+    12	 * distributed under the License is distributed on an "AS IS" BASIS,
+    13	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    14	 * See the License for the specific language governing permissions and
+    15	 * limitations under the License.
+    16	 */
+    17	#include "mlek/fwk/tflm/TflmModel.hpp"
+    18	#include "mlek/fwk/iface/Model.hpp"
+    19	#include "mlek/fwk/tflm/TflmTensor.hpp"
+    20	#include "mlek/log/log_macros.h"
+    21	
+    22	#include <cinttypes>
+    23	#include <cstring>
+    24	#include <memory>
+    25	#include <string>
+    26	
+    27	namespace arm::app::fwk::tflm {
+    28	namespace {
+    29	/**
+    30	 * @brief   Infer Arm Ethos-U NPU memory mode from Ethos-U operator inputs.
+    31	 * @param[in] model     Pointer the the model object.
+    32	 * @return  Memory mode string if detected, or empty string otherwise.
+    33	 */
+    34	std::string InferNpuMemoryModeFromEthosUOp(const tflite::Model* model)
+    35	{
+    36	    if (!model || !model->subgraphs() || model->subgraphs()->size() == 0 ||
+    37	        !model->operator_codes()) {
+    38	        return {};
+    39	    }
+    40	
+    41	    const tflite::SubGraph* subgraph = model->subgraphs()->Get(0);
+    42	    if (!subgraph || !subgraph->operators()) {
+    43	        return {};
+    44	    }
+    45	
+    46	    int ethos_u_opcode = -1;
+    47	    for (uint32_t i = 0; i < model->operator_codes()->size(); ++i) {
+    48	        const tflite::OperatorCode* opcode = model->operator_codes()->Get(i);
+    49	        if (!opcode || opcode->builtin_code() != tflite::BuiltinOperator_CUSTOM) {
+    50	            continue;
+    51	        }
+    52	        const auto* custom = opcode->custom_code();
+    53	        if (custom && (std::strcmp(custom->c_str(), "ethos-u") == 0)) {
+    54	            ethos_u_opcode = static_cast<int>(i);
+    55	            break;
+    56	        }
+    57	    }
+    58	
+    59	    if (ethos_u_opcode < 0) {
+    60	        return {};
+    61	    }
+    62	
+    63	    for (uint32_t i = 0; i < subgraph->operators()->size(); ++i) {
+    64	        const tflite::Operator* op = subgraph->operators()->Get(i);
+    65	        if (!op || op->opcode_index() != ethos_u_opcode) {
+    66	            continue;
+    67	        }
+    68	        const auto* inputs = op->inputs();
+    69	        if (!inputs || inputs->size() <= 3) {
+    70	            continue;
+    71	        }
+    72	
+    73	        /* Vela places tensor arena at index 2 and fast scratch buffer at index 3. */
+    74	        const int32_t arena_idx = inputs->Get(2);
+    75	        const int32_t scratch_idx = inputs->Get(3);
+    76	        if (arena_idx < 0 || scratch_idx < 0) {
+    77	            continue;
+    78	        }
+    79	
+    80	        const tflite::Tensor* arena = subgraph->tensors()->Get(arena_idx);
+    81	        const tflite::Tensor* scratch = subgraph->tensors()->Get(scratch_idx);
+    82	        if (!arena || !scratch) {
+    83	            continue;
+    84	        }
+    85	
+    86	        const auto arena_shape = arena->shape();
+    87	        const auto scratch_shape = scratch->shape();
+    88	        if (!arena_shape || !scratch_shape || arena_shape->size() < 1 ||
+    89	            scratch_shape->size() < 1 || arena_shape->Get(0) < 1) {
+    90	            continue;
+    91	        }
+    92	
+    93	        if (arena_shape->Get(0) == scratch_shape->Get(0)) {
+    94	            return "Sram_Only/Shared_Sram";
+    95	        }
+    96	        return "Dedicated_Sram";
+    97	    }
+    98	
+    99	    return {};
+   100	}
+   101	} /* anonymous namespace */
+   102	
+   103	TflmModel::TflmModel() {}
+   104	
+   105	/* Initialise the model */
+   106	bool TflmModel::Init(iface::MemoryRegion& computeBuffer,
+   107	                     iface::MemoryRegion& nnModel,
+   108	                     const void* backendData)
+   109	{
+   110	    /* Following tf lite micro example:
+   111	     * Map the model into a usable data structure. This doesn't involve any
+   112	     * copying or parsing, it's a very lightweight operation. */
+   113	    debug("loading model from @ 0x%p\n", nnModel.data);
+   114	    debug("model size: %" PRIu32 " bytes.\n", nnModel.size);
+   115	
+   116	    /* Enable logging before we start interacting with the framework. */
+   117	    EnableTFLMLog();
+   118	
+   119	    this->m_backendData.m_pModel = ::tflite::GetModel(nnModel.data);
+   120	
+   121	    if (this->m_backendData.m_pModel->version() != TFLITE_SCHEMA_VERSION) {
+   122	        printf_err("Model's schema version %" PRIu32 " is not equal "
+   123	                   "to supported version %d.",
+   124	                   this->m_backendData.m_pModel->version(),
+   125	                   TFLITE_SCHEMA_VERSION);
+   126	        return false;
+   127	    }
+   128	
+   129	    this->m_computeBuffer = computeBuffer;
+   130	    this->m_modelBuffer   = nnModel;
+   131	
+   132	    /* Pull in only the operation implementations we need.
+   133	     * This relies on a complete list of all the ops needed by this graph.
+   134	     * An easier approach is to just use the AllOpsResolver, but this will
+   135	     * incur some penalty in code space for op implementations that are not
+   136	     * needed by this graph.
+   137	     * static ::tflite::ops::micro::AllOpsResolver resolver; */
+   138	    /* NOLINTNEXTLINE(runtime-global-variables) */
+   139	    debug("loading op resolver\n");
+   140	
+   141	    this->EnlistOperations();
+   142	
+   143	    /** If backend data has been provided, re-use the allocator */
+   144	    if (backendData) {
+   145	        this->m_backendData.m_pAllocator =
+   146	            reinterpret_cast<const TflmBackendData*>(backendData)->m_pAllocator;
+   147	    }
+   148	
+   149	    /* Create allocator instance, if it doesn't exist */
+   150	    if (!this->m_backendData.m_pAllocator) {
+   151	        /* Create an allocator instance */
+   152	        info("Creating allocator using tensor arena at 0x%p\n", computeBuffer.data);
+   153	
+   154	        this->m_backendData.m_pAllocator =
+   155	            tflite::MicroAllocator::Create(computeBuffer.data, computeBuffer.size);
+   156	
+   157	        if (!this->m_backendData.m_pAllocator) {
+   158	            printf_err("Failed to create allocator\n");
+   159	            return false;
+   160	        }
+   161	        debug("Created new allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   162	    } else {
+   163	        debug("Using existing allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+   164	    }
+   165	
+   166	    this->m_backendData.m_pInterpreter = std::make_unique<tflite::MicroInterpreter>(
+   167	        this->m_backendData.m_pModel, this->GetOpResolver(), this->m_backendData.m_pAllocator);
+   168	
+   169	    if (!this->m_backendData.m_pInterpreter) {
+   170	        printf_err("Failed to allocate interpreter\n");
+   171	        return false;
+   172	    }
+   173	
+   174	    /* Allocate memory from the tensor_arena for the model's tensors. */
+   175	    info("Allocating tensors\n");
+   176	    TfLiteStatus allocate_status = this->m_backendData.m_pInterpreter->AllocateTensors();
+   177	
+   178	    if (allocate_status != kTfLiteOk) {
+   179	        printf_err("tensor allocation failed!\n");
+   180	        return false;
+   181	    }
+   182	
+   183	    /* Get information about the memory area to use for the model's input. */
+   184	    this->m_input.resize(this->GetNumInputs());
+   185	    for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   186	        this->m_input[inIndex] =
+   187	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->input(inIndex));
+   188	    }
+   189	
+   190	    this->m_output.resize(this->GetNumOutputs());
+   191	    for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+   192	        this->m_output[outIndex] =
+   193	            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->output(outIndex));
+   194	    }
+   195	
+   196	    if (this->m_input.empty() || this->m_output.empty()) {
+   197	        printf_err("failed to get tensors\n");
+   198	        return false;
+   199	    } else {
+   200	        this->m_type = this->m_input[0]->Type(); /* Input 0 should be the main input */
+   201	
+   202	        /* Clear the input & output tensors */
+   203	        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+   204	            std::memset(this->m_input[inIndex]->GetData(), 0, this->m_input[inIndex]->Bytes());
+   205	        }
+   206	        for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+   207	            std::memset(this->m_output[outIndex]->GetData(), 0, this->m_output[outIndex]->Bytes());
+   208	        }
+   209	
+   210	        this->LogInterpreterInfo();
+   211	    }
+   212	
+   213	    this->m_inited = true;
+   214	    return true;
+   215	}
+   216	
+   217	std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+   218	{
+   219	    if (index < this->GetNumInputs()) {
+   220	        return this->m_input.at(index);
+   221	    }
+   222	    return {};
+   223	}
+   224	
+   225	std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+   226	{
+   227	    if (index < this->GetNumOutputs()) {
+   228	        return this->m_output.at(index);
+   229	    }
+   230	    return nullptr;
+   231	}
+   232	
+   233	void TflmModel::LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor)
+   234	{
+   235	    if (!tensor) {
+   236	        printf_err("Invalid tensor\n");
+   237	        assert(tensor);
+   238	        return;
+   239	    }
+   240	
+
+=== PROFILER MACRO IN TFLM CONFIGURATION ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/debug_log.cc:35:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/debug_log.cc:40:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/debug_log.cc:41:  // Reusing TF_LITE_STRIP_ERROR_STRINGS to disable DebugLog completely to get
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/debug_log.cc:48:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_graph.cc:218:// This ifdef is needed (even though ScopedMicroProfiler itself is a no-op with
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_graph.cc:219:// -DTF_LITE_STRIP_ERROR_STRINGS) because the function OpNameFromRegistration is
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_graph.cc:221:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_graph.cc:222:    ScopedMicroProfiler scoped_profiler(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log.cc:21:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log.cc:25:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log.cc:62:#endif  // !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/cortex_m_generic/debug_log.cc:27:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/cortex_m_generic/debug_log.cc:48:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/cortex_m_generic/debug_log.cc:57:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/cortex_m_generic/micro_time.cc:42:#if (!defined(TF_LITE_STRIP_ERROR_STRINGS) && !defined(ARMCM0) && \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/cortex_m_generic/micro_time.cc:67:#if (!defined(TF_LITE_STRIP_ERROR_STRINGS) && !defined(ARMCM0) && \
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/cortex_m_corstone_300/system_setup.cc:76:#if (!defined(TF_LITE_STRIP_ERROR_STRINGS))
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/cortex_m_corstone_300/system_setup.cc:126:#if (!defined(TF_LITE_STRIP_ERROR_STRINGS) && !defined(ARMCM0))
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/chre/debug_log.cc:20:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/chre/debug_log.cc:25:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/chre/debug_log.cc:34:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/bluepill/debug_log.cc:18:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/bluepill/debug_log.cc:24:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/bluepill/debug_log.cc:35:#endif  // TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/bluepill/debug_log.cc:40:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/bluepill/debug_log.cc:46:#endif  // TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/bluepill/debug_log.cc:49:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:93:#if defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:94:// For release builds, the ScopedMicroProfiler is a noop.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:98:class ScopedMicroProfiler {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:100:  explicit ScopedMicroProfiler(const char* tag,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:107:// lifetime of the ScopedMicroProfiler object.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:113://   ScopedMicroProfiler scoped_profiler("custom_tag", profiler);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:116:class ScopedMicroProfiler {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:118:  explicit ScopedMicroProfiler(const char* tag,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:126:  ~ScopedMicroProfiler() {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h:136:#endif  // !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arc_emsdp/debug_log.cc:22:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arc_emsdp/debug_log.cc:118:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arc_emsdp/debug_log.cc:127:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log_test.cc:25:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log_test.cc:29:#endif  // !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log_test.cc:35:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log_test.cc:54:#endif  // !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/single_arena_buffer_allocator.cc:112:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/arena_allocator/persistent_arena_buffer_allocator.cc:35:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.cc:56:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.cc:65:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.cc:80:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/recording_micro_allocator.cc:141:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_log.h:18:#if !defined(TF_LITE_STRIP_ERROR_STRINGS)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/hexagon/system_setup.cc:18:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/hexagon/system_setup.cc:20:#endif                    // TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/hexagon/system_setup.cc:29:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/hexagon/system_setup.cc:32:#endif  // TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/hexagon/system_setup.cc:38:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/hexagon/system_setup.cc:42:#endif  // TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/riscv32_generic/debug_log.cc:20:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/riscv32_generic/debug_log.cc:25:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/riscv32_generic/debug_log.cc:34:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/decompress.cc:55:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/decompress.cc:112:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/decompress.cc:234:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/decompress.cc:352:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/decompress.cc:422:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/decompress.cc:473:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/decompress.cc:524:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/decompress_common.cc:30:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/decompress_common.cc:107:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/decompress_common.cc:184:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/decompress_common.cc:318:  ScopedMicroProfiler scoped_profiler(__func__, micro_profiler_);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter_test.cc:500:#ifndef TF_LITE_STRIP_ERROR_STRINGS
+
+=== ACTUAL COMPILER FLAGS FOR MICRO INTERPRETER ===
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_interpreter.cc
+  -DNDEBUG
+
+SOURCE: /home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.cc
+  -DNDEBUG
+
+=== END AUDIT ===
