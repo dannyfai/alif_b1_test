@@ -1,0 +1,228 @@
+=== MAINLOOP INCLUDES AND GLOBAL DECLARATIONS ===
+     1	/* This file was ported to work on Alif Semiconductor devices. */
+     2	
+     3	/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+     4	 * Use, distribution and modification of this code is permitted under the
+     5	 * terms stated in the Alif Semiconductor Software License Agreement
+     6	 *
+     7	 * You should have received a copy of the Alif Semiconductor Software
+     8	 * License Agreement with this file. If not, please write to:
+     9	 * contact@alifsemi.com, or visit: https://alifsemi.com/license
+    10	 *
+    11	 */
+    12	
+    13	/*
+    14	 * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+    15	 * affiliates <open-source-office@arm.com>
+    16	 * SPDX-License-Identifier: Apache-2.0
+    17	 *
+    18	 * Licensed under the Apache License, Version 2.0 (the "License");
+    19	 * you may not use this file except in compliance with the License.
+    20	 * You may obtain a copy of the License at
+    21	 *
+    22	 *     http://www.apache.org/licenses/LICENSE-2.0
+    23	 *
+    24	 * Unless required by applicable law or agreed to in writing, software
+    25	 * distributed under the License is distributed on an "AS IS" BASIS,
+    26	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    27	 * See the License for the specific language governing permissions and
+    28	 * limitations under the License.
+    29	 */
+    30	#include "BufAttributes.hpp"
+    31	#include "PolyUModel1.hpp"
+    32	#include "heatstroke_smoke_test_vector.hpp"
+    33	#include "mlek/fwk/iface/Tensor.hpp"
+    34	
+    35	#include <cstddef>
+    36	#include <cstdint>
+    37	#include <cstring>
+    38	#include <cmath>
+    39	#include <memory>
+    40	#include <vector>
+    41	
+    42	using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+    43	
+    44	#include "power_mgr.h"             /* power management APIs */
+    45	#include <zephyr/logging/log.h>
+    46	#include <zephyr/kernel.h>
+    47	#include <zephyr/drivers/gpio.h>
+    48	
+    49	LOG_MODULE_REGISTER(MainLoop);
+    50	
+    51	#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+    52	#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+    53	
+    54	#if LPGPIO_WAKEUP_ENABLED
+    55	/* LPGPIO wake up source is used */
+    56	#define LPGPIO_EWIC_CFG EWIC_VBAT_GPIO
+    57	
+    58	#if CONFIG_LPGPIO_WAKEUP_SOURCE == 4
+    59	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO4
+    60	#elif CONFIG_LPGPIO_WAKEUP_SOURCE == 1
+    61	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO1
+    62	#else
+    63	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+    64	#endif
+    65	#else
+    66	#define LPGPIO_EWIC_CFG 0
+    67	#define LPGPIO_WAKEUP_EVENT 0
+    68	#endif
+    69	
+    70	namespace arm {
+    71	namespace app {
+    72	    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+    73	
+    74	    namespace polyu_heatstroke {
+    75	extern const uint8_t* GetModelPointer();
+    76	extern size_t GetModelLen();
+    77	} /* namespace polyu_heatstroke */
+    78	
+    79	} /* namespace app */
+    80	} /* namespace arm */
+    81	
+    82	
+    83	#if LPGPIO_WAKEUP_ENABLED
+    84	static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+    85		DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+    86	#endif
+    87	
+    88	
+    89	volatile uint8_t button_pressed = 0U;
+    90	static struct gpio_callback button_cb_data;
+    91	static bool por_boot;
+    92	static struct k_sem button_wait_sem;
+    93	
+    94	static void button_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+    95	{
+    96		ARG_UNUSED(dev);
+    97		ARG_UNUSED(cb);
+    98		ARG_UNUSED(pins);
+    99	
+   100		if (por_boot) {
+   101			/* Ignore button press event if it's from POR boot, as the button state may be unstable during POR. */
+   102			return;
+   103		}
+   104	
+   105		int val = gpio_pin_get_dt(&lpgpio_config);  // 1 = pressed, 0 = released
+   106	    if (val < 0) {
+   107	        LOG_ERR("Failed to read pin: %d", val);
+   108	        return;
+   109	    }
+   110	
+   111	    button_pressed = (val == 1);
+   112	    LOG_INF("Button %s", button_pressed ? "pressed" : "released");
+   113	
+   114		if (!k_sem_count_get(&button_wait_sem) && button_pressed) {
+   115			k_sem_give(&button_wait_sem);
+   116		}
+   117	}
+   118	
+   119	/**
+   120	 * Configure LPGPIO0 and LPGPIO1 as inputs with interrupts
+   121	 * With B1/E1C need to connect wire between SW5 (P5_7) and P15_0 to use button as Push-to-talk button.
+   122	 * With B1/E1C devkit you need to also remove resistor R64. */
+   123	static int configure_lpgpio(void)
+   124	{
+   125		int ret;
+   126		const struct gpio_dt_spec *spec = &lpgpio_config;
+   127	
+   128		if (!spec || !spec->port) {
+   129			/* Just ignore */
+   130			LOG_ERR("lpgpio invalid");
+   131			return -ENODEV;
+   132		}
+   133	
+   134		/* Configure LPGPIO0 for wakeup */
+   135		if (!gpio_is_ready_dt(spec)) {
+   136			LOG_ERR("LPGPIO0 device is not ready");
+   137			return -ENODEV;
+   138		}
+   139	
+   140		ret = gpio_pin_configure_dt(spec, GPIO_INPUT | spec->dt_flags);
+
+=== INFERENCE CALL CONTEXT ===
+343-            heatstroke_smoke::kInputReferenceSha256);
+344-
+345-    if (!BindSmokeInputTensor(
+346-            model, 0U, "x_values",
+347-            heatstroke_smoke::kXValuesBits,
+348-            sizeof(heatstroke_smoke::kXValuesBits),
+349-            std::vector<size_t>{1U, 900U, 6U})) {
+350-        return false;
+351-    }
+352-
+353-    if (!BindSmokeInputTensor(
+354-            model, 1U, "missing_mask",
+355-            heatstroke_smoke::kMissingMaskBits,
+356-            sizeof(heatstroke_smoke::kMissingMaskBits),
+357-            std::vector<size_t>{1U, 900U, 6U})) {
+358-        return false;
+359-    }
+360-
+361-    if (!BindSmokeInputTensor(
+362-            model, 2U, "x_mark",
+363-            heatstroke_smoke::kXMarkBits,
+364-            sizeof(heatstroke_smoke::kXMarkBits),
+365-            std::vector<size_t>{1U, 900U, 3U})) {
+366-        return false;
+367-    }
+368-
+369-    if (!BindSmokeInputTensor(
+370-            model, 3U, "worker_features",
+371-            heatstroke_smoke::kWorkerFeaturesBits,
+372-            sizeof(heatstroke_smoke::kWorkerFeaturesBits),
+373-            std::vector<size_t>{1U, 30U})) {
+374-        return false;
+375-    }
+376-
+377-    const std::int64_t startMs = k_uptime_get();
+378:    LOG_INF("HEATSTROKE_DIAG: entering TFLM RunInference()");
+379-    if (!model.RunInference()) {
+380-        LOG_ERR("TFLM RunInference() returned false");
+381-        return false;
+382-    }
+383-    const std::int64_t elapsedMs = k_uptime_get() - startMs;
+384-
+385-    auto rpeTensor = model.GetOutputTensor(0U);
+386-    auto psiTensor = model.GetOutputTensor(1U);
+387-
+388-    if (!VerifyOneTensor(
+389-            "Output rpe_logits", 0U, rpeTensor,
+390-            std::vector<size_t>{1U, 4U}) ||
+391-        !VerifyOneTensor(
+392-            "Output psi_logits", 1U, psiTensor,
+393-            std::vector<size_t>{1U, 4U})) {
+394-        return false;
+395-    }
+396-
+397-    const float* rpe = rpeTensor->GetData<float>();
+398-    const float* psi = psiTensor->GetData<float>();
+399-
+400-    if (rpe == nullptr || psi == nullptr) {
+401-        LOG_ERR("Inference output data pointer is null");
+402-        return false;
+403-    }
+404-
+405-    float rpeRef[4];
+406-    float psiRef[4];
+407-    float rpeMaxError = 0.0F;
+408-    float psiMaxError = 0.0F;
+409-    double rpeErrorSum = 0.0;
+410-    double psiErrorSum = 0.0;
+411-
+412-    for (unsigned int i = 0U; i < 4U; ++i) {
+413-        rpeRef[i] = DecodeSmokeReference(
+414-            heatstroke_smoke::kReferenceRpeBits[i]);
+415-        psiRef[i] = DecodeSmokeReference(
+416-            heatstroke_smoke::kReferencePsiBits[i]);
+417-
+418-        if (!std::isfinite(rpe[i]) || !std::isfinite(psi[i]) ||
+
+=== EXISTING TIMER / WORKQUEUE / IRQ USAGE ===
+46:#include <zephyr/kernel.h>
+
+=== SYSTEM WORKQUEUE CONFIGURATION ===
+CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=1024
+CONFIG_SYSTEM_WORKQUEUE_PRIORITY=-1
+
+=== END PREFLIGHT ===
