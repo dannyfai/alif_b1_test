@@ -1,0 +1,187 @@
+=== MICRO INTERPRETER CONSTRUCTOR DECLARATIONS ===
+46-class MicroInterpreter {
+47- public:
+48-  // The lifetime of the model, op resolver, tensor arena, error reporter,
+49-  // resource variables, and profiler must be at least as long as that of the
+50-  // interpreter object, since the interpreter may need to access them at any
+51-  // time. This means that you should usually create them with the same scope as
+52-  // each other, for example having them all allocated on the stack as local
+53-  // variables through a top-level function. The interpreter doesn't do any
+54-  // deallocation of any of the pointed-to objects, ownership remains with the
+55-  // caller.
+56:  MicroInterpreter(const Model* model, const MicroOpResolver& op_resolver,
+57-                   uint8_t* tensor_arena, size_t tensor_arena_size,
+58-                   MicroResourceVariables* resource_variables = nullptr,
+59-                   MicroProfilerInterface* profiler = nullptr,
+60-                   bool preserve_all_tensors = false);
+61-
+62-  // Create an interpreter instance using an existing MicroAllocator instance.
+63-  // This constructor should be used when creating an allocator that needs to
+64-  // have allocation handled in more than one interpreter or for recording
+65-  // allocations inside the interpreter. The lifetime of the allocator must be
+66-  // as long as that of the interpreter object.
+67:  MicroInterpreter(const Model* model, const MicroOpResolver& op_resolver,
+68-                   MicroAllocator* allocator,
+69-                   MicroResourceVariables* resource_variables = nullptr,
+70-                   MicroProfilerInterface* profiler = nullptr);
+71-
+72:  ~MicroInterpreter();
+73-
+74-  // Runs through the model and allocates all necessary input, output and
+75-  // intermediate tensors.
+76-  TfLiteStatus AllocateTensors();
+77-
+78-  // In order to support partial graph runs for strided models, this can return
+79-  // values other than kTfLiteOk and kTfLiteError.
+80-  // TODO(b/149795762): Add this to the TfLiteStatus enum.
+81-  TfLiteStatus Invoke();
+82-
+83-  // This is the recommended API for an application to pass an external payload
+84-  // pointer as an external context to kernels. The life time of the payload
+85-  // pointer should be at least as long as this interpreter. TFLM supports only
+86-  // one external context.
+87-  TfLiteStatus SetMicroExternalContext(void* external_context_payload);
+88-
+89-  TfLiteTensor* input(size_t index);
+90-  size_t inputs_size() const {
+91-    return model_->subgraphs()->Get(0)->inputs()->size();
+92-  }
+93-  const flatbuffers::Vector<int32_t>& inputs() const {
+94-    return *model_->subgraphs()->Get(0)->inputs();
+95-  }
+96-  TfLiteTensor* input_tensor(size_t index) { return input(index); }
+97-  template <class T>
+98-  T* typed_input_tensor(int tensor_index) {
+99-    if (TfLiteTensor* tensor_ptr = input_tensor(tensor_index)) {
+100-      if (tensor_ptr->type == typeToTfLiteType<T>()) {
+
+=== PROFILER INTERFACE ===
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler.h ---
+20-#include "tensorflow/lite/micro/micro_profiler_interface.h"
+21-
+22-namespace tflite {
+23-
+24-// MicroProfiler creates a common way to gain fine-grained insight into runtime
+25-// performance. Bottleck operators can be identified along with slow code
+26-// sections. This can be used in conjunction with running the relevant micro
+27-// benchmark to evaluate end-to-end performance.
+28:class MicroProfiler : public MicroProfilerInterface {
+29- public:
+30-  MicroProfiler() = default;
+31-  virtual ~MicroProfiler() = default;
+32-
+33-  // Marks the start of a new event and returns an event handle that can be used
+34-  // to mark the end of the event via EndEvent. The lifetime of the tag
+35-  // parameter must exceed that of the MicroProfiler.
+36-  virtual uint32_t BeginEvent(const char* tag) override;
+37-
+38-  // Marks the end of an event associated with event_handle. It is the
+39-  // responsibility of the caller to ensure than EndEvent is called once and
+40-  // only once per event_handle.
+41-  //
+42-  // If EndEvent is called more than once for the same event_handle, the last
+43-  // call will be used as the end of event marker. If EndEvent is called 0 times
+44-  // for a particular event_handle, the duration of that event will be 0 ticks.
+45-  virtual void EndEvent(uint32_t event_handle) override;
+46-
+--
+93-#if defined(TF_LITE_STRIP_ERROR_STRINGS)
+94-// For release builds, the ScopedMicroProfiler is a noop.
+95-//
+96-// This is done because the ScipedProfiler is used as part of the
+97-// MicroInterpreter and we want to ensure zero overhead for the release builds.
+98-class ScopedMicroProfiler {
+99- public:
+100-  explicit ScopedMicroProfiler(const char* tag,
+101:                               MicroProfilerInterface* profiler) {}
+102-};
+103-
+104-#else
+105-
+106-// This class can be used to add events to a MicroProfiler object that span the
+107-// lifetime of the ScopedMicroProfiler object.
+108-// Usage example:
+109-//
+110-// MicroProfiler profiler();
+111-// ...
+112-// {
+113-//   ScopedMicroProfiler scoped_profiler("custom_tag", profiler);
+114-//   work_to_profile();
+115-// }
+116-class ScopedMicroProfiler {
+117- public:
+118-  explicit ScopedMicroProfiler(const char* tag,
+119:                               MicroProfilerInterface* profiler)
+120-      : profiler_(profiler) {
+121-    if (profiler_ != nullptr) {
+122-      event_handle_ = profiler_->BeginEvent(tag);
+123-    }
+124-  }
+125-
+126-  ~ScopedMicroProfiler() {
+127-    if (profiler_ != nullptr) {
+128-      profiler_->EndEvent(event_handle_);
+129-    }
+130-  }
+131-
+132- private:
+133-  uint32_t event_handle_ = 0;
+134:  MicroProfilerInterface* profiler_ = nullptr;
+135-};
+136-#endif  // !defined(TF_LITE_STRIP_ERROR_STRINGS)
+137-
+138-}  // namespace tflite
+139-
+140-#endif  // TENSORFLOW_LITE_MICRO_MICRO_PROFILER_H_
+--- /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/micro_profiler_interface.h ---
+16-#ifndef TENSORFLOW_LITE_MICRO_MICRO_PROFILER_INTERFACE_H_
+17-#define TENSORFLOW_LITE_MICRO_MICRO_PROFILER_INTERFACE_H_
+18-
+19-#include <cstdint>
+20-
+21-namespace tflite {
+22-
+23-// Interface class that the TFLM framework relies on for profiling.
+24:class MicroProfilerInterface {
+25- public:
+26:  virtual ~MicroProfilerInterface() {}
+27-
+28-  // Marks the start of a new event and returns an event handle that can be used
+29-  // to mark the end of the event via EndEvent.
+30-  virtual uint32_t BeginEvent(const char* tag) = 0;
+31-
+32-  // Marks the end of an event associated with event_handle.
+33-  virtual void EndEvent(uint32_t event_handle) = 0;
+34-};
+35-
+36-}  // namespace tflite
+37-
+38-#endif  // TENSORFLOW_LITE_MICRO_MICRO_PROFILER_INTERFACE_H_
+
+=== MLEK TFLM MODEL HEADERS ===
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp
+
+=== MLEK INTERPRETER ACCESS AND PROFILER METHODS ===
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-26-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-27- * Backend data for TensorFlow Lite Micro framework.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-28- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-29-struct TflmBackendData {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-30-    const tflite::Model* m_pModel{nullptr};        /**< Tflite model pointer. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-31-    tflite::MicroAllocator* m_pAllocator{nullptr}; /**< Tflite micro allocator. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-32-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-33-    /** Tflite interpreter. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp:34:    std::unique_ptr<tflite::MicroInterpreter> m_pInterpreter{nullptr};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-35-};
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-36-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-37-/**
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-38- * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-39- */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-40-class TflmModel : public iface::Model {
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-41-public:
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-42-    /** @brief Constructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-43-    TflmModel();
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-44-
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-45-    /** @brief Destructor. */
+/home/user/sdk-alif/modules/alif-mlek/source/lib/mlek/fwk/tflm/TflmModel.hpp-46-    virtual ~TflmModel() = default;
+
+=== END AUDIT ===
