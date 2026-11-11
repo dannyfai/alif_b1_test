@@ -1,0 +1,275 @@
+=== INFERENCE FUNCTION AND CALLING CONTEXT ===
+   240	                "Input", i, model.GetInputTensor(i), expectedInputs[i])) {
+   241	            LOG_ERR("Input contract failed for %s", inputNames[i]);
+   242	            return false;
+   243	        }
+   244	    }
+   245	
+   246	    const std::vector<std::vector<size_t>> expectedOutputs = {
+   247	        {1U, 4U},  /* rpe_logits */
+   248	        {1U, 4U}   /* psi_logits */
+   249	    };
+   250	
+   251	    const char* outputNames[] = {"rpe_logits", "psi_logits"};
+   252	
+   253	    for (size_t i = 0; i < expectedOutputs.size(); ++i) {
+   254	        if (!VerifyOneTensor(
+   255	                "Output", i, model.GetOutputTensor(i), expectedOutputs[i])) {
+   256	            LOG_ERR("Output contract failed for %s", outputNames[i]);
+   257	            return false;
+   258	        }
+   259	    }
+   260	
+   261	    return true;
+   262	}
+   263	
+   264	
+   265	static bool BindSmokeInputTensor(
+   266	    PolyUModel1& model,
+   267	    size_t index,
+   268	    const char* name,
+   269	    const std::uint32_t* sourceBits,
+   270	    size_t sourceBytes,
+   271	    const std::vector<size_t>& expectedShape)
+   272	{
+   273	    auto tensor = model.GetInputTensor(index);
+   274	    if (!VerifyOneTensor(name, index, tensor, expectedShape)) {
+   275	        return false;
+   276	    }
+   277	
+   278	    if (tensor->Bytes() != sourceBytes || sourceBits == nullptr) {
+   279	        LOG_ERR("%s[%u] input payload size mismatch",
+   280	                name, static_cast<unsigned int>(index));
+   281	        return false;
+   282	    }
+   283	
+   284	    std::memcpy(tensor->GetData(), sourceBits, sourceBytes);
+   285	    LOG_INF("%s[%u] bound: %u bytes",
+   286	            name,
+   287	            static_cast<unsigned int>(index),
+   288	            static_cast<unsigned int>(sourceBytes));
+   289	    return true;
+   290	}
+   291	
+   292	static float DecodeSmokeReference(const std::uint32_t bits)
+   293	{
+   294	    float value = 0.0F;
+   295	    std::memcpy(&value, &bits, sizeof(value));
+   296	    return value;
+   297	}
+   298	
+   299	static int SmokeFloatToMicro(const float value)
+   300	{
+   301	    const double scaled = static_cast<double>(value) * 1000000.0;
+   302	    if (scaled > 2147483647.0) {
+   303	        return 2147483647;
+   304	    }
+   305	    if (scaled < -2147483648.0) {
+   306	        return (-2147483647 - 1);
+   307	    }
+   308	    return static_cast<int>(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+   309	}
+   310	
+   311	static unsigned int SmokeArgMax4(const float* values)
+   312	{
+   313	    unsigned int best = 0U;
+   314	    for (unsigned int i = 1U; i < 4U; ++i) {
+   315	        if (values[i] > values[best]) {
+   316	            best = i;
+   317	        }
+   318	    }
+   319	    return best;
+   320	}
+   321	
+   322	static bool RunHeatstrokeSmokeInference(PolyUModel1& model)
+   323	{
+   324	    using arm::app::fwk::iface::TensorIface;
+   325	
+   326	    static_assert(sizeof(float) == sizeof(std::uint32_t),
+   327	                  "Smoke test requires 32-bit FP32");
+   328	    static_assert(sizeof(heatstroke_smoke::kXValuesBits) == 5400U * sizeof(float),
+   329	                  "x_values payload size mismatch");
+   330	    static_assert(sizeof(heatstroke_smoke::kMissingMaskBits) == 5400U * sizeof(float),
+   331	                  "missing_mask payload size mismatch");
+   332	    static_assert(sizeof(heatstroke_smoke::kXMarkBits) == 2700U * sizeof(float),
+   333	                  "x_mark payload size mismatch");
+   334	    static_assert(sizeof(heatstroke_smoke::kWorkerFeaturesBits) == 30U * sizeof(float),
+   335	                  "worker_features payload size mismatch");
+   336	
+   337	    LOG_INF("=== ONE-SAMPLE HEATSTROKE MCU INFERENCE ===");
+   338	    LOG_INF("Calibration sample index: %u",
+   339	            static_cast<unsigned int>(heatstroke_smoke::kDatasetSampleIndex));
+   340	    LOG_INF("Missing positions: %u",
+   341	            static_cast<unsigned int>(heatstroke_smoke::kMissingCount));
+   342	    LOG_INF("Input-vector SHA256: %s",
+   343	            heatstroke_smoke::kInputReferenceSha256);
+   344	
+   345	    if (!BindSmokeInputTensor(
+   346	            model, 0U, "x_values",
+   347	            heatstroke_smoke::kXValuesBits,
+   348	            sizeof(heatstroke_smoke::kXValuesBits),
+   349	            std::vector<size_t>{1U, 900U, 6U})) {
+   350	        return false;
+   351	    }
+   352	
+   353	    if (!BindSmokeInputTensor(
+   354	            model, 1U, "missing_mask",
+   355	            heatstroke_smoke::kMissingMaskBits,
+   356	            sizeof(heatstroke_smoke::kMissingMaskBits),
+   357	            std::vector<size_t>{1U, 900U, 6U})) {
+   358	        return false;
+   359	    }
+   360	
+   361	    if (!BindSmokeInputTensor(
+   362	            model, 2U, "x_mark",
+   363	            heatstroke_smoke::kXMarkBits,
+   364	            sizeof(heatstroke_smoke::kXMarkBits),
+   365	            std::vector<size_t>{1U, 900U, 3U})) {
+   366	        return false;
+   367	    }
+   368	
+   369	    if (!BindSmokeInputTensor(
+   370	            model, 3U, "worker_features",
+   371	            heatstroke_smoke::kWorkerFeaturesBits,
+   372	            sizeof(heatstroke_smoke::kWorkerFeaturesBits),
+   373	            std::vector<size_t>{1U, 30U})) {
+   374	        return false;
+   375	    }
+   376	
+   377	    const std::int64_t startMs = k_uptime_get();
+   378	    LOG_INF("HEATSTROKE_DIAG: entering TFLM RunInference()");
+   379	    if (!model.RunInference()) {
+   380	        LOG_ERR("TFLM RunInference() returned false");
+   381	        return false;
+   382	    }
+   383	    const std::int64_t elapsedMs = k_uptime_get() - startMs;
+   384	
+   385	    auto rpeTensor = model.GetOutputTensor(0U);
+   386	    auto psiTensor = model.GetOutputTensor(1U);
+   387	
+   388	    if (!VerifyOneTensor(
+   389	            "Output rpe_logits", 0U, rpeTensor,
+   390	            std::vector<size_t>{1U, 4U}) ||
+   391	        !VerifyOneTensor(
+   392	            "Output psi_logits", 1U, psiTensor,
+   393	            std::vector<size_t>{1U, 4U})) {
+   394	        return false;
+   395	    }
+   396	
+   397	    const float* rpe = rpeTensor->GetData<float>();
+   398	    const float* psi = psiTensor->GetData<float>();
+   399	
+   400	    if (rpe == nullptr || psi == nullptr) {
+   401	        LOG_ERR("Inference output data pointer is null");
+   402	        return false;
+   403	    }
+   404	
+   405	    float rpeRef[4];
+   406	    float psiRef[4];
+   407	    float rpeMaxError = 0.0F;
+   408	    float psiMaxError = 0.0F;
+   409	    double rpeErrorSum = 0.0;
+   410	    double psiErrorSum = 0.0;
+   411	
+   412	    for (unsigned int i = 0U; i < 4U; ++i) {
+   413	        rpeRef[i] = DecodeSmokeReference(
+   414	            heatstroke_smoke::kReferenceRpeBits[i]);
+   415	        psiRef[i] = DecodeSmokeReference(
+   416	            heatstroke_smoke::kReferencePsiBits[i]);
+   417	
+   418	        if (!std::isfinite(rpe[i]) || !std::isfinite(psi[i]) ||
+   419	            !std::isfinite(rpeRef[i]) || !std::isfinite(psiRef[i])) {
+   420	            LOG_ERR("Non-finite output/reference at class index %u", i);
+   421	            return false;
+   422	        }
+   423	
+   424	        const float rpeError = std::fabs(rpe[i] - rpeRef[i]);
+   425	        const float psiError = std::fabs(psi[i] - psiRef[i]);
+   426	
+   427	        if (rpeError > rpeMaxError) {
+   428	            rpeMaxError = rpeError;
+   429	        }
+   430	        if (psiError > psiMaxError) {
+   431	            psiMaxError = psiError;
+   432	        }
+   433	
+   434	        rpeErrorSum += rpeError;
+   435	        psiErrorSum += psiError;
+   436	    }
+   437	
+   438	    const float rpeMeanError = static_cast<float>(rpeErrorSum / 4.0);
+   439	    const float psiMeanError = static_cast<float>(psiErrorSum / 4.0);
+   440	
+   441	    LOG_INF("TFLM RunInference: SUCCESS; elapsed=%u ms",
+   442	            static_cast<unsigned int>(elapsedMs));
+   443	
+   444	    LOG_INF("RPE reference micro: [%d,%d,%d,%d]",
+   445	            SmokeFloatToMicro(rpeRef[0]), SmokeFloatToMicro(rpeRef[1]),
+   446	            SmokeFloatToMicro(rpeRef[2]), SmokeFloatToMicro(rpeRef[3]));
+   447	    LOG_INF("RPE MCU micro:       [%d,%d,%d,%d]",
+   448	            SmokeFloatToMicro(rpe[0]), SmokeFloatToMicro(rpe[1]),
+   449	            SmokeFloatToMicro(rpe[2]), SmokeFloatToMicro(rpe[3]));
+   450	
+   451	    LOG_INF("PSI reference micro: [%d,%d,%d,%d]",
+   452	            SmokeFloatToMicro(psiRef[0]), SmokeFloatToMicro(psiRef[1]),
+   453	            SmokeFloatToMicro(psiRef[2]), SmokeFloatToMicro(psiRef[3]));
+   454	    LOG_INF("PSI MCU micro:       [%d,%d,%d,%d]",
+   455	            SmokeFloatToMicro(psi[0]), SmokeFloatToMicro(psi[1]),
+   456	            SmokeFloatToMicro(psi[2]), SmokeFloatToMicro(psi[3]));
+   457	
+   458	    LOG_INF("RPE max/mean abs error micro: %d / %d",
+   459	            SmokeFloatToMicro(rpeMaxError),
+   460	            SmokeFloatToMicro(rpeMeanError));
+
+=== THREAD AND MAIN FUNCTION DECLARATIONS ===
+49:LOG_MODULE_REGISTER(MainLoop);
+378:    LOG_INF("HEATSTROKE_DIAG: entering TFLM RunInference()");
+379:    if (!model.RunInference()) {
+380:        LOG_ERR("TFLM RunInference() returned false");
+441:    LOG_INF("TFLM RunInference: SUCCESS; elapsed=%u ms",
+486:void MainLoop()
+
+=== RELEVANT KERNEL AND LOG CONFIGURATION ===
+CONFIG_MAIN_STACK_SIZE=4096
+CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=1024
+CONFIG_NUM_PREEMPT_PRIORITIES=15
+CONFIG_NUM_COOP_PRIORITIES=16
+CONFIG_MAIN_THREAD_PRIORITY=3
+CONFIG_SYSTEM_WORKQUEUE_PRIORITY=-1
+
+=== AVAILABLE ETHOS-U AND CMSIS HEADERS ===
+/home/user/sdk-alif/zephyr/modules/cmsis/cmsis_core.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ethosu.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu_ta/include/ethosu_ta_init.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu/include/ethosu_profiler.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu/include/ethosu_mem_config.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu/include/ethosu_cpu_cache.h
+/home/user/sdk-alif/modules/alif-mlek/source/hal/source/components/npu/include/ethosu_npu_init.h
+/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core/Include/core_cm55.h
+/home/user/sdk-alif/modules/hal/ethos_u/include/ethosu_types.h
+/home/user/sdk-alif/modules/hal/ethos_u/include/pmu_ethosu.h
+/home/user/sdk-alif/modules/hal/ethos_u/include/ethosu_driver.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_log.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu85_interface.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_config_u85.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu65_interface.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_interface.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_config_u55.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_device.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu_config_u65.h
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/runtime/EthosUBackend_Internal.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/include/ethosu_types.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/include/pmu_ethosu.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/include/ethosu_driver.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_log.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu85_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_config_u85.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu65_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_interface.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_config_u55.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_device.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu_config_u65.h
+/home/user/sdk-alif/modules/lib/executorch/backends/arm/third-party/ethos-u-core-driver/src/ethosu55_interface.h
+
+=== END PREFLIGHT ===
