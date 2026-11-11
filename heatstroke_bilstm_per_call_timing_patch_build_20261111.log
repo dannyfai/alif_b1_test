@@ -1,0 +1,151 @@
+=== BiLSTM PER-CALL TIMING PATCH ===
+Backup: /home/user/sdk-alif/beeinventor/test_heatstroke/experiments/source_backups/PolyUModel1.cc.pre_bilstm_per_call_20261111_175852.bak
+Scope: application source only
+Static records: 4
+Captured: duration, cycles, input/output tensor indices
+
+--- /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.before
++++ /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/PolyUModel1.cc.after
+@@ -68,6 +68,21 @@
+     std::uint64_t max_wall_ms{0};
+ };
+ 
++constexpr std::uint32_t kHeatstrokeMaxBiLstmCalls = 4;
++
++struct HeatstrokeBiLstmCallDetail
++{
++    std::uint64_t cycles{0};
++    std::uint64_t wall_ms{0};
++    std::int32_t input_count{-1};
++    std::int32_t output_count{-1};
++    std::int32_t input_indices[8] = {-1,-1,-1,-1,-1,-1,-1,-1};
++    std::int32_t output_indices[4] = {-1,-1,-1,-1};
++};
++
++HeatstrokeBiLstmCallDetail
++    g_heatstrokeBiLstmCallDetails[kHeatstrokeMaxBiLstmCalls]{};
++
+ HeatstrokeInvokeFunction g_heatstrokeOriginalEthosUInvoke = nullptr;
+ HeatstrokeInvokeFunction g_heatstrokeOriginalBiLstmInvoke = nullptr;
+ 
+@@ -128,6 +143,29 @@
+         return kTfLiteError;
+     }
+ 
++
++    const std::uint32_t call_index = g_heatstrokeBiLstmTiming.calls;
++    HeatstrokeBiLstmCallDetail* call_detail =
++        (call_index < kHeatstrokeMaxBiLstmCalls)
++            ? &g_heatstrokeBiLstmCallDetails[call_index]
++            : nullptr;
++
++    if (call_detail != nullptr && node != nullptr) {
++        if (node->inputs != nullptr) {
++            call_detail->input_count = node->inputs->size;
++            for (int i = 0; i < node->inputs->size && i < 8; ++i) {
++                call_detail->input_indices[i] = node->inputs->data[i];
++            }
++        }
++
++        if (node->outputs != nullptr) {
++            call_detail->output_count = node->outputs->size;
++            for (int i = 0; i < node->outputs->size && i < 4; ++i) {
++                call_detail->output_indices[i] = node->outputs->data[i];
++            }
++        }
++    }
++
+     const std::uint64_t cycles_start = k_cycle_get_64();
+     const std::int64_t time_start_ms = k_uptime_get();
+ 
+@@ -141,6 +179,11 @@
+         (time_end_ms >= time_start_ms)
+             ? static_cast<std::uint64_t>(time_end_ms - time_start_ms)
+             : 0U;
++
++    if (call_detail != nullptr) {
++        call_detail->cycles = cycles_end - cycles_start;
++        call_detail->wall_ms = elapsed_ms;
++    }
+ 
+     RecordHeatstrokeOperatorTiming(
+         g_heatstrokeBiLstmTiming,
+@@ -216,6 +259,9 @@
+ {
+     g_heatstrokeEthosUTiming = {};
+     g_heatstrokeBiLstmTiming = {};
++    for (auto& detail : g_heatstrokeBiLstmCallDetails) {
++        detail = {};
++    }
+ }
+ 
+ void LogHeatstrokeOperatorTiming()
+@@ -239,6 +285,30 @@
+             g_heatstrokeBiLstmTiming.max_wall_ms),
+         static_cast<unsigned long long>(
+             g_heatstrokeBiLstmTiming.total_cycles));
++    for (std::uint32_t i = 0;
++         i < g_heatstrokeBiLstmTiming.calls &&
++         i < kHeatstrokeMaxBiLstmCalls;
++         ++i) {
++        const auto& d = g_heatstrokeBiLstmCallDetails[i];
++
++        printk(
++            "HEATSTROKE_BILSTM_CALL index=%u "
++            "wall_ms=%llu cycles=%llu "
++            "input_count=%d inputs=%d,%d,%d,%d,%d,%d,%d,%d "
++            "output_count=%d outputs=%d,%d,%d,%d\\n",
++            static_cast<unsigned int>(i),
++            static_cast<unsigned long long>(d.wall_ms),
++            static_cast<unsigned long long>(d.cycles),
++            d.input_count,
++            d.input_indices[0], d.input_indices[1],
++            d.input_indices[2], d.input_indices[3],
++            d.input_indices[4], d.input_indices[5],
++            d.input_indices[6], d.input_indices[7],
++            d.output_count,
++            d.output_indices[0], d.output_indices[1],
++            d.output_indices[2], d.output_indices[3]);
++    }
++
+ }
+ 
+ } // namespace arm::app::fwk::tflm
+[1/7] Building CXX object CMakeFiles/app.dir/src/use_case/alif_asr/src/PolyUModel1.cc.obj
+[2/7] Linking CXX static library app/libapp.a
+[3/7] Linking CXX executable zephyr/zephyr_pre0.elf
+[4/7] Generating linker.cmd
+[5/7] Generating isr_tables.c, isr_tables_vt.ld, isr_tables_swi.ld
+[6/7] Building C object zephyr/CMakeFiles/zephyr_final.dir/isr_tables.c.obj
+[7/7] Linking CXX executable zephyr/zephyr.elf
+Memory region         Used Size  Region Size  %age Used
+           FLASH:      301712 B      1824 KB     16.15%
+             RAM:     1331084 B      1496 KB     86.89%
+            ITCM:          0 GB       512 KB      0.00%
+   RESERVED_DTCM:          0 GB        40 KB      0.00%
+            DTCM:          0 GB      1496 KB      0.00%
+           OSPI0:    11026208 B        64 MB     16.43%
+        IDT_LIST:          0 GB        32 KB      0.00%
+Generating files from /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.elf for board: alif_b1_dk
+BUILD_RC=0
+
+=== PER-CALL PROFILING STRINGS ===
+HEATSTROKE_OPERATOR_TIMING EthosU calls=%u wall_ms=%llu max_wall_ms=%llu cycles=%llu
+HEATSTROKE_OPERATOR_TIMING BiLSTM calls=%u wall_ms=%llu max_wall_ms=%llu cycles=%llu
+HEATSTROKE_BILSTM_CALL index=%u wall_ms=%llu cycles=%llu input_count=%d inputs=%d,%d,%d,%d,%d,%d,%d,%d output_count=%d outputs=%d,%d,%d,%d\n
+
+=== PROFILING SYMBOLS ===
+800070a1 t (anonymous namespace)::HeatstrokeTimedBiLstmInvoke(TfLiteContext*, TfLiteNode*)
+80007379 T arm::app::fwk::tflm::LogHeatstrokeOperatorTiming()
+
+=== OSPI MODEL IDENTITY ===
+f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp_ethosu_aligned16_20261111.tflite
+f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/ospi0.bin
+OSPI_MODEL_MATCH=PASS
+
+=== MEMORY CONFIGURATION ===
+CONFIG_HEAP_MEM_POOL_SIZE=65536
+CONFIG_ACTIVATION_BUF_SZ=0x130000
+
+=== FIRMWARE SHA256 ===
+3362fc15482db59931c196603606b1e60ab98eb06cb3835ea14e2ea200457014  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.bin
