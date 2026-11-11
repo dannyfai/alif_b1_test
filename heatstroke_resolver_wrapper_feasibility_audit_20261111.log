@@ -1,0 +1,782 @@
+=== APPLICATION MODEL CLASS ===
+     1	#ifndef POLYU_MODEL1_HPP
+     2	#define POLYU_MODEL1_HPP
+     3	
+     4	#include "mlek/fwk/tflm/TflmModel.hpp"
+     5	
+     6	namespace arm::app::asr {
+     7	extern const int g_FrameLength;
+     8	extern const int g_FrameStride;
+     9	extern const float g_ScoreThreshold;
+    10	extern const int g_ctxLen;
+    11	} // namespace arm::app::asr
+    12	
+    13	namespace arm::app::fwk::tflm {
+    14	
+    15	class PolyUModel1 : public TflmModel {
+    16	
+    17	public:
+    18	    /* Indices for the expected model - based on input and output tensor shapes */
+    19	    static constexpr uint32_t ms_inputRowsIdx  = 1;
+    20	    static constexpr uint32_t ms_inputColsIdx  = 2;
+    21	    static constexpr uint32_t ms_outputRowsIdx = 2;
+    22	    static constexpr uint32_t ms_outputColsIdx = 3;
+    23	
+    24	    /* Model specific constants. */
+    25	    static constexpr uint32_t ms_blankTokenIdx   = 28;
+    26	    static constexpr uint32_t ms_numMfccFeatures = 13;
+    27	
+    28	protected:
+    29	    /** @brief   Gets the reference to op resolver interface class. */
+    30	    const tflite::MicroOpResolver& GetOpResolver() override;
+    31	
+    32	    /** @brief   Adds operations to the op resolver instance. */
+    33	    bool EnlistOperations() override;
+    34	
+    35	private:
+    36	    /* Maximum number of individual operations that can be enlisted. */
+    37	    #if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+    38	    static constexpr int ms_maxOpCnt = 33;
+    39	#else
+    40	    static constexpr int ms_maxOpCnt = 32;
+    41	#endif
+    42	
+    43	    /* A mutable op resolver instance. */
+    44	    tflite::MicroMutableOpResolver<ms_maxOpCnt> m_opResolver;
+    45	};
+    46	
+    47	} /* namespace arm::app::fwk::tflm */
+    48	
+    49	#endif /* POLYU_MODEL1_HPP */
+
+=== MODEL CONSTRUCTOR AND RESOLVER IMPLEMENTATION ===
+     1	/*
+     2	 * SPDX-FileCopyrightText: Copyright 2021, 2025 Arm Limited
+     3	 * SPDX-License-Identifier: Apache-2.0
+     4	 *
+     5	 * Application-local heat-stress TFLM operator registrations.
+     6	 */
+     7	
+     8	#include "PolyUModel1.hpp"
+     9	
+    10	#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+    11	#include "heatstroke_int64_cast_sum.hpp"
+    12	#endif
+    13	
+    14	#if defined(HEATSTROKE_INT64_MUL_EXPERIMENT)
+    15	#include "heatstroke_int64_mul.hpp"
+    16	#endif
+    17	
+    18	#if defined(HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT)
+    19	#include "heatstroke_int64_floor_mod.hpp"
+    20	#endif
+    21	
+    22	#if defined(HEATSTROKE_INT64_SUB_EXPERIMENT)
+    23	#include "heatstroke_int64_sub.hpp"
+    24	#endif
+    25	
+    26	#if defined(HEATSTROKE_INT64_ADD_EXPERIMENT)
+    27	#include "heatstroke_int64_add.hpp"
+    28	#endif
+    29	
+    30	#if defined(HEATSTROKE_INT64_SPLIT_V_EXPERIMENT)
+    31	#include "heatstroke_int64_split_v.hpp"
+    32	#endif
+    33	
+    34	
+    35	#include <cstdint>
+    36	
+    37	#include <cstddef>
+    38	#include <cstring>
+    39	#include <limits>
+    40	
+    41	#include "tensorflow/lite/c/builtin_op_data.h"
+    42	#include "tensorflow/lite/c/common.h"
+    43	#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+    44	#include "tensorflow/lite/kernels/kernel_util.h"
+    45	#include "tensorflow/lite/micro/micro_utils.h"
+    46	
+    47	#include "tensorflow/lite/core/api/flatbuffer_conversions.h"
+    48	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    49	#include "tensorflow/lite/micro/micro_log.h"
+    50	
+    51	#include "mlek/log/log_macros.h"
+    52	#include "heatstroke_bidirectional_lstm.h"
+    53	
+    54	const tflite::MicroOpResolver&
+    55	arm::app::fwk::tflm::PolyUModel1::GetOpResolver()
+    56	{
+    57	    return this->m_opResolver;
+    58	}
+    59	
+    60	namespace
+    61	{
+    62	
+    63	/*
+    64	 * SIGN has a SignOptions FlatBuffer table, but no runtime parameters are
+    65	 * required by this implementation. Validate its options type and leave
+    66	 * builtin_data null.
+    67	 */
+    68	TfLiteStatus ParseHeatstrokeSign(
+    69	    const tflite::Operator* op,
+    70	    tflite::ErrorReporter*,
+    71	    tflite::BuiltinDataAllocator*,
+    72	    void** builtin_data)
+    73	{
+    74	    if (builtin_data != nullptr) {
+    75	        *builtin_data = nullptr;
+    76	    }
+    77	
+    78	    if (op == nullptr ||
+    79	        op->builtin_options_type() !=
+    80	            tflite::BuiltinOptions_SignOptions) {
+    81	        return kTfLiteError;
+    82	    }
+    83	
+    84	    return kTfLiteOk;
+    85	}
+    86	
+    87	/*
+    88	 * Application-local INT32 SIGN implementation.
+    89	 *
+    90	 * y = -1 when x < 0
+    91	 * y =  0 when x = 0
+    92	 * y =  1 when x > 0
+    93	 *
+    94	 * No temporary buffer or scratch allocation is required.
+    95	 */
+    96	TfLiteStatus HeatstrokeSignEval(
+    97	    TfLiteContext* context,
+    98	    TfLiteNode* node)
+    99	{
+   100	    if (context == nullptr || node == nullptr) {
+   101	        return kTfLiteError;
+   102	    }
+   103	
+   104	    const TfLiteEvalTensor* input =
+   105	        tflite::micro::GetEvalInput(context, node, 0);
+   106	
+   107	    TfLiteEvalTensor* output =
+   108	        tflite::micro::GetEvalOutput(context, node, 0);
+   109	
+   110	    if (input == nullptr || output == nullptr) {
+   111	        return kTfLiteError;
+   112	    }
+   113	
+   114	    if (input->type != kTfLiteInt32 ||
+   115	        output->type != kTfLiteInt32) {
+   116	        MicroPrintf(
+   117	            "Heatstroke SIGN requires INT32 input/output. "
+   118	            "Input=%d Output=%d",
+   119	            input->type,
+   120	            output->type);
+   121	        return kTfLiteError;
+   122	    }
+   123	
+   124	    const auto input_shape =
+   125	        tflite::micro::GetTensorShape(input);
+   126	
+   127	    const auto output_shape =
+   128	        tflite::micro::GetTensorShape(output);
+   129	
+   130	    const int input_count = input_shape.FlatSize();
+   131	    const int output_count = output_shape.FlatSize();
+   132	
+   133	    if (input_count < 0 || input_count != output_count) {
+   134	        MicroPrintf(
+   135	            "Heatstroke SIGN tensor element-count mismatch.");
+   136	        return kTfLiteError;
+   137	    }
+   138	
+   139	    const int32_t* input_data =
+   140	        tflite::micro::GetTensorData<int32_t>(input);
+   141	
+   142	    int32_t* output_data =
+   143	        tflite::micro::GetTensorData<int32_t>(output);
+   144	
+   145	    if (input_count > 0 &&
+   146	        (input_data == nullptr || output_data == nullptr)) {
+   147	        MicroPrintf(
+   148	            "Heatstroke SIGN received a null tensor data pointer.");
+   149	        return kTfLiteError;
+   150	    }
+   151	
+   152	    for (int i = 0; i < input_count; ++i) {
+   153	        const int32_t value = input_data[i];
+   154	
+   155	        output_data[i] =
+   156	            (value > 0) ? 1 : ((value < 0) ? -1 : 0);
+   157	    }
+   158	
+   159	    return kTfLiteOk;
+   160	}
+   161	
+   162	TFLMRegistration RegisterHeatstrokeSignKernel()
+   163	{
+   164	    return tflite::micro::RegisterOp(
+   165	        nullptr,
+   166	        nullptr,
+   167	        HeatstrokeSignEval);
+   168	}
+   169	
+   170	} // namespace
+   171	
+   172	
+   173	namespace tflite {
+   174	namespace {
+   175	
+   176	constexpr int kHsGatherInput = 0;
+   177	constexpr int kHsGatherIndices = 1;
+   178	constexpr int kHsGatherOutput = 0;
+   179	
+   180	bool HeatstrokeGatherCheckedMultiply(
+
+=== MODEL RESOLVER REGISTRATION SECTION ===
+   740	                tflite::ParseSplitV) != kTfLiteOk) {
+   741	            printf_err("Failed to register heat-stress INT64 SPLIT_V.\\n");
+   742	            return false;
+   743	        }
+   744	    }
+   745	#else
+   746	    HS_ADD_REQUIRED(AddSplitV);
+   747	#endif
+   748	    HS_ADD_REQUIRED(AddSqrt);
+   749	    HS_ADD_REQUIRED(AddSquare);
+   750	#if defined(HEATSTROKE_INT64_SUB_EXPERIMENT)
+   751	    {
+   752	        const TFLMRegistration registration =
+   753	            tflite::RegisterHeatstrokeInt64SubKernel();
+   754	        if (this->m_opResolver.AddBuiltin(
+   755	                tflite::BuiltinOperator_SUB,
+   756	                registration,
+   757	                tflite::ParseSub) != kTfLiteOk) {
+   758	            printf_err("Failed to register heat-stress INT64 SUB.\\n");
+   759	            return false;
+   760	        }
+   761	    }
+   762	#else
+   763	    HS_ADD_REQUIRED(AddSub);
+   764	#endif
+   765	#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+   766	    {
+   767	        const TFLMRegistration registration =
+   768	            tflite::RegisterHeatstrokeSumKernel();
+   769	
+   770	        if (this->m_opResolver.AddBuiltin(
+   771	                tflite::BuiltinOperator_SUM,
+   772	                registration,
+   773	                tflite::ParseReducer) != kTfLiteOk) {
+   774	            printf_err("Failed to register heat-stress INT64 SUM.\n");
+   775	            return false;
+   776	        }
+   777	    }
+   778	#else
+   779	    HS_ADD_REQUIRED(AddSum);
+   780	#endif
+   781	    HS_ADD_REQUIRED(AddTopKV2);
+   782	
+   783	#undef HS_ADD_REQUIRED
+   784	
+   785	    /*
+   786	     * Custom SIGN registration under the built-in SIGN opcode.
+   787	     */
+   788	    {
+   789	        const TFLMRegistration registration =
+   790	            RegisterHeatstrokeSignKernel();
+   791	
+   792	        if (this->m_opResolver.AddBuiltin(
+   793	                tflite::BuiltinOperator_SIGN,
+   794	                registration,
+   795	                ParseHeatstrokeSign) != kTfLiteOk) {
+   796	            printf_err("Failed to register heat-stress SIGN.\n");
+   797	            return false;
+   798	        }
+   799	    }
+   800	
+   801	    /*
+   802	     * Select the application-local BiLSTM implementation.
+   803	     * Experimental mode is opt-in and paired with the repaired model.
+   804	     */
+   805	    {
+   806	#if defined(HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+   807	        const TFLMRegistration registration =
+   808	            tflite::RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+   809	#else
+   810	        const TFLMRegistration registration =
+   811	            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+   812	#endif
+   813	
+   814	        if (this->m_opResolver.AddBuiltin(
+   815	                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+   816	                registration,
+   817	                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+   818	            printf_err(
+   819	                "Failed to register heat-stress bidirectional LSTM.\n");
+   820	            return false;
+   821	        }
+   822	    }
+   823	
+   824	    /*
+   825	     * Ethos-U registration.
+   826	     *
+   827	     * AddEthosU() in this SDK can report success even when the hardware
+   828	     * registration is null. Therefore, explicitly verify FindOp().
+   829	     */
+   830	    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+   831	        printf_err("Failed to add Ethos-U to the resolver.\n");
+   832	        return false;
+   833	    }
+   834	
+   835	    const char* ethos_name = tflite::GetString_ETHOSU();
+   836	
+   837	    if (ethos_name == nullptr ||
+   838	        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+   839	        printf_err(
+   840	            "Ethos-U registration is missing from the resolver.\n");
+   841	        return false;
+   842	    }
+   843	
+   844	#if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+   845	    {
+   846	        const TFLMRegistration registration =
+   847	            tflite::RegisterHeatstrokeLayerNormQuantize();
+   848	
+   849	        if (this->m_opResolver.AddCustom(
+   850	                "HeatstrokeLayerNormQuantize",
+   851	                &registration) != kTfLiteOk) {
+   852	            printf_err(
+   853	                "Failed to register fused heat-stress LayerNorm operator.\n");
+   854	            return false;
+   855	        }
+   856	
+   857	        if (this->m_opResolver.FindOp(
+   858	                "HeatstrokeLayerNormQuantize") == nullptr) {
+   859	            printf_err(
+   860	                "Fused heat-stress LayerNorm registration is missing.\n");
+   861	            return false;
+   862	        }
+   863	    }
+   864	#endif
+   865	
+   866	
+   867	    /*
+   868	     * Verify all built-in registrations and parser callbacks.
+   869	     */
+   870	    const tflite::BuiltinOperator required_ops[] = {
+
+=== MLEK BASE-CLASS RESOLVER ACCESS ===
+    35	};
+    36	
+    37	/**
+    38	 * @brief   NN model class wrapping the underlying TensorFlow-Lite-Micro API.
+    39	 */
+    40	class TflmModel : public iface::Model {
+    41	public:
+    42	    /** @brief Constructor. */
+    43	    TflmModel();
+    44	
+    45	    /** @brief Destructor. */
+    46	    virtual ~TflmModel() = default;
+    47	
+    48	    /** @brief  Gets the pointer to the model's input tensor at given input index. */
+    49	    std::shared_ptr<iface::TensorIface> GetInputTensor(size_t index) const override;
+    50	
+    51	    /** @brief  Gets the pointer to the model's output tensor at given output index. */
+    52	    std::shared_ptr<iface::TensorIface> GetOutputTensor(size_t index) const override;
+    53	
+    54	    /** @brief  Gets the model's data type. */
+    55	    iface::TensorType GetType() const override;
+    56	
+    57	    /** @brief  Gets the pointer to the model's input shape. */
+    58	    std::vector<size_t> GetInputShape(size_t index) const override;
+    59	
+    60	    /** @brief  Gets the pointer to the model's output shape at given output index. */
+    61	    std::vector<size_t> GetOutputShape(size_t index) const override;
+    62	
+    63	    /** @brief  Gets the number of input tensors the model has. */
+    64	    size_t GetNumInputs() const override;
+    65	
+    66	    /** @brief  Gets the number of output tensors the model has. */
+    67	    size_t GetNumOutputs() const override;
+    68	
+    69	    /** @brief  Logs the tensor information to stdout. */
+    70	    void LogTensorInfo(std::shared_ptr<iface::TensorIface> tensor) override;
+    71	
+    72	    /** @brief  Logs the interpreter information to stdout. */
+    73	    void LogInterpreterInfo() override;
+    74	
+    75	    /** @brief      Initialise the model class object.
+    76	     *  @return     true if initialisation succeeds, false otherwise.
+    77	     **/
+    78	    bool Init(iface::MemoryRegion& computeBuffer,
+    79	              iface::MemoryRegion& nnModel,
+    80	              const void* backendData = nullptr) override;
+    81	
+    82	    /** @brief  Checks if this object has been initialised. */
+    83	    bool IsInited() const override;
+    84	
+    85	    /** @brief  Checks if the model uses signed data. */
+    86	    bool IsDataSigned() const override;
+    87	
+    88	    /** @brief Checks if the model uses Ethos-U operator */
+    89	    bool ContainsEthosUOperator() const override;
+    90	
+    91	    /** @brief  Runs the inference (invokes the interpreter). */
+    92	    bool RunInference() override;
+    93	
+    94	    /**
+    95	     * @brief   Gets memory region information for the backend's compute buffer.
+    96	     * @return  Const reference to MemoryRegion object.
+    97	     */
+    98	    const iface::MemoryRegion& GetComputeBuffer() const override;
+    99	
+   100	    /**
+   101	     * @brief   Gets memory region information for neural network model.
+   102	     * @return  Const reference to MemoryRegion object.
+   103	     */
+   104	    const iface::MemoryRegion& GetModelBuffer() const override;
+   105	
+   106	    /**
+   107	     * @brief       Gets TensorFlow Lite Micro backend data.
+   108	     * @return      Backend data, with pointers to the model, memory allocator and interpreter.
+   109	     **/
+   110	    const TflmBackendData& GetBackendData() const;
+   111	
+   112	protected:
+   113	    /**
+   114	     * @brief       Gets the op resolver for the model instance.
+   115	     * @return      const reference to a tflite::MicroOpResolver object.
+   116	     **/
+   117	    virtual const tflite::MicroOpResolver& GetOpResolver() = 0;
+   118	
+   119	    /**
+   120	     * @brief       Add all the operators required for the given model.
+   121	     *              Implementation of this should come from the use case.
+   122	     * @return      true is ops are successfully added, false otherwise.
+   123	     **/
+   124	    virtual bool EnlistOperations() = 0;
+   125	
+   126	private:
+   127	    TflmBackendData m_backendData{};
+   128	    bool m_inited{false}; /* Indicates whether this object has been initialised. */
+   129	    iface::MemoryRegion m_computeBuffer{};
+   130	    iface::MemoryRegion m_modelBuffer{};
+   131	
+   132	    std::vector<std::shared_ptr<iface::TensorIface>> m_input{}; /* Model's input tensor pointers. */
+   133	    std::vector<std::shared_ptr<iface::TensorIface>>
+   134	        m_output{};                                       /* Model's output tensor pointers. */
+   135	    iface::TensorType m_type{iface::TensorType::INVALID}; /* Model's data type. */
+   136	};
+   137	} /* namespace arm::app::fwk::tflm */
+   138	
+   139	#endif /* MLEK_TFLM_MODEL_HPP */
+
+=== TFLM MICRO OP RESOLVER INTERFACE ===
+     1	/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+     2	
+     3	Licensed under the Apache License, Version 2.0 (the "License");
+     4	you may not use this file except in compliance with the License.
+     5	You may obtain a copy of the License at
+     6	
+     7	    http://www.apache.org/licenses/LICENSE-2.0
+     8	
+     9	Unless required by applicable law or agreed to in writing, software
+    10	distributed under the License is distributed on an "AS IS" BASIS,
+    11	WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    12	See the License for the specific language governing permissions and
+    13	limitations under the License.
+    14	==============================================================================*/
+    15	#ifndef TENSORFLOW_LITE_MICRO_MICRO_OP_RESOLVER_H_
+    16	#define TENSORFLOW_LITE_MICRO_MICRO_OP_RESOLVER_H_
+    17	
+    18	#include "tensorflow/lite/c/common.h"
+    19	#include "tensorflow/lite/micro/micro_common.h"
+    20	#include "tensorflow/lite/micro/tflite_bridge/flatbuffer_conversions_bridge.h"
+    21	#include "tensorflow/lite/schema/schema_generated.h"
+    22	
+    23	namespace tflite {
+    24	
+    25	// This is an interface for the OpResolver for TFLiteMicro. The differences from
+    26	// the TFLite OpResolver base class are to:
+    27	//  * explicitly remove support for Op versions
+    28	//  * allow for finer grained registration of the Builtin Ops to reduce code
+    29	//    size for TFLiteMicro.
+    30	//
+    31	// We need an interface class instead of directly using MicroMutableOpResolver
+    32	// because MicroMutableOpResolver is a class template with the number of
+    33	// registered Ops as the template parameter.
+    34	class MicroOpResolver {
+    35	 public:
+    36	  // Returns the Op registration struct corresponding to the enum code from the
+    37	  // flatbuffer schema. Returns nullptr if the op is not found or if op ==
+    38	  // BuiltinOperator_CUSTOM.
+    39	  virtual const TFLMRegistration* FindOp(BuiltinOperator op) const = 0;
+    40	
+    41	  // Returns the Op registration struct corresponding to the custom operator by
+    42	  // name.
+    43	  virtual const TFLMRegistration* FindOp(const char* op) const = 0;
+    44	
+    45	  // Returns the operator specific parsing function for the OpData for a
+    46	  // BuiltinOperator (if registered), else nullptr.
+    47	  virtual TfLiteBridgeBuiltinParseFunction GetOpDataParser(
+    48	      BuiltinOperator op) const = 0;
+    49	
+    50	  virtual ~MicroOpResolver() {}
+    51	};
+    52	
+    53	// Handles the logic for converting between an OperatorCode structure extracted
+    54	// from a flatbuffer and information about a registered operator
+    55	// implementation.
+    56	TfLiteStatus GetRegistrationFromOpCode(const OperatorCode* opcode,
+    57	                                       const MicroOpResolver& op_resolver,
+    58	                                       const TFLMRegistration** registration);
+    59	
+    60	}  // namespace tflite
+    61	
+    62	#endif  // TENSORFLOW_LITE_MICRO_MICRO_OP_RESOLVER_H_
+
+=== MUTABLE RESOLVER LOOKUP AND REGISTRATION METHODS ===
+62- public:
+63-  TF_LITE_REMOVE_VIRTUAL_DELETE
+64-
+65-  explicit MicroMutableOpResolver() {}
+66-
+67:  const TFLMRegistration* FindOp(tflite::BuiltinOperator op) const override {
+68-    if (op == BuiltinOperator_CUSTOM) return nullptr;
+69-
+70-    for (unsigned int i = 0; i < registrations_len_; ++i) {
+71-      const TFLMRegistration& registration = registrations_[i];
+72-      if (registration.builtin_code == op) {
+--
+74-      }
+75-    }
+76-    return nullptr;
+77-  }
+78-
+79:  const TFLMRegistration* FindOp(const char* op) const override {
+80-    for (unsigned int i = 0; i < registrations_len_; ++i) {
+81-      const TFLMRegistration& registration = registrations_[i];
+82-      if ((registration.builtin_code == BuiltinOperator_CUSTOM) &&
+83-          (strcmp(registration.custom_name, op) == 0)) {
+84-        return &registration;
+--
+100-  //
+101-  // Only the first call for a given name will be successful. i.e. if this
+102-  // function is called again for a previously added Custom Operator, the
+103-  // MicroOpResolver will be unchanged and this function will return
+104-  // kTfLiteError.
+105:  TfLiteStatus AddCustom(const char* name,
+106-                         const TFLMRegistration* registration) {
+107-    if (registrations_len_ >= tOpCount) {
+108-      MicroPrintf(
+109-          "Couldn't register custom op '%s', resolver size is too"
+110-          "small (%d)",
+111-          name, tOpCount);
+112-      return kTfLiteError;
+113-    }
+114-
+115:    if (FindOp(name) != nullptr) {
+116-      MicroPrintf("Calling AddCustom for the same op more than once ");
+117-      MicroPrintf("is not supported (Op: %s).", name);
+118-      return kTfLiteError;
+119-    }
+120-
+--
+129-
+130-  // The Add* functions below add the various Builtin operators to the
+131-  // MicroMutableOpResolver object.
+132-
+133-  TfLiteStatus AddAbs() {
+134:    return AddBuiltin(BuiltinOperator_ABS, Register_ABS(), ParseAbs);
+135-  }
+136-
+137-  TfLiteStatus AddAdd(const TFLMRegistration& registration = Register_ADD()) {
+138:    return AddBuiltin(BuiltinOperator_ADD, registration, ParseAdd);
+139-  }
+140-
+141-  TfLiteStatus AddAddN() {
+142:    return AddBuiltin(BuiltinOperator_ADD_N, tflite::Register_ADD_N(),
+143-                      ParseAddN);
+144-  }
+145-
+146-  TfLiteStatus AddArgMax() {
+147:    return AddBuiltin(BuiltinOperator_ARG_MAX, Register_ARG_MAX(), ParseArgMax);
+148-  }
+149-
+150-  TfLiteStatus AddArgMin() {
+151:    return AddBuiltin(BuiltinOperator_ARG_MIN, Register_ARG_MIN(), ParseArgMin);
+152-  }
+153-
+154-  TfLiteStatus AddAssignVariable() {
+155:    return AddBuiltin(BuiltinOperator_ASSIGN_VARIABLE,
+156-                      tflite::Register_ASSIGN_VARIABLE(), ParseAssignVariable);
+157-  }
+158-
+159-  TfLiteStatus AddAveragePool2D(
+160-      const TFLMRegistration& registration = Register_AVERAGE_POOL_2D()) {
+161:    return AddBuiltin(BuiltinOperator_AVERAGE_POOL_2D, registration, ParsePool);
+162-  }
+163-
+164-  TfLiteStatus AddBatchMatMul(
+165-      const TFLMRegistration& registration = Register_BATCH_MATMUL()) {
+166:    return AddBuiltin(BuiltinOperator_BATCH_MATMUL, registration,
+167-                      ParseBatchMatMul);
+168-  }
+169-
+170-  TfLiteStatus AddBatchToSpaceNd() {
+171:    return AddBuiltin(BuiltinOperator_BATCH_TO_SPACE_ND,
+172-                      Register_BATCH_TO_SPACE_ND(), ParseBatchToSpaceNd);
+173-  }
+174-
+175-  TfLiteStatus AddBroadcastArgs() {
+176:    return AddBuiltin(BuiltinOperator_BROADCAST_ARGS, Register_BROADCAST_ARGS(),
+177-                      ParseBroadcastArgs);
+178-  }
+179-
+180-  TfLiteStatus AddBroadcastTo() {
+181:    return AddBuiltin(BuiltinOperator_BROADCAST_TO, Register_BROADCAST_TO(),
+182-                      ParseBroadcastTo);
+183-  }
+184-
+185-  TfLiteStatus AddCallOnce() {
+186:    return AddBuiltin(BuiltinOperator_CALL_ONCE, Register_CALL_ONCE(),
+187-                      ParseCallOnce);
+188-  }
+189-
+190-  TfLiteStatus AddCast() {
+191:    return AddBuiltin(BuiltinOperator_CAST, Register_CAST(), ParseCast);
+192-  }
+193-
+194-  TfLiteStatus AddCeil() {
+195:    return AddBuiltin(BuiltinOperator_CEIL, Register_CEIL(), ParseCeil);
+196-  }
+197-
+198-  TfLiteStatus AddCircularBuffer() {
+199:    return AddCustom("CIRCULAR_BUFFER", tflite::Register_CIRCULAR_BUFFER());
+200-  }
+201-
+202-  TfLiteStatus AddConcatenation() {
+203:    return AddBuiltin(BuiltinOperator_CONCATENATION, Register_CONCATENATION(),
+204-                      ParseConcatenation);
+205-  }
+206-
+207-  TfLiteStatus AddConv2D(
+208-      const TFLMRegistration& registration = Register_CONV_2D()) {
+209:    return AddBuiltin(BuiltinOperator_CONV_2D, registration, ParseConv2D);
+210-  }
+211-
+212-  TfLiteStatus AddCos() {
+213:    return AddBuiltin(BuiltinOperator_COS, tflite::Register_COS(), ParseCos);
+214-  }
+215-
+216-  TfLiteStatus AddCumSum() {
+217:    return AddBuiltin(BuiltinOperator_CUMSUM, tflite::Register_CUMSUM(),
+218-                      ParseCumsum);
+219-  }
+220-
+221-  TfLiteStatus AddTopKV2() {
+222:    return AddBuiltin(BuiltinOperator_TOPK_V2,
+223-                      tflite::Register_TOPK_V2(), ParseTopK);
+224-  }
+225-
+226-  TfLiteStatus AddDelay() {
+227-    // TODO(b/286250473): change back name to "Delay" and remove namespace
+228:    return AddCustom("SignalDelay", tflite::tflm_signal::Register_DELAY());
+229-  }
+230-
+231-  TfLiteStatus AddDepthToSpace() {
+232:    return AddBuiltin(BuiltinOperator_DEPTH_TO_SPACE,
+233-                      tflite::Register_DEPTH_TO_SPACE(), ParseDepthToSpace);
+234-  }
+235-
+236-  TfLiteStatus AddDepthwiseConv2D(
+237-      const TFLMRegistration& registration = Register_DEPTHWISE_CONV_2D()) {
+238:    return AddBuiltin(BuiltinOperator_DEPTHWISE_CONV_2D, registration,
+239-                      ParseDepthwiseConv2D);
+240-  }
+241-
+242-  TfLiteStatus AddDequantize() {
+243:    return AddBuiltin(BuiltinOperator_DEQUANTIZE, tflite::Register_DEQUANTIZE(),
+244-                      ParseDequantize);
+245-  }
+246-
+247-  TfLiteStatus AddDetectionPostprocess() {
+248:    return AddCustom("TFLite_Detection_PostProcess",
+249-                     tflite::Register_DETECTION_POSTPROCESS());
+250-  }
+251-
+252-  TfLiteStatus AddDiv() {
+253:    return AddBuiltin(BuiltinOperator_DIV, tflite::Register_DIV(), ParseDiv);
+254-  }
+255-
+256-  TfLiteStatus AddEmbeddingLookup() {
+257:    return AddBuiltin(BuiltinOperator_EMBEDDING_LOOKUP,
+258-                      Register_EMBEDDING_LOOKUP(), ParseEmbeddingLookup);
+259-  }
+260-
+261-  TfLiteStatus AddEnergy() {
+262-    // TODO(b/286250473): change back name to "Energy" and remove namespace
+263:    return AddCustom("SignalEnergy", tflite::tflm_signal::Register_ENERGY());
+264-  }
+265-
+266-  TfLiteStatus AddElu() {
+267:    return AddBuiltin(BuiltinOperator_ELU, tflite::Register_ELU(), ParseElu);
+268-  }
+269-
+270-  TfLiteStatus AddEqual() {
+271:    return AddBuiltin(BuiltinOperator_EQUAL, Register_EQUAL(), ParseEqual);
+272-  }
+273-
+274:  TfLiteStatus AddEthosU() {
+275-    TFLMRegistration* registration = tflite::Register_ETHOSU();
+276-    if (registration) {
+277:      return AddCustom(tflite::GetString_ETHOSU(), registration);
+278-    }
+279-    return kTfLiteOk;
+280-  }
+281-
+282-  TfLiteStatus AddExp() {
+283:    return AddBuiltin(BuiltinOperator_EXP, Register_EXP(), ParseExp);
+284-  }
+285-
+286-  TfLiteStatus AddExpandDims() {
+287:    return AddBuiltin(BuiltinOperator_EXPAND_DIMS, Register_EXPAND_DIMS(),
+288-                      ParseExpandDims);
+289-  }
+290-
+291-  TfLiteStatus AddFftAutoScale() {
+292-    // TODO(b/286250473): change back name and remove namespace
+293:    return AddCustom("SignalFftAutoScale",
+294-                     tflite::tflm_signal::Register_FFT_AUTO_SCALE());
+295-  }
+296-
+297-  TfLiteStatus AddFill() {
+298:    return AddBuiltin(BuiltinOperator_FILL, tflite::Register_FILL(), ParseFill);
+299-  }
+300-
+301-  TfLiteStatus AddFilterBank() {
+302-    // TODO(b/286250473): change back name to "FilterBank" and remove namespace
+303:    return AddCustom("SignalFilterBank",
+304-                     tflite::tflm_signal::Register_FILTER_BANK());
+305-  }
+306-  TfLiteStatus AddFilterBankLog() {
+307-    // TODO(b/286250473): change back name to "FilterBankLog" and remove
+308-    // namespace
+309:    return AddCustom("SignalFilterBankLog",
+310-                     tflite::tflm_signal::Register_FILTER_BANK_LOG());
+311-  }
+312-  TfLiteStatus AddFilterBankSquareRoot() {
+313-    // TODO(b/286250473): change back name to "FilterBankSquareRoot" and remove
+314-    // namespace
+315:    return AddCustom("SignalFilterBankSquareRoot",
+316-                     tflite::tflm_signal::Register_FILTER_BANK_SQUARE_ROOT());
+317-  }
+318-  TfLiteStatus AddFilterBankSpectralSubtraction() {
+319-    // TODO(b/286250473): change back name to "FilterBankSpectralSubtraction"
+320-    // and remove namespace
+321:    return AddCustom(
+322-        "SignalFilterBankSpectralSubtraction",
+
+=== TFLITE REGISTRATION STRUCTURE ===
+
+=== END AUDIT ===
