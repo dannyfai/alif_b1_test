@@ -1,0 +1,104 @@
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794380676.686283  224752 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794380676.686492  224752 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794380676.717598  224752 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794380677.426059  224752 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794380677.426344  224752 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+=== ORIGINAL MODEL ===
+Size: 11025096
+SHA256: 06455fa9d1b41e2b920485b9bfd4a1a48d68ae0474d1aa7d9558c0a0afd02125
+NumPy-backed Buffer.data vectors: 186
+Non-empty NumPy vectors: 186
+NumPy dtypes: ['uint8']
+NumPy dimensions: [1]
+
+=== FLATBUFFERS BUILDER IMPLEMENTATION ===
+CreateNumpyVector:
+  def CreateNumpyVector(self, x):
+    """CreateNumpyVector writes a numpy array into the buffer."""
+
+    if np is None:
+      # Numpy is required for this feature
+      raise NumpyRequiredForThisFeature("Numpy was not found.")
+
+    if not isinstance(x, np.ndarray):
+      raise TypeError("non-numpy-ndarray passed to CreateNumpyVector")
+
+    if x.dtype.kind not in ["b", "i", "u", "f"]:
+      raise TypeError("numpy-ndarray holds elements of unsupported datatype")
+
+    if x.ndim > 1:
+      raise TypeError("multidimensional-ndarray passed to CreateNumpyVector")
+
+    self.StartVector(x.itemsize, x.size, x.dtype.alignment)
+
+    # Ensure little endian byte ordering
+    if x.dtype.str[0] == "<":
+      x_lend = x
+    else:
+      x_lend = x.byteswap(inplace=False)
+
+    # tobytes ensures c_contiguous ordering
+    payload = x_lend.tobytes(order="C")
+
+    # Calculate total length
+    payload_len = len(payload)
+    new_head = self.head - payload_len
+    self.head = new_head
+    self.Bytes[new_head : new_head + payload_len] = payload
+
+    self.vectorNumElems = x.size
+    return self.EndVector()
+
+StartVector:
+  def StartVector(self, elemSize, numElems, alignment):
+    """StartVector initializes bookkeeping for writing a new vector.
+
+    A vector has the following format:
+      - <UOffsetT: number of elements in this vector>
+      - <T: data>+, where T is the type of elements of this vector.
+    """
+
+    self.assertNotNested()
+    self.nested = True
+    self.vectorNumElems = numElems
+    self.Prep(N.Uint32Flags.bytewidth, elemSize * numElems)
+    self.Prep(alignment, elemSize * numElems)  # In case alignment > int.
+    return self.Offset()
+
+EndVector:
+  def EndVector(self, numElems=None):
+    """EndVector writes data necessary to finish vector construction."""
+
+    self.assertNested()
+    ## @cond FLATBUFFERS_INTERNAL
+    self.nested = False
+    ## @endcond
+
+    if numElems:
+      warnings.warn("numElems is deprecated.", DeprecationWarning, stacklevel=2)
+      if numElems != self.vectorNumElems:
+        raise EndVectorLengthMismatched()
+
+    # we already made space for this, so write without PrependUint32
+    self.PlaceUOffsetT(self.vectorNumElems)
+    self.vectorNumElems = None
+    return self.Offset()
+
+
+=== ALIGNED NUMPY VECTOR SERIALIZATION ===
+Traceback (most recent call last):
+  File "<stdin>", line 92, in <module>
+  File "/home/user/zephyrproject/.py3.12_venv/lib/python3.12/site-packages/tensorflow/lite/python/schema_py_generated.py", line 19563, in Pack
+    subgraphslist.append(self.subgraphs[i].Pack(builder))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/zephyrproject/.py3.12_venv/lib/python3.12/site-packages/tensorflow/lite/python/schema_py_generated.py", line 18325, in Pack
+    tensorslist.append(self.tensors[i].Pack(builder))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/zephyrproject/.py3.12_venv/lib/python3.12/site-packages/tensorflow/lite/python/schema_py_generated.py", line 2603, in Pack
+    shape = builder.CreateNumpyVector(self.shape)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<stdin>", line 71, in aligned_numpy_vector
+RuntimeError: Expected one-dimensional uint8 vector; got int32 (3,)
