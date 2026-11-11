@@ -1,0 +1,656 @@
+=== MAINLOOP INCLUDES ===
+     1	/* This file was ported to work on Alif Semiconductor devices. */
+     2	
+     3	/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+     4	 * Use, distribution and modification of this code is permitted under the
+     5	 * terms stated in the Alif Semiconductor Software License Agreement
+     6	 *
+     7	 * You should have received a copy of the Alif Semiconductor Software
+     8	 * License Agreement with this file. If not, please write to:
+     9	 * contact@alifsemi.com, or visit: https://alifsemi.com/license
+    10	 *
+    11	 */
+    12	
+    13	/*
+    14	 * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+    15	 * affiliates <open-source-office@arm.com>
+    16	 * SPDX-License-Identifier: Apache-2.0
+    17	 *
+    18	 * Licensed under the Apache License, Version 2.0 (the "License");
+    19	 * you may not use this file except in compliance with the License.
+    20	 * You may obtain a copy of the License at
+    21	 *
+    22	 *     http://www.apache.org/licenses/LICENSE-2.0
+    23	 *
+    24	 * Unless required by applicable law or agreed to in writing, software
+    25	 * distributed under the License is distributed on an "AS IS" BASIS,
+    26	 * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    27	 * See the License for the specific language governing permissions and
+    28	 * limitations under the License.
+    29	 */
+    30	#include "BufAttributes.hpp"
+    31	#include "PolyUModel1.hpp"
+    32	#include "heatstroke_smoke_test_vector.hpp"
+    33	#include "mlek/fwk/iface/Tensor.hpp"
+    34	
+    35	#include <cstddef>
+    36	#include <cstdint>
+    37	#include <cstring>
+    38	#include <cmath>
+    39	#include <memory>
+    40	#include <vector>
+    41	
+    42	using PolyUModel1 = arm::app::fwk::tflm::PolyUModel1;
+    43	
+    44	#include "power_mgr.h"             /* power management APIs */
+    45	#include <zephyr/logging/log.h>
+    46	#include <zephyr/kernel.h>
+    47	#include <zephyr/drivers/gpio.h>
+    48	
+    49	LOG_MODULE_REGISTER(MainLoop);
+    50	
+    51	#define LPGPIO_NODE           DT_NODELABEL(lpgpio)
+    52	#define LPGPIO_WAKEUP_ENABLED DT_NODE_HAS_STATUS_OKAY(LPGPIO_NODE)
+    53	
+    54	#if LPGPIO_WAKEUP_ENABLED
+    55	/* LPGPIO wake up source is used */
+    56	#define LPGPIO_EWIC_CFG EWIC_VBAT_GPIO
+    57	
+    58	#if CONFIG_LPGPIO_WAKEUP_SOURCE == 4
+    59	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO4
+    60	#elif CONFIG_LPGPIO_WAKEUP_SOURCE == 1
+    61	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO1
+    62	#else
+    63	#define LPGPIO_WAKEUP_EVENT WE_LPGPIO0
+    64	#endif
+    65	#else
+    66	#define LPGPIO_EWIC_CFG 0
+    67	#define LPGPIO_WAKEUP_EVENT 0
+    68	#endif
+    69	
+    70	namespace arm {
+    71	namespace app {
+    72	    static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+    73	
+    74	    namespace polyu_heatstroke {
+    75	extern const uint8_t* GetModelPointer();
+    76	extern size_t GetModelLen();
+    77	} /* namespace polyu_heatstroke */
+    78	
+    79	} /* namespace app */
+    80	} /* namespace arm */
+    81	
+    82	
+    83	#if LPGPIO_WAKEUP_ENABLED
+    84	static const struct gpio_dt_spec lpgpio_config = GPIO_DT_SPEC_GET_BY_IDX_OR(
+    85		DT_NODELABEL(wakeup_pins), lpgpios, CONFIG_LPGPIO_WAKEUP_SOURCE, {0});
+    86	#endif
+    87	
+    88	
+    89	volatile uint8_t button_pressed = 0U;
+    90	static struct gpio_callback button_cb_data;
+
+=== MAINLOOP IMPLEMENTATION AND CALL CONTEXT ===
+   475	            psiRefClass == psiMcuClass ? "yes" : "no");
+   476	
+   477	    LOG_INF("Activation arena capacity: %u bytes",
+   478	            static_cast<unsigned int>(model.GetComputeBuffer().size));
+   479	    LOG_INF("Model buffer size: %u bytes",
+   480	            static_cast<unsigned int>(model.GetModelBuffer().size));
+   481	
+   482	    LOG_INF("=== ONE-SAMPLE HEATSTROKE INFERENCE COMPLETE ===");
+   483	    return true;
+   484	}
+   485	
+   486	void MainLoop()
+   487	{
+   488	    por_boot = true;
+   489	    k_sem_init(&button_wait_sem, 0, 1);
+   490	
+   491	    if (configure_lpgpio()) {
+   492	        LOG_ERR("Failed to configure LPGPIO for button input");
+   493	        return;
+   494	    }
+   495	
+   496	    const uint8_t* modelPointer =
+   497	        arm::app::polyu_heatstroke::GetModelPointer();
+   498	    const size_t modelLength =
+   499	        arm::app::polyu_heatstroke::GetModelLen();
+   500	
+   501	    if (modelPointer == nullptr || modelLength == 0U) {
+   502	        LOG_ERR("Combined heat-stress model pointer or length is invalid");
+   503	        return;
+   504	    }
+   505	
+   506	    LOG_INF("=====================");
+   507	    LOG_INF("Combined model pointer: %p",
+   508	            static_cast<const void*>(modelPointer));
+   509	    LOG_INF("Combined model size: %u bytes",
+   510	            static_cast<unsigned int>(modelLength));
+   511	
+   512	    /* MLEK MemoryRegion is mutable; the generated model itself is const. */
+   513	    arm::app::fwk::iface::MemoryRegion modelMem{
+   514	        const_cast<uint8_t*>(modelPointer), modelLength};
+   515	
+   516	    arm::app::fwk::iface::MemoryRegion computeMem{
+   517	        arm::app::activationBuf, sizeof(arm::app::activationBuf)};
+   518	
+   519	    PolyUModel1 model;
+   520	
+   521	    if (!model.Init(computeMem, modelMem)) {
+   522	        LOG_ERR("Failed to initialise combined heat-stress model");
+   523	        return;
+   524	    }
+   525	
+   526	    LOG_INF("Combined heat-stress model initialisation: OK");
+   527	    LOG_INF("Contains Ethos-U operators: %s",
+   528	            model.ContainsEthosUOperator() ? "yes" : "no");
+   529	
+   530	    if (!VerifyTensorInterface(model)) {
+   531	        LOG_ERR("Combined heat-stress model I/O contract verification failed");
+   532	        return;
+   533	    }
+   534	
+   535	    LOG_INF("Combined heat-stress model I/O contract verified.");
+   536	    if (!RunHeatstrokeSmokeInference(model)) {
+   537	        LOG_ERR("One-sample heat-stress inference failed");
+   538	        return;
+   539	    }
+   540	    LOG_INF("One-sample heat-stress inference: COMPLETE.");
+   541	}
+
+=== CMSIS NVIC READ APIs ===
+3849-  #include CMSIS_NVIC_VIRTUAL_HEADER_FILE
+3850-#else
+3851-  #define NVIC_SetPriorityGrouping    __NVIC_SetPriorityGrouping
+3852-  #define NVIC_GetPriorityGrouping    __NVIC_GetPriorityGrouping
+3853-  #define NVIC_EnableIRQ              __NVIC_EnableIRQ
+3854:  #define NVIC_GetEnableIRQ           __NVIC_GetEnableIRQ
+3855-  #define NVIC_DisableIRQ             __NVIC_DisableIRQ
+3856:  #define NVIC_GetPendingIRQ          __NVIC_GetPendingIRQ
+3857-  #define NVIC_SetPendingIRQ          __NVIC_SetPendingIRQ
+3858-  #define NVIC_ClearPendingIRQ        __NVIC_ClearPendingIRQ
+3859:  #define NVIC_GetActive              __NVIC_GetActive
+3860-  #define NVIC_SetPriority            __NVIC_SetPriority
+3861-  #define NVIC_GetPriority            __NVIC_GetPriority
+3862-  #define NVIC_SystemReset            __NVIC_SystemReset
+3863-#endif /* CMSIS_NVIC_VIRTUAL */
+3864-
+3865-#ifdef CMSIS_VECTAB_VIRTUAL
+3866-  #ifndef CMSIS_VECTAB_VIRTUAL_HEADER_FILE
+3867-    #define CMSIS_VECTAB_VIRTUAL_HEADER_FILE "cmsis_vectab_virtual.h"
+3868-  #endif
+3869-  #include CMSIS_VECTAB_VIRTUAL_HEADER_FILE
+3870-#else
+3871-  #define NVIC_SetVector              __NVIC_SetVector
+--
+3954-  \param [in]      IRQn  Device specific interrupt number.
+3955-  \return             0  Interrupt is not enabled.
+3956-  \return             1  Interrupt is enabled.
+3957-  \note    IRQn must not be negative.
+3958- */
+3959:__STATIC_INLINE uint32_t __NVIC_GetEnableIRQ(IRQn_Type IRQn)
+3960-{
+3961-  if ((int32_t)(IRQn) >= 0)
+3962-  {
+3963-    return((uint32_t)(((NVIC->ISER[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+3964-  }
+3965-  else
+3966-  {
+3967-    return(0U);
+3968-  }
+3969-}
+3970-
+3971-
+--
+3992-  \param [in]      IRQn  Device specific interrupt number.
+3993-  \return             0  Interrupt status is not pending.
+3994-  \return             1  Interrupt status is pending.
+3995-  \note    IRQn must not be negative.
+3996- */
+3997:__STATIC_INLINE uint32_t __NVIC_GetPendingIRQ(IRQn_Type IRQn)
+3998-{
+3999-  if ((int32_t)(IRQn) >= 0)
+4000-  {
+4001-    return((uint32_t)(((NVIC->ISPR[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+4002-  }
+4003-  else
+4004-  {
+4005-    return(0U);
+4006-  }
+4007-}
+4008-
+4009-
+--
+4043-  \param [in]      IRQn  Device specific interrupt number.
+4044-  \return             0  Interrupt status is not active.
+4045-  \return             1  Interrupt status is active.
+4046-  \note    IRQn must not be negative.
+4047- */
+4048:__STATIC_INLINE uint32_t __NVIC_GetActive(IRQn_Type IRQn)
+4049-{
+4050-  if ((int32_t)(IRQn) >= 0)
+4051-  {
+4052-    return((uint32_t)(((NVIC->IABR[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+4053-  }
+4054-  else
+4055-  {
+4056-    return(0U);
+4057-  }
+4058-}
+4059-
+4060-
+--
+4329-  \param [in]      IRQn  Device specific interrupt number.
+4330-  \return             0  Interrupt is not enabled.
+4331-  \return             1  Interrupt is enabled.
+4332-  \note    IRQn must not be negative.
+4333- */
+4334:__STATIC_INLINE uint32_t TZ_NVIC_GetEnableIRQ_NS(IRQn_Type IRQn)
+4335-{
+4336-  if ((int32_t)(IRQn) >= 0)
+4337-  {
+4338-    return((uint32_t)(((NVIC_NS->ISER[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+4339-  }
+4340-  else
+4341-  {
+4342-    return(0U);
+4343-  }
+4344-}
+4345-
+4346-
+--
+4365-  \param [in]      IRQn  Device specific interrupt number.
+4366-  \return             0  Interrupt status is not pending.
+4367-  \return             1  Interrupt status is pending.
+4368-  \note    IRQn must not be negative.
+4369- */
+4370:__STATIC_INLINE uint32_t TZ_NVIC_GetPendingIRQ_NS(IRQn_Type IRQn)
+4371-{
+4372-  if ((int32_t)(IRQn) >= 0)
+4373-  {
+4374-    return((uint32_t)(((NVIC_NS->ISPR[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+4375-  }
+4376-  else
+4377-  {
+4378-    return(0U);
+4379-  }
+4380-}
+4381-
+4382-
+--
+4416-  \param [in]      IRQn  Device specific interrupt number.
+4417-  \return             0  Interrupt status is not active.
+4418-  \return             1  Interrupt status is active.
+4419-  \note    IRQn must not be negative.
+4420- */
+4421:__STATIC_INLINE uint32_t TZ_NVIC_GetActive_NS(IRQn_Type IRQn)
+4422-{
+4423-  if ((int32_t)(IRQn) >= 0)
+4424-  {
+4425-    return((uint32_t)(((NVIC_NS->IABR[(((uint32_t)IRQn) >> 5UL)] & (1UL << (((uint32_t)IRQn) & 0x1FUL))) != 0UL) ? 1UL : 0UL));
+4426-  }
+4427-  else
+4428-  {
+4429-    return(0U);
+4430-  }
+4431-}
+4432-
+4433-
+
+=== ETHOS-U DEVICE REGISTER DEFINITIONS ===
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-64-//
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-65-// Register subpage BASE
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-66-//
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-67-#define NPU_REG_ID 0x0000
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:68:#define NPU_REG_STATUS 0x0004
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-69-#define NPU_REG_CMD 0x0008
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-70-#define NPU_REG_RESET 0x000C
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-71-#define NPU_REG_QBASE 0x0010
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-72-#define NPU_REG_QBASE_HI 0x0014
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-73-#define NPU_REG_QREAD 0x0018
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-74-#define NPU_REG_QCONFIG 0x001C
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-75-#define NPU_REG_QSIZE 0x0020
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-76-#define NPU_REG_PROT 0x0024
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-92-
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-93-//
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-94-// Register subpage DEBUG
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-95-//
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:96:#define NPU_REG_WD_STATUS 0x0100
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:97:#define NPU_REG_MAC_STATUS 0x0104
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:98:#define NPU_REG_AO_STATUS 0x0108
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:99:#define NPU_REG_DMA_STATUS0 0x0110
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:100:#define NPU_REG_DMA_STATUS1 0x0114
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-101-#define NPU_REG_CLKFORCE 0x0140
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-102-#define NPU_REG_DEBUG_ADDRESS 0x0144
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-103-#define NPU_REG_DEBUG_MISC 0x0148
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-104-#define NPU_REG_DEBUG_BLOCK 0x0150
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-105-#define DEBUG_REGISTERS_SIZE 0x0180
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-106-
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-107-//
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-108-// Register subpage PMU
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2681-            uint32_t state : 1;      // NPU state, 0 = Stopped, 1 = Running
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2682-            uint32_t irq_raised : 1; // Raw IRQ status, 0 = IRQ not raised, 1 = IRQ raised. IRQ is cleared using command
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2683-                                     // register bit 1
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2684-            uint32_t
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2685:                bus_status : 1; // 0=OK, 1=Bus abort detected and processing halted (NPU will reach IDLE state and not
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2686-                                // to start process any more commands/AXI transactions). Can only be cleared by a reset
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2687-            uint32_t reset_status : 1; // Reset is ongoing and only this register can be read (other registers read as 0
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2688-                                       // and writes are ignored.) A value of 0 means NPU is not being reset and can be
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2689-                                       // accessed as normal
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2690-            uint32_t
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2691:                cmd_parse_error : 1; // 0=No error 1=Command stream parsing error detected. Can only be cleared by reset
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2692:            uint32_t cmd_end_reached : 1; // 0=Not reached, 1=Reached. Cleared by writing QBASE or QSIZE when NPU is in
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2693-                                          // stopped state
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2694-            uint32_t pmu_irq_raised : 1;  // 0=No PMU IRQ, 1=PMU IRQ raised. Cleared by using command register bit 1
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2695:            uint32_t wd_fault : 1; // Weight decoder state: 0=no fault 1=weight decoder decompression fault. Can only be
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2696-                                   // cleared by reset
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2697:            uint32_t ecc_fault : 1; // ECC state for internal RAMs: 0=no fault 1=ECC fault signalled. Can only be
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2698-                                    // cleared by reset
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2699-            uint32_t reserved0 : 2;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2700-            uint32_t faulting_interface : 1; // Faulting interface on bus abort
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2701-            uint32_t faulting_channel : 4;  // Faulting channel on a bus abort. Read: 0=Cmd 1=IFM 2=Weights 3=Scale+Bias
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2702-                                            // 4=Mem2Mem; Write: 8=OFM 9=Mem2Mem
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2703-            uint32_t irq_history_mask : 16; // IRQ History mask
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2704-        };
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2705-        uint32_t word;
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2770-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2771-        word0 = (((~((1U << 1) - 1)) << 1) & word0) | ((((1U << 1) - 1) & value) << 1);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2772-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2773-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2774:    CONSTEXPR uint32_t get_bus_status() const
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2775-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2776-        uint32_t value = ((1U << 1) - 1) & (word0 >> 2);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2777-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2778-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2779:    uint32_t get_bus_status() const volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2780-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2781-        uint32_t value = ((1U << 1) - 1) & (word0 >> 2);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2782-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2783-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2784:    CONSTEXPR status_r &set_bus_status(uint32_t value)
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2785-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2786-        word0 = (((~((1U << 1) - 1)) << 2) & word0) | ((((1U << 1) - 1) & value) << 2);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2787-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2788-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2789:    volatile status_r &set_bus_status(uint32_t value) volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2790-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2791-        word0 = (((~((1U << 1) - 1)) << 2) & word0) | ((((1U << 1) - 1) & value) << 2);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2792-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2793-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2794-    CONSTEXPR uint32_t get_reset_status() const
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2795-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2796-        uint32_t value = ((1U << 1) - 1) & (word0 >> 3);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2797-        return value;
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2810-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2811-        word0 = (((~((1U << 1) - 1)) << 3) & word0) | ((((1U << 1) - 1) & value) << 3);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2812-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2813-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2814:    CONSTEXPR uint32_t get_cmd_parse_error() const
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2815-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2816-        uint32_t value = ((1U << 1) - 1) & (word0 >> 4);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2817-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2818-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2819:    uint32_t get_cmd_parse_error() const volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2820-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2821-        uint32_t value = ((1U << 1) - 1) & (word0 >> 4);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2822-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2823-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2824:    CONSTEXPR status_r &set_cmd_parse_error(uint32_t value)
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2825-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2826-        word0 = (((~((1U << 1) - 1)) << 4) & word0) | ((((1U << 1) - 1) & value) << 4);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2827-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2828-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2829:    volatile status_r &set_cmd_parse_error(uint32_t value) volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2830-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2831-        word0 = (((~((1U << 1) - 1)) << 4) & word0) | ((((1U << 1) - 1) & value) << 4);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2832-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2833-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2834:    CONSTEXPR uint32_t get_cmd_end_reached() const
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2835-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2836-        uint32_t value = ((1U << 1) - 1) & (word0 >> 5);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2837-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2838-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2839:    uint32_t get_cmd_end_reached() const volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2840-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2841-        uint32_t value = ((1U << 1) - 1) & (word0 >> 5);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2842-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2843-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2844:    CONSTEXPR status_r &set_cmd_end_reached(uint32_t value)
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2845-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2846-        word0 = (((~((1U << 1) - 1)) << 5) & word0) | ((((1U << 1) - 1) & value) << 5);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2847-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2848-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2849:    volatile status_r &set_cmd_end_reached(uint32_t value) volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2850-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2851-        word0 = (((~((1U << 1) - 1)) << 5) & word0) | ((((1U << 1) - 1) & value) << 5);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2852-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2853-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2854-    CONSTEXPR uint32_t get_pmu_irq_raised() const
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2855-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2856-        uint32_t value = ((1U << 1) - 1) & (word0 >> 6);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2857-        return value;
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2870-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2871-        word0 = (((~((1U << 1) - 1)) << 6) & word0) | ((((1U << 1) - 1) & value) << 6);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2872-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2873-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2874:    CONSTEXPR uint32_t get_wd_fault() const
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2875-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2876-        uint32_t value = ((1U << 1) - 1) & (word0 >> 7);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2877-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2878-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2879:    uint32_t get_wd_fault() const volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2880-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2881-        uint32_t value = ((1U << 1) - 1) & (word0 >> 7);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2882-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2883-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2884:    CONSTEXPR status_r &set_wd_fault(uint32_t value)
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2885-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2886-        word0 = (((~((1U << 1) - 1)) << 7) & word0) | ((((1U << 1) - 1) & value) << 7);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2887-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2888-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2889:    volatile status_r &set_wd_fault(uint32_t value) volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2890-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2891-        word0 = (((~((1U << 1) - 1)) << 7) & word0) | ((((1U << 1) - 1) & value) << 7);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2892-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2893-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2894:    CONSTEXPR uint32_t get_ecc_fault() const
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2895-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2896-        uint32_t value = ((1U << 1) - 1) & (word0 >> 8);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2897-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2898-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2899:    uint32_t get_ecc_fault() const volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2900-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2901-        uint32_t value = ((1U << 1) - 1) & (word0 >> 8);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2902-        return value;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2903-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2904:    CONSTEXPR status_r &set_ecc_fault(uint32_t value)
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2905-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2906-        word0 = (((~((1U << 1) - 1)) << 8) & word0) | ((((1U << 1) - 1) & value) << 8);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2907-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2908-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2909:    volatile status_r &set_ecc_fault(uint32_t value) volatile
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2910-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2911-        word0 = (((~((1U << 1) - 1)) << 8) & word0) | ((((1U << 1) - 1) & value) << 8);
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2912-        return *this;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2913-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2914-    CONSTEXPR NPU_NAMESPACE::dma_fault_src get_faulting_interface() const
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2915-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2916-        NPU_NAMESPACE::dma_fault_src value = static_cast<NPU_NAMESPACE::dma_fault_src>(((1U << 1) - 1) & (word0 >> 11));
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2917-        return value;
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2983-        struct
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2984-        {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2985-            uint32_t transition_to_running_state : 1; // Write 1 to transition the NPU to running state. Writing 0 has
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2986-                                                      // no effect
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:2987:            uint32_t clear_irq : 1; // Write 1 to clear the IRQ status in the STATUS register. Writing 0 has no effect
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2988-            uint32_t clock_q_enable : 1; // Write 1 to this bit to enable clock off using clock q-interface and enable
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2989-                                         // the requester clock gate
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2990-            uint32_t power_q_enable : 1; // Write 1 to this bit to enable power off using power q-interface
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2991-            uint32_t
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2992-                stop_request : 1; // Write 1 to this bit to request STOP after completing any already-started commands
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2993-            uint32_t reserved0 : 11;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2994-            uint32_t clear_irq_history : 16; // Clears the IRQ history mask
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-2995-        };
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4582-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4583-#endif
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4584-};
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4585-
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:4586:// wd_status_r - WD_STATUS
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4587-struct wd_status_r
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4588-{
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4589-#ifndef __cplusplus
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4590-    union
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4591-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4592-        struct
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4593-        {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4594-            uint32_t core_slice_state : 2; // WD core slice parser state
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4857-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4858-#endif
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4859-};
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4860-
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:4861:// mac_status_r - MAC_STATUS
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4862-struct mac_status_r
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4863-{
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4864-#ifndef __cplusplus
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4865-    union
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4866-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4867-        struct
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4868-        {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-4869-            uint32_t block_cfg_valid : 1;     // MAC has a valid block configuration
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5236-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5237-#endif
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5238-};
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5239-
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:5240:// ao_status_r - AO_STATUS
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5241-struct ao_status_r
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5242-{
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5243-#ifndef __cplusplus
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5244-    union
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5245-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5246-        struct
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5247-        {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5248-            uint32_t cmd_sbw_valid : 1; // Block command to shared buffer write module is valid
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5468-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5469-#endif
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5470-};
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5471-
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:5472:// dma_status0_r - DMA_STATUS0
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5473-struct dma_status0_r
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5474-{
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5475-#ifndef __cplusplus
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5476-    union
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5477-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5478-        struct
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5479-        {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-5480-            uint32_t cmd_idle : 1; // When this bit is high means that the CMD block is not busy in generating addresses
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6184-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6185-#endif
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6186-};
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6187-
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:6188:// dma_status1_r - DMA_STATUS1
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6189-struct dma_status1_r
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6190-{
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6191-#ifndef __cplusplus
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6192-    union
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6193-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6194-        struct
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6195-        {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-6196-            uint32_t axi0_wr_limit_stall : 1; // Write stalled due to one AXI0 limit counter being reached
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15882-
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15883-struct NPU_REG
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15884-{
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15885-    STRUCT id_r ID;           // 0x0000
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:15886:    STRUCT status_r STATUS;   // 0x0004
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15887-    STRUCT cmd_r CMD;         // 0x0008
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15888-    STRUCT reset_r RESET;     // 0x000C
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15889-    STRUCT qbase_r QBASE;     // 0x0010
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15890-    STRUCT qread_r QREAD;     // 0x0018
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15891-    STRUCT qconfig_r QCONFIG; // 0x001C
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15892-    STRUCT qsize_r QSIZE;     // 0x0020
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15893-    STRUCT prot_r PROT;       // 0x0024
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15894-    STRUCT config_r CONFIG;   // 0x0028
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15901-    STRUCT axi_limit3_r AXI_LIMIT3; // 0x004C
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15902-    uint32_t unused1[12];
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15903-    STRUCT basep_r BASEP[8]; // 0x0080
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15904-    uint32_t unused2[16];
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:15905:    STRUCT wd_status_r WD_STATUS;   // 0x0100
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:15906:    STRUCT mac_status_r MAC_STATUS; // 0x0104
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:15907:    STRUCT ao_status_r AO_STATUS;   // 0x0108
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15908-    uint32_t unused3[1];
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:15909:    STRUCT dma_status0_r DMA_STATUS0; // 0x0110
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:15910:    STRUCT dma_status1_r DMA_STATUS1; // 0x0114
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15911-    uint32_t unused4[10];
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15912-    STRUCT clkforce_r CLKFORCE;           // 0x0140
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15913-    STRUCT debug_address_r DEBUG_ADDRESS; // 0x0144
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15914-    STRUCT debug_misc_r DEBUG_MISC;       // 0x0148
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15915-    uint32_t unused5[1];
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15916-    STRUCT debug_block_r DEBUG_BLOCK; // 0x0150
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15917-    uint32_t unused6[11];
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-15918-    STRUCT pmcr_r PMCR;             // 0x0180
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16095-    }
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16096-    void reset()
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16097-    {
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16098-        ID         = 269500929;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:16099:        STATUS     = 8;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16100-        CMD        = 12;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16101-        RESET      = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16102-        QBASE      = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16103-        QREAD      = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16104-        QCONFIG    = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16105-        QSIZE      = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16106-        PROT       = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16107-        CONFIG     = 0;
+--
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16112-        AXI_LIMIT2 = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16113-        AXI_LIMIT3 = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16114-        for (size_t i = 0; i < (sizeof(BASEP) / sizeof(BASEP[0])); ++i)
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16115-            BASEP[i] = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:16116:        WD_STATUS          = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:16117:        MAC_STATUS         = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:16118:        AO_STATUS          = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:16119:        DMA_STATUS0        = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h:16120:        DMA_STATUS1        = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16121-        CLKFORCE           = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16122-        DEBUG_ADDRESS      = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16123-        DEBUG_MISC         = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16124-        DEBUG_BLOCK        = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16125-        PMCR               = 8192;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16126-        PMCNTENSET         = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16127-        PMCNTENCLR         = 0;
+/home/user/sdk-alif/modules/hal/ethos_u/src/ethosu55_interface.h-16128-        PMOVSSET           = 0;
+
+=== ETHOS-U DEVICE-TREE REGISTER ADDRESS ===
+59-			reg-names = "cgu", "clkctl_per_mst", "clkctl_per_slv", "aon", "vbat", "m55he_cfg", "m55hp_cfg";
+60-			#clock-cells = < 0x1 >;
+61-			status = "okay";
+62-			phandle = < 0x6 >;
+63-		};
+64:		ethosu0: ethosu55@400e1000 {
+65-			compatible = "arm,ethos-u";
+66-			reg = < 0x400e1000 0x1000 >;
+67-			interrupts = < 0x37 0x0 >;
+68-			interrupt-parent = < &nvic >;
+69-			secure-enable;
+70-			privilege-enable;
+71-			status = "okay";
+72-			phandle = < 0x61 >;
+73-		};
+74-		mram_flash: mram_flash@80000000 {
+75-			compatible = "alif,mram-flash-controller";
+76-			#address-cells = < 0x1 >;
+
+=== END AUDIT ===
