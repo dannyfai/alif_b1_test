@@ -1,0 +1,498 @@
+=== MUTABLE RESOLVER FINDOP IMPLEMENTATION ===
+55-  (void)allocator;
+56-  *builtin_data = nullptr;
+57-  return kTfLiteOk;
+58-}
+59-
+60-template <unsigned int tOpCount>
+61-class MicroMutableOpResolver : public MicroOpResolver {
+62- public:
+63-  TF_LITE_REMOVE_VIRTUAL_DELETE
+64-
+65-  explicit MicroMutableOpResolver() {}
+66-
+67:  const TFLMRegistration* FindOp(tflite::BuiltinOperator op) const override {
+68-    if (op == BuiltinOperator_CUSTOM) return nullptr;
+69-
+70-    for (unsigned int i = 0; i < registrations_len_; ++i) {
+71:      const TFLMRegistration& registration = registrations_[i];
+72-      if (registration.builtin_code == op) {
+73-        return &registration;
+74-      }
+75-    }
+76-    return nullptr;
+77-  }
+78-
+79:  const TFLMRegistration* FindOp(const char* op) const override {
+80-    for (unsigned int i = 0; i < registrations_len_; ++i) {
+81:      const TFLMRegistration& registration = registrations_[i];
+82-      if ((registration.builtin_code == BuiltinOperator_CUSTOM) &&
+83-          (strcmp(registration.custom_name, op) == 0)) {
+84-        return &registration;
+85-      }
+86-    }
+87-    return nullptr;
+88-  }
+89-
+90-  TfLiteBridgeBuiltinParseFunction GetOpDataParser(
+91-      BuiltinOperator op) const override {
+92-    TFLITE_DCHECK(num_buitin_ops_ <= tOpCount);
+93-    for (unsigned int i = 0; i < num_buitin_ops_; ++i) {
+94-      if (builtin_codes_[i] == op) return builtin_parsers_[i];
+95-    }
+96-    return nullptr;
+97-  }
+98-
+99-  // Registers a Custom Operator with the MicroOpResolver.
+100-  //
+101-  // Only the first call for a given name will be successful. i.e. if this
+102-  // function is called again for a previously added Custom Operator, the
+103-  // MicroOpResolver will be unchanged and this function will return
+104-  // kTfLiteError.
+105-  TfLiteStatus AddCustom(const char* name,
+106-                         const TFLMRegistration* registration) {
+107-    if (registrations_len_ >= tOpCount) {
+108-      MicroPrintf(
+109-          "Couldn't register custom op '%s', resolver size is too"
+110-          "small (%d)",
+111-          name, tOpCount);
+112-      return kTfLiteError;
+113-    }
+114-
+115-    if (FindOp(name) != nullptr) {
+116-      MicroPrintf("Calling AddCustom for the same op more than once ");
+117-      MicroPrintf("is not supported (Op: %s).", name);
+118-      return kTfLiteError;
+119-    }
+120-
+121:    TFLMRegistration* new_registration = &registrations_[registrations_len_];
+122-    registrations_len_ += 1;
+123-
+124-    *new_registration = *registration;
+125-    new_registration->builtin_code = BuiltinOperator_CUSTOM;
+126-    new_registration->custom_name = name;
+127-    return kTfLiteOk;
+128-  }
+129-
+130-  // The Add* functions below add the various Builtin operators to the
+131-  // MicroMutableOpResolver object.
+132-
+133-  TfLiteStatus AddAbs() {
+134-    return AddBuiltin(BuiltinOperator_ABS, Register_ABS(), ParseAbs);
+135-  }
+136-
+137-  TfLiteStatus AddAdd(const TFLMRegistration& registration = Register_ADD()) {
+138-    return AddBuiltin(BuiltinOperator_ADD, registration, ParseAdd);
+139-  }
+140-
+141-  TfLiteStatus AddAddN() {
+142-    return AddBuiltin(BuiltinOperator_ADD_N, tflite::Register_ADD_N(),
+143-                      ParseAddN);
+144-  }
+145-
+146-  TfLiteStatus AddArgMax() {
+147-    return AddBuiltin(BuiltinOperator_ARG_MAX, Register_ARG_MAX(), ParseArgMax);
+148-  }
+149-
+150-  TfLiteStatus AddArgMin() {
+151-    return AddBuiltin(BuiltinOperator_ARG_MIN, Register_ARG_MIN(), ParseArgMin);
+152-  }
+153-
+154-  TfLiteStatus AddAssignVariable() {
+155-    return AddBuiltin(BuiltinOperator_ASSIGN_VARIABLE,
+156-                      tflite::Register_ASSIGN_VARIABLE(), ParseAssignVariable);
+--
+697-    if (FindOp(op) != nullptr) {
+698-      MicroPrintf("Calling AddBuiltin with the same op more than ");
+699-      MicroPrintf("once is not supported (Op: #%d).", op);
+700-      return kTfLiteError;
+701-    }
+702-
+703-    if (registrations_len_ >= tOpCount) {
+704-      MicroPrintf("Couldn't register builtin op #%d, resolver size ", op);
+705-      MicroPrintf("is too small (%d).", tOpCount);
+706-      return kTfLiteError;
+707-    }
+708-
+709:    registrations_[registrations_len_] = registration;
+710-    // Strictly speaking, the builtin_code is not necessary for TFLM but
+711-    // filling it in regardless.
+712:    registrations_[registrations_len_].builtin_code = op;
+713-    registrations_len_++;
+714-
+715-    builtin_codes_[num_buitin_ops_] = op;
+716-    builtin_parsers_[num_buitin_ops_] = parser;
+717-    num_buitin_ops_++;
+718-
+719-    return kTfLiteOk;
+720-  }
+721-
+722:  TFLMRegistration registrations_[tOpCount];
+723-  unsigned int registrations_len_ = 0;
+724-
+725-  // Arrays (and counter) to store the builtin codes and their corresponding
+726-  // parse functions as these are registered with the Op Resolver.
+727-  BuiltinOperator builtin_codes_[tOpCount];
+728-  TfLiteBridgeBuiltinParseFunction builtin_parsers_[tOpCount];
+729-  unsigned int num_buitin_ops_ = 0;
+730-};
+731-
+732-};  // namespace tflite
+733-
+734-#endif  // TENSORFLOW_LITE_MICRO_MICRO_MUTABLE_OP_RESOLVER_H_
+
+=== RESOLVER INTERFACE SIGNATURES ===
+31-// We need an interface class instead of directly using MicroMutableOpResolver
+32-// because MicroMutableOpResolver is a class template with the number of
+33-// registered Ops as the template parameter.
+34-class MicroOpResolver {
+35- public:
+36-  // Returns the Op registration struct corresponding to the enum code from the
+37-  // flatbuffer schema. Returns nullptr if the op is not found or if op ==
+38-  // BuiltinOperator_CUSTOM.
+39:  virtual const TFLMRegistration* FindOp(BuiltinOperator op) const = 0;
+40-
+41-  // Returns the Op registration struct corresponding to the custom operator by
+42-  // name.
+43:  virtual const TFLMRegistration* FindOp(const char* op) const = 0;
+44-
+45-  // Returns the operator specific parsing function for the OpData for a
+46-  // BuiltinOperator (if registered), else nullptr.
+47:  virtual TfLiteBridgeBuiltinParseFunction GetOpDataParser(
+48-      BuiltinOperator op) const = 0;
+49-
+50-  virtual ~MicroOpResolver() {}
+51-};
+52-
+53-// Handles the logic for converting between an OperatorCode structure extracted
+54-// from a flatbuffer and information about a registered operator
+55-// implementation.
+56-TfLiteStatus GetRegistrationFromOpCode(const OperatorCode* opcode,
+57-                                       const MicroOpResolver& op_resolver,
+58-                                       const TFLMRegistration** registration);
+59-
+60-}  // namespace tflite
+61-
+62-#endif  // TENSORFLOW_LITE_MICRO_MICRO_OP_RESOLVER_H_
+
+=== MLEK INITIALIZATION ORDER ===
+88-        if (!arena_shape || !scratch_shape || arena_shape->size() < 1 ||
+89-            scratch_shape->size() < 1 || arena_shape->Get(0) < 1) {
+90-            continue;
+91-        }
+92-
+93-        if (arena_shape->Get(0) == scratch_shape->Get(0)) {
+94-            return "Sram_Only/Shared_Sram";
+95-        }
+96-        return "Dedicated_Sram";
+97-    }
+98-
+99-    return {};
+100-}
+101-} /* anonymous namespace */
+102-
+103-TflmModel::TflmModel() {}
+104-
+105-/* Initialise the model */
+106:bool TflmModel::Init(iface::MemoryRegion& computeBuffer,
+107-                     iface::MemoryRegion& nnModel,
+108-                     const void* backendData)
+109-{
+110-    /* Following tf lite micro example:
+111-     * Map the model into a usable data structure. This doesn't involve any
+112-     * copying or parsing, it's a very lightweight operation. */
+113-    debug("loading model from @ 0x%p\n", nnModel.data);
+114-    debug("model size: %" PRIu32 " bytes.\n", nnModel.size);
+115-
+116-    /* Enable logging before we start interacting with the framework. */
+117-    EnableTFLMLog();
+118-
+119-    this->m_backendData.m_pModel = ::tflite::GetModel(nnModel.data);
+120-
+121-    if (this->m_backendData.m_pModel->version() != TFLITE_SCHEMA_VERSION) {
+122-        printf_err("Model's schema version %" PRIu32 " is not equal "
+123-                   "to supported version %d.",
+124-                   this->m_backendData.m_pModel->version(),
+125-                   TFLITE_SCHEMA_VERSION);
+126-        return false;
+127-    }
+128-
+129-    this->m_computeBuffer = computeBuffer;
+130-    this->m_modelBuffer   = nnModel;
+131-
+132-    /* Pull in only the operation implementations we need.
+133-     * This relies on a complete list of all the ops needed by this graph.
+134-     * An easier approach is to just use the AllOpsResolver, but this will
+135-     * incur some penalty in code space for op implementations that are not
+136-     * needed by this graph.
+137-     * static ::tflite::ops::micro::AllOpsResolver resolver; */
+138-    /* NOLINTNEXTLINE(runtime-global-variables) */
+139-    debug("loading op resolver\n");
+140-
+141:    this->EnlistOperations();
+142-
+143-    /** If backend data has been provided, re-use the allocator */
+144-    if (backendData) {
+145-        this->m_backendData.m_pAllocator =
+146-            reinterpret_cast<const TflmBackendData*>(backendData)->m_pAllocator;
+147-    }
+148-
+149-    /* Create allocator instance, if it doesn't exist */
+150-    if (!this->m_backendData.m_pAllocator) {
+151-        /* Create an allocator instance */
+152-        info("Creating allocator using tensor arena at 0x%p\n", computeBuffer.data);
+153-
+154-        this->m_backendData.m_pAllocator =
+155-            tflite::MicroAllocator::Create(computeBuffer.data, computeBuffer.size);
+156-
+157-        if (!this->m_backendData.m_pAllocator) {
+158-            printf_err("Failed to create allocator\n");
+159-            return false;
+160-        }
+161-        debug("Created new allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+162-    } else {
+163-        debug("Using existing allocator @ 0x%p\n", this->m_backendData.m_pAllocator);
+164-    }
+165-
+166:    this->m_backendData.m_pInterpreter = std::make_unique<tflite::MicroInterpreter>(
+167:        this->m_backendData.m_pModel, this->GetOpResolver(), this->m_backendData.m_pAllocator);
+168-
+169-    if (!this->m_backendData.m_pInterpreter) {
+170-        printf_err("Failed to allocate interpreter\n");
+171-        return false;
+172-    }
+173-
+174-    /* Allocate memory from the tensor_arena for the model's tensors. */
+175-    info("Allocating tensors\n");
+176-    TfLiteStatus allocate_status = this->m_backendData.m_pInterpreter->AllocateTensors();
+177-
+178-    if (allocate_status != kTfLiteOk) {
+179-        printf_err("tensor allocation failed!\n");
+180-        return false;
+181-    }
+182-
+183-    /* Get information about the memory area to use for the model's input. */
+184-    this->m_input.resize(this->GetNumInputs());
+185-    for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+186-        this->m_input[inIndex] =
+187-            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->input(inIndex));
+188-    }
+189-
+190-    this->m_output.resize(this->GetNumOutputs());
+191-    for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+192-        this->m_output[outIndex] =
+193-            std::make_shared<TflmTensor>(this->m_backendData.m_pInterpreter->output(outIndex));
+194-    }
+195-
+196-    if (this->m_input.empty() || this->m_output.empty()) {
+197-        printf_err("failed to get tensors\n");
+198-        return false;
+199-    } else {
+200-        this->m_type = this->m_input[0]->Type(); /* Input 0 should be the main input */
+201-
+202-        /* Clear the input & output tensors */
+203-        for (size_t inIndex = 0; inIndex < this->GetNumInputs(); inIndex++) {
+204-            std::memset(this->m_input[inIndex]->GetData(), 0, this->m_input[inIndex]->Bytes());
+205-        }
+206-        for (size_t outIndex = 0; outIndex < this->GetNumOutputs(); outIndex++) {
+207-            std::memset(this->m_output[outIndex]->GetData(), 0, this->m_output[outIndex]->Bytes());
+208-        }
+209-
+210-        this->LogInterpreterInfo();
+211-    }
+212-
+213-    this->m_inited = true;
+214-    return true;
+215-}
+216-
+217-std::shared_ptr<iface::TensorIface> TflmModel::GetInputTensor(size_t index) const
+218-{
+219-    if (index < this->GetNumInputs()) {
+220-        return this->m_input.at(index);
+221-    }
+222-    return {};
+223-}
+224-
+225-std::shared_ptr<iface::TensorIface> TflmModel::GetOutputTensor(size_t index) const
+226-{
+227-    if (index < this->GetNumOutputs()) {
+228-        return this->m_output.at(index);
+229-    }
+230-    return nullptr;
+231-}
+232-
+--
+270-
+271-    info("Activation buffer (a.k.a tensor arena) size used: %zu\n",
+272-         this->m_backendData.m_pInterpreter->arena_used_bytes());
+273-
+274-    /* We expect there to be only one subgraph. */
+275-    const uint32_t nOperators = tflite::NumSubgraphOperators(this->m_backendData.m_pModel, 0);
+276-    info("Number of operators: %" PRIu32 "\n", nOperators);
+277-
+278-    const tflite::SubGraph* subgraph = this->m_backendData.m_pModel->subgraphs()->Get(0);
+279-
+280-    auto* opcodes = this->m_backendData.m_pModel->operator_codes();
+281-
+282-    /* For each operator, display registration information. */
+283-    for (size_t i = 0; i < nOperators; ++i) {
+284-        const tflite::Operator* op         = subgraph->operators()->Get(i);
+285-        const tflite::OperatorCode* opcode = opcodes->Get(op->opcode_index());
+286-        const TFLMRegistration* reg        = nullptr;
+287-
+288:        tflite::GetRegistrationFromOpCode(opcode, this->GetOpResolver(), &reg);
+289-        std::string opName;
+290-
+291-        if (reg) {
+292-            if (tflite::BuiltinOperator_CUSTOM == reg->builtin_code) {
+293-                opName = std::string(reg->custom_name);
+294-            } else {
+295-                opName = std::string(
+296-                    EnumNameBuiltinOperator(tflite::BuiltinOperator(reg->builtin_code)));
+297-            }
+298-        }
+299-        info("\tOperator %zu: %s\n", i, opName.c_str());
+300-    }
+301-
+302-    if (this->ContainsEthosUOperator()) {
+303-        const std::string mode = InferNpuMemoryModeFromEthosUOp(this->m_backendData.m_pModel);
+304-        if (!mode.empty()) {
+305-            info("NPU memory mode likely to be: %s\n", mode.c_str());
+306-        } else {
+307-            warn("Unable to infer NPU memory mode.\n");
+308-        }
+309-    }
+310-}
+311-
+312-bool TflmModel::IsInited() const
+313-{
+314-    return this->m_inited;
+315-}
+316-
+317-bool TflmModel::IsDataSigned() const
+318-{
+319-    switch (this->GetType()) {
+320-    case iface::TensorType::INT8:
+321-        [[fallthrough]];
+322-    case iface::TensorType::INT16:
+323-        [[fallthrough]];
+324-    case iface::TensorType::INT32:
+325-        return true;
+326-    default:
+327-        return false;
+328-    }
+329-}
+330-
+331-bool TflmModel::ContainsEthosUOperator() const
+332-{
+333-    /* We expect there to be only one subgraph. */
+334-    const uint32_t nOperators = tflite::NumSubgraphOperators(this->m_backendData.m_pModel, 0);
+335-    const tflite::SubGraph* subgraph = this->m_backendData.m_pModel->subgraphs()->Get(0);
+336-    const auto* opcodes              = this->m_backendData.m_pModel->operator_codes();
+337-
+338-    /* check for custom operators */
+339-    for (size_t i = 0; (i < nOperators); ++i) {
+340-        const tflite::Operator* op         = subgraph->operators()->Get(i);
+341-        const tflite::OperatorCode* opcode = opcodes->Get(op->opcode_index());
+342-
+343-        auto builtin_code = tflite::GetBuiltinCode(opcode);
+
+=== CYCLE COUNTER AND CONVERSION API ===
+/home/user/sdk-alif/zephyr/include/zephyr/kernel.h:1942:static inline uint64_t k_cycle_get_64(void)
+/home/user/sdk-alif/zephyr/include/zephyr/kernel.h:1950:	return arch_k_cycle_get_64();
+
+=== POST-INFERENCE SUMMARY INSERTION POINT ===
+449-
+450-    if (!BindSmokeInputTensor(
+451-            model, 2U, "x_mark",
+452-            heatstroke_smoke::kXMarkBits,
+453-            sizeof(heatstroke_smoke::kXMarkBits),
+454-            std::vector<size_t>{1U, 900U, 3U})) {
+455-        return false;
+456-    }
+457-
+458-    if (!BindSmokeInputTensor(
+459-            model, 3U, "worker_features",
+460-            heatstroke_smoke::kWorkerFeaturesBits,
+461-            sizeof(heatstroke_smoke::kWorkerFeaturesBits),
+462-            std::vector<size_t>{1U, 30U})) {
+463-        return false;
+464-    }
+465-
+466-    const std::int64_t startMs = k_uptime_get();
+467:    LOG_INF("HEATSTROKE_DIAG: entering TFLM RunInference()");
+468-    StartHeatstrokeEthosuMonitor();
+469:    const bool inferenceOk = model.RunInference();
+470-    StopHeatstrokeEthosuMonitor();
+471-    if (!inferenceOk) {
+472:        LOG_ERR("TFLM RunInference() returned false");
+473-        return false;
+474-    }
+475-    const std::int64_t elapsedMs = k_uptime_get() - startMs;
+476-
+477-    auto rpeTensor = model.GetOutputTensor(0U);
+478-    auto psiTensor = model.GetOutputTensor(1U);
+479-
+480-    if (!VerifyOneTensor(
+481-            "Output rpe_logits", 0U, rpeTensor,
+482-            std::vector<size_t>{1U, 4U}) ||
+483-        !VerifyOneTensor(
+484-            "Output psi_logits", 1U, psiTensor,
+485-            std::vector<size_t>{1U, 4U})) {
+486-        return false;
+487-    }
+488-
+489-    const float* rpe = rpeTensor->GetData<float>();
+490-    const float* psi = psiTensor->GetData<float>();
+491-
+492-    if (rpe == nullptr || psi == nullptr) {
+493-        LOG_ERR("Inference output data pointer is null");
+494-        return false;
+--
+515-
+516-        const float rpeError = std::fabs(rpe[i] - rpeRef[i]);
+517-        const float psiError = std::fabs(psi[i] - psiRef[i]);
+518-
+519-        if (rpeError > rpeMaxError) {
+520-            rpeMaxError = rpeError;
+521-        }
+522-        if (psiError > psiMaxError) {
+523-            psiMaxError = psiError;
+524-        }
+525-
+526-        rpeErrorSum += rpeError;
+527-        psiErrorSum += psiError;
+528-    }
+529-
+530-    const float rpeMeanError = static_cast<float>(rpeErrorSum / 4.0);
+531-    const float psiMeanError = static_cast<float>(psiErrorSum / 4.0);
+532-
+533:    LOG_INF("TFLM RunInference: SUCCESS; elapsed=%u ms",
+534-            static_cast<unsigned int>(elapsedMs));
+535-
+536-    LOG_INF("RPE reference micro: [%d,%d,%d,%d]",
+537-            SmokeFloatToMicro(rpeRef[0]), SmokeFloatToMicro(rpeRef[1]),
+538-            SmokeFloatToMicro(rpeRef[2]), SmokeFloatToMicro(rpeRef[3]));
+539-    LOG_INF("RPE MCU micro:       [%d,%d,%d,%d]",
+540-            SmokeFloatToMicro(rpe[0]), SmokeFloatToMicro(rpe[1]),
+541-            SmokeFloatToMicro(rpe[2]), SmokeFloatToMicro(rpe[3]));
+542-
+543-    LOG_INF("PSI reference micro: [%d,%d,%d,%d]",
+544-            SmokeFloatToMicro(psiRef[0]), SmokeFloatToMicro(psiRef[1]),
+545-            SmokeFloatToMicro(psiRef[2]), SmokeFloatToMicro(psiRef[3]));
+546-    LOG_INF("PSI MCU micro:       [%d,%d,%d,%d]",
+547-            SmokeFloatToMicro(psi[0]), SmokeFloatToMicro(psi[1]),
+548-            SmokeFloatToMicro(psi[2]), SmokeFloatToMicro(psi[3]));
+549-
+550-    LOG_INF("RPE max/mean abs error micro: %d / %d",
+551-            SmokeFloatToMicro(rpeMaxError),
+552-            SmokeFloatToMicro(rpeMeanError));
+553-    LOG_INF("PSI max/mean abs error micro: %d / %d",
+554-            SmokeFloatToMicro(psiMaxError),
+555-            SmokeFloatToMicro(psiMeanError));
+
+=== CONFIRMED CYCLE COUNTER CONFIGURATION ===
+CONFIG_SYS_CLOCK_TICKS_PER_SEC=1000
+CONFIG_TIMER_HAS_64BIT_CYCLE_COUNTER=y
+
+=== END AUDIT ===
