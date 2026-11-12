@@ -1,0 +1,639 @@
+=== APPLICATION LSTM SOURCE INCLUDES ===
+     1	#include "heatstroke_bidirectional_lstm.h"
+     2	
+     3	#include <cstddef>
+     4	#include <cstdint>
+     5	#include <cstring>
+     6	
+     7	#include "tensorflow/lite/c/builtin_op_data.h"
+     8	#include "tensorflow/lite/c/common.h"
+     9	#include "tensorflow/lite/micro/kernels/kernel_util.h"
+    10	#include "tensorflow/lite/micro/kernels/lstm_eval.h"
+    11	#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+    12	#include "tensorflow/lite/micro/micro_log.h"
+    13	
+    14	namespace tflite {
+    15	namespace {
+    16	
+    17	struct HeatstrokeBidirectionalLstmOpData {
+    18	  OpDataLSTM forward;
+    19	  OpDataLSTM backward;
+    20	};
+    21	
+    22	TfLiteEvalTensor* GetInputEvalTensor(TfLiteContext* context,
+    23	                                     TfLiteNode* node,
+    24	                                     int input_position) {
+    25	  if (input_position < 0 || input_position >= node->inputs->size) {
+    26	    return nullptr;
+    27	  }
+    28	
+    29	  const int tensor_index = node->inputs->data[input_position];
+    30	  if (tensor_index < 0) {
+    31	    return nullptr;
+    32	  }
+    33	
+    34	  return context->GetEvalTensor(context, tensor_index);
+    35	}
+    36	
+    37	size_t TensorElementCount(const TfLiteEvalTensor* tensor) {
+    38	  if (tensor == nullptr || tensor->dims == nullptr) {
+    39	    return 0;
+    40	  }
+    41	
+    42	  size_t count = 1;
+    43	  for (int i = 0; i < tensor->dims->size; ++i) {
+    44	    if (tensor->dims->data[i] < 0) {
+    45	      return 0;
+    46	    }
+    47	    count *= static_cast<size_t>(tensor->dims->data[i]);
+    48	  }
+    49	  return count;
+    50	}
+    51	
+    52	bool IsFloatTensorType(const TfLiteEvalTensor* tensor) {
+    53	  return tensor != nullptr && tensor->type == kTfLiteFloat32;
+    54	}
+    55	
+    56	bool IsFloatTensor(const TfLiteEvalTensor* tensor) {
+    57	  return IsFloatTensorType(tensor) && tensor->data.f != nullptr;
+    58	}
+    59	
+    60	bool IsMatrix(const TfLiteEvalTensor* tensor, int rows, int columns) {
+    61	  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+    62	         tensor->dims->size == 2 &&
+    63	         tensor->dims->data[0] == rows &&
+    64	         tensor->dims->data[1] == columns;
+    65	}
+    66	
+    67	bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+    68	  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+    69	         tensor->dims->size == 1 &&
+    70	         tensor->dims->data[0] == length;
+    71	}
+    72	
+    73	bool ValidateDirection(TfLiteContext* context,
+    74	                       TfLiteNode* node,
+    75	                       int input_weight_base,
+    76	                       int recurrent_weight_base,
+    77	                       int bias_base,
+    78	                       int hidden_state_position,
+    79	                       int cell_state_position,
+    80	                       int input_dimension,
+    81	                       int batch_size,
+    82	                       int* hidden_dimension) {
+    83	  TfLiteEvalTensor* first_weight =
+    84	      GetInputEvalTensor(context, node, input_weight_base);
+    85	
+    86	  if (first_weight == nullptr || first_weight->dims == nullptr ||
+    87	      first_weight->dims->size != 2) {
+    88	    return false;
+    89	  }
+    90	
+    91	  const int hidden = first_weight->dims->data[0];
+    92	
+    93	  if (hidden <= 0 || first_weight->dims->data[1] != input_dimension) {
+    94	    return false;
+    95	  }
+    96	
+    97	  for (int gate = 0; gate < 4; ++gate) {
+    98	    TfLiteEvalTensor* input_weight =
+    99	        GetInputEvalTensor(context, node, input_weight_base + gate);
+   100	
+
+=== ALL LSTM EVAL IMPLEMENTATIONS ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/lstm_cell.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval_hifi.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc
+
+=== EVAL LSTM DEFINITIONS AND CALLS ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-781-              tflite::micro::GetTensorData<ActivationType>(recurrent) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-782-                  step_info.HiddenStateOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-783-              step_info.StateShape().FlatSize() * sizeof(ActivationType));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-784-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-785-#endif  // #if !(defined(HIFI3) || defined(HIFI4) || defined(HIFI5))
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-786-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-787-}  // namespace lstm_internal
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-788-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-789-// Evaulate the LSTM kernel with (potential) multi-steps and multi-batch input
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-790-// Since
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-791-template <typename ActivationType, typename WeightType, typename CellType,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-792-          typename BiasType>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h:793:TfLiteStatus EvalLstm(const OpDataLSTM& op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-794-                      LSTMKernelContents& kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-795-                      const LSTMBuffers<CellType>& buffers) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-796-  lstm_internal::LstmStepManager step_info(&op_data.size_info);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-797-  const auto& size_info = op_data.size_info;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-798-  // time is the first dimention, enable batch computation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-799-  if (size_info.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-800-    for (int t = 0; t < size_info.time_steps; t++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-801-      lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-802-          step_info, op_data, kernel_content, buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-803-      // prepare for the next time step
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-804-      step_info.UpdateTime();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-805-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-806-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-807-    // batch first, unable to size the input data. single batch inference
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-808-    for (int b = 0; b < size_info.batch_size; b++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-809-      for (int t = 0; t < size_info.time_steps; t++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-810-        lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h-811-            step_info, op_data, kernel_content, buffers);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-101-  const OpDataLSTM& op_data = *reinterpret_cast<OpDataLSTM*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-102-  auto kernel_content = CreateLSTMKernelContent(context, node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-103-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-104-  const auto activation_type =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-105-      kernel_content.internal_tensors[kLstmInputTensor]->type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-106-  const auto weight_type =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-107-      kernel_content.internal_tensors[kLstmInputToInputWeightsTensor]->type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-108-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-109-  switch (activation_type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-110-    case kTfLiteFloat32: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-111-      LSTMBuffers<float> buffers =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-112-          CreateLSTMBuffers<float>(context, op_data.buffer_indices);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc:113:      EvalLstm<float, float, float, float>(op_data, kernel_content, buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-114-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-115-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-116-    case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-117-      switch (weight_type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-118-        case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-119-          // 8(activation)x8(weight)->16(cell) LSTM with 32 bits bias
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-120-          LSTMBuffers<int16_t> buffers =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-121-              CreateLSTMBuffers<int16_t>(context, op_data.buffer_indices);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc:122:          EvalLstm<int8_t, int8_t, int16_t, int32_t>(op_data, kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-123-                                                     buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-124-          break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-125-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-126-        default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-127-          MicroPrintf("Filter type %s (%d) not supported.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-128-                      TfLiteTypeGetName(weight_type), activation_type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-129-          return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-130-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-131-      }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-132-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-133-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-134-    case kTfLiteInt16: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-135-      switch (weight_type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-136-        case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-137-          // 16(activation)x8(weight)->16(cell) LSTM with 64 bits bias
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-138-          LSTMBuffers<int16_t> buffers =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-139-              CreateLSTMBuffers<int16_t>(context, op_data.buffer_indices);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc:140:          EvalLstm<int16_t, int8_t, int16_t, int64_t>(op_data, kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-141-                                                      buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-142-          break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-143-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-144-        default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-145-          MicroPrintf("Filter type %s (%d) not supported.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-146-                      TfLiteTypeGetName(weight_type), weight_type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-147-          return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-148-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-149-      }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-150-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-151-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-152-    default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-153-      MicroPrintf("Input type %s (%d) not supported.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-154-                  TfLiteTypeGetName(activation_type), activation_type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-155-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-156-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-157-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc-158-  return kTfLiteOk;
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-498-  std::memcpy(output_ptr + step_info.OutputOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-499-              tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-500-                  step_info.HiddenStateOffset(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-501-              step_info.StateShape().FlatSize() * sizeof(ActivationType));
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-502-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-503-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-504-}  // namespace lstm_internal
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-505-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-506-// Evaulate the LSTM kernel with (potential) multi-steps and multi-batch input
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-507-// Since
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-508-template <typename ActivationType, typename WeightType, typename CellType,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-509-          typename BiasType>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h:510:TfLiteStatus EvalLstm(const OpDataLSTM& op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-511-                      LSTMKernelContents& kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-512-                      const LSTMBuffers<CellType>& buffers) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-513-  lstm_internal::LstmStepManager step_info(&op_data.size_info);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-514-  const auto& size_info = op_data.size_info;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-515-  // time is the first dimention, enable batch computation
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-516-  if (size_info.time_major) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-517-    for (int t = 0; t < size_info.time_steps; t++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-518-      lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-519-          step_info, op_data, kernel_content, buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-520-      // prepare for the next time step
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-521-      step_info.UpdateTime();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-522-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-523-  } else {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-524-    // batch first, unable to size the input data. single batch inference
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-525-    for (int b = 0; b < size_info.batch_size; b++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-526-      for (int t = 0; t < size_info.time_steps; t++) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-527-        lstm_internal::LstmStep<ActivationType, WeightType, CellType, BiasType>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-528-            step_info, op_data, kernel_content, buffers);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-367-  const float tolerance = 1e-4;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-368-  tflite::testing::TestUpdateLstmHiddenInteger(gate_output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-369-                                               int16_node_contents, tolerance);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-370-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-371-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-372-TF_LITE_MICRO_TEST(CheckOneStepLSTMFloat) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-373-  const tflite::testing::GateOutputCheckData<4, 4> gate_output_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-374-      tflite::testing::Get2X2GateOutputCheckData();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-375-  tflite::testing::LstmNodeContent<float, float, float, float, 2, 3, 2, 2>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-376-      float_node_contents = tflite::testing::Create2x3x2X2FloatNodeContents(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-377-          gate_output_data.input_data, gate_output_data.hidden_state,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-378-          gate_output_data.cell_state);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc:379:  tflite::testing::TestLstmStepFloat(gate_output_data, kTestFloatTolerance,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-380-                                     kTestFloatTolerance, float_node_contents);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-381-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-382-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-383-TF_LITE_MICRO_TEST(CheckOneStepLSTMInt8) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-384-  const tflite::testing::GateOutputCheckData<4, 4> gate_output_data =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-385-      tflite::testing::Get2X2GateOutputCheckData();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-386-  tflite::testing::LstmNodeContent<int8_t, int8_t, int32_t, int16_t, 2, 3, 2, 2>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-387-      int8_node_contents = tflite::testing::Create2x3x2X2Int8NodeContents(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-388-          gate_output_data.input_data, gate_output_data.hidden_state,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-389-          gate_output_data.cell_state);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-390-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-391-  const float hidden_state_tolerance = 1e-2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-392-  // cell state degrade due to integer overflow
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-393-  const float cell_state_tolerance = 1e-1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-394-  tflite::testing::TestLstmStepInteger(gate_output_data, hidden_state_tolerance,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-395-                                       cell_state_tolerance,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-396-                                       int8_node_contents);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc-397-}
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-101-  const OpDataLSTM& op_data = *reinterpret_cast<OpDataLSTM*>(node->user_data);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-102-  auto kernel_content = CreateLSTMKernelContent(context, node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-103-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-104-  const auto activation_type =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-105-      kernel_content.internal_tensors[kLstmInputTensor]->type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-106-  const auto weight_type =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-107-      kernel_content.internal_tensors[kLstmInputToInputWeightsTensor]->type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-108-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-109-  switch (activation_type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-110-    case kTfLiteFloat32: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-111-      LSTMBuffers<float> buffers =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-112-          CreateLSTMBuffers<float>(context, op_data.buffer_indices);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc:113:      EvalLstm<float, float, float, float>(op_data, kernel_content, buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-114-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-115-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-116-    case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-117-      switch (weight_type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-118-        case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-119-          // 8(activation)x8(weight)->16(cell) LSTM with 32 bits bias
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-120-          LSTMBuffers<int16_t> buffers =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-121-              CreateLSTMBuffers<int16_t>(context, op_data.buffer_indices);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc:122:          EvalLstm<int8_t, int8_t, int16_t, int32_t>(op_data, kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-123-                                                     buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-124-          break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-125-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-126-        default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-127-          MicroPrintf("Filter type %s (%d) not supported.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-128-                      TfLiteTypeGetName(weight_type), activation_type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-129-          return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-130-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-131-      }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-132-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-133-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-134-    case kTfLiteInt16: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-135-      switch (weight_type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-136-        case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-137-          // 16(activation)x8(weight)->16(cell) LSTM with 64 bits bias
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-138-          LSTMBuffers<int16_t> buffers =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-139-              CreateLSTMBuffers<int16_t>(context, op_data.buffer_indices);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc:140:          EvalLstm<int16_t, int8_t, int16_t, int64_t>(op_data, kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-141-                                                      buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-142-          break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-143-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-144-        default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-145-          MicroPrintf("Filter type %s (%d) not supported.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-146-                      TfLiteTypeGetName(weight_type), weight_type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-147-          return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-148-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-149-      }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-150-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-151-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-152-    default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-153-      MicroPrintf("Input type %s (%d) not supported.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-154-                  TfLiteTypeGetName(activation_type), activation_type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-155-      return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-156-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-157-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc-158-  return kTfLiteOk;
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-612-  Dequantize(tflite::micro::GetTensorData<ActivationType>(hidden_state),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-613-             batch_size * state_dimension,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-614-             quantization_settings.hidden_state.scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-615-             quantization_settings.hidden_state.zero_point, hidden_state_float);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-616-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-617-  ValidateResultGoldens(gate_output_data.expected_updated_hidden,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-618-                        hidden_state_float, batch_size * state_dimension,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-619-                        tolerance);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-620-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-621-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-622-template <int batch_size, int time_steps, int input_dimension,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-623-          int state_dimension>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h:624:void TestLstmStepFloat(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-625-    const GateOutputCheckData<batch_size * input_dimension,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-626-                              batch_size * state_dimension>& gate_output_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-627-    const float hidden_state_tolerance, const float cell_state_tolerance,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-628-    /*can not be const, state will be updated*/
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-629-    LstmNodeContent<float, float, float, float, batch_size, time_steps,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-630-                    input_dimension, state_dimension>& node_contents) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-631-  // Mimicking the kernel preparation phase, node_contents approximate the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-632-  LSTMKernelContents kernel_content = CreateLSTMKernelContent(node_contents);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-633-  LSTMBuffers<float> buffers;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-634-  // Scratch buffers on the stack
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-635-  float buffer0[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-636-  buffers.buffer0 = buffer0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-637-  float buffer1[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-638-  buffers.buffer1 = buffer1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-639-  float buffer2[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-640-  buffers.buffer2 = buffer2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-641-  float buffer3[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-642-  buffers.buffer3 = buffer3;
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-728-  LSTMBuffers<float> buffers;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-729-  float buffer0[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-730-  buffers.buffer0 = buffer0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-731-  float buffer1[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-732-  buffers.buffer1 = buffer1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-733-  float buffer2[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-734-  buffers.buffer2 = buffer2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-735-  float buffer3[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-736-  buffers.buffer3 = buffer3;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-737-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-738-  OpDataLSTM op_data = CreateLstmOpDataFloat(node_contents);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-739-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h:740:  tflite::EvalLstm<float, float, float, float>(op_data, kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-741-                                               buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-742-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-743-  ValidateResultGoldens(eval_check_data.expected_hidden_state,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-744-                        node_contents.GetHiddenStateData(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-745-                        batch_size * state_dimension, hidden_state_tolerance);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-746-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-747-  ValidateResultGoldens(eval_check_data.expected_cell_state,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-748-                        node_contents.GetCellStateData(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-749-                        batch_size * state_dimension, cell_state_tolerance);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-750-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-751-  ValidateResultGoldens(eval_check_data.expected_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-752-                        node_contents.GetOutputData(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-753-                        batch_size * state_dimension, hidden_state_tolerance);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-754-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-755-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-756-template <typename ActivationType, typename WeightType, typename BiasType,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-757-          typename CellType, int batch_size, int time_steps,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-758-          int input_dimension, int state_dimension>
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-770-  LSTMBuffers<CellType> buffers;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-771-  CellType buffer0[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-772-  buffers.buffer0 = buffer0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-773-  CellType buffer1[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-774-  buffers.buffer1 = buffer1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-775-  CellType buffer2[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-776-  buffers.buffer2 = buffer2;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-777-  CellType buffer3[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-778-  buffers.buffer3 = buffer3;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-779-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-780-  OpDataLSTM op_data = CreateLstmOpData(node_contents);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-781-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h:782:  tflite::EvalLstm<ActivationType, WeightType, CellType, BiasType>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-783-      op_data, kernel_content, buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-784-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-785-  const auto& quantization_settings = node_contents.QuantizationSettings();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-786-  float dequantized_hidden_state[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-787-  Dequantize(node_contents.GetHiddenStateData(), batch_size * state_dimension,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-788-             quantization_settings.hidden_state.scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-789-             quantization_settings.hidden_state.zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-790-             dequantized_hidden_state);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-791-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-792-  ValidateResultGoldens(eval_check_data.expected_hidden_state,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-793-                        dequantized_hidden_state, batch_size * state_dimension,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-794-                        hidden_state_tolerance);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-795-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-796-  float dequantized_cell_state[batch_size * state_dimension] = {};
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-797-  Dequantize(node_contents.GetCellStateData(), batch_size * state_dimension,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-798-             quantization_settings.cell_state.scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-799-             quantization_settings.cell_state.zero_point,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h-800-             dequantized_cell_state);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-413-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-414-  auto kernel_content = CreateLSTMKernelContent(context, node);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-415-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-416-  const auto activation_type =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-417-      kernel_content.internal_tensors[kLstmInputTensor]->type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-418-  const auto weight_type =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-419-      kernel_content.internal_tensors[kLstmInputToInputWeightsTensor]->type;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-420-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-421-  switch (activation_type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-422-    case kTfLiteFloat32: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-423-      LSTMBuffers<float> buffers =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-424-          CreateLSTMBuffers<float>(context, op_data_lstm.buffer_indices);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc:425:      EvalLstm<float, float, float, float>(op_data_lstm, kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-426-                                           buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-427-      break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-428-    }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-429-    case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-430-      switch (weight_type) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-431-        case kTfLiteInt8: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-432-          // 8(activation)x8(weight)->16(cell) LSTM with 32 bits bias
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-433-          LSTMBuffers<int16_t> buffers =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-434-              CMSIS_NN_CreateLSTMBuffers(context, op_data_lstm.buffer_indices);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-435-          CMSIS_NN_EvalInteger8x8_16Lstm(op_data, kernel_content, buffers);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-436-          break;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-437-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-438-        default: {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-439-          MicroPrintf("Filter type %s (%d) not supported.",
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-440-                      TfLiteTypeGetName(weight_type), activation_type);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-441-          return kTfLiteError;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-442-        }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc-443-      }
+
+=== FLOAT MATRIX VECTOR DISPATCH DEFINITIONS ===
+grep: Unmatched ( or \(
+
+=== ACTUAL COMPILED LSTM AND PORTABLE UTILITY SOURCES ===
+
+SOURCE: /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+DIRECTORY: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1
+OBJECT: CMakeFiles/app.dir/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc.obj
+OPTIMIZATION FLAGS: ['-O3', '-Os', '-mcpu=cortex-m55', '-mfpu=auto']
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.cc
+DIRECTORY: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1
+OBJECT: modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.cc.obj
+OPTIMIZATION FLAGS: ['-O3', '-Os', '-mcpu=cortex-m55', '-mfpu=auto']
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc
+DIRECTORY: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1
+OBJECT: modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc.obj
+OPTIMIZATION FLAGS: ['-O3', '-Os', '-mcpu=cortex-m55', '-mfpu=auto']
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc
+DIRECTORY: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1
+OBJECT: modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc.obj
+OPTIMIZATION FLAGS: ['-O3', '-Os', '-mcpu=cortex-m55', '-mfpu=auto']
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc
+DIRECTORY: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1
+OBJECT: modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc.obj
+OPTIMIZATION FLAGS: ['-O3', '-Os', '-mcpu=cortex-m55', '-mfpu=auto']
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc
+DIRECTORY: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1
+OBJECT: modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc.obj
+OPTIMIZATION FLAGS: ['-O3', '-Os', '-mcpu=cortex-m55', '-mfpu=auto']
+
+=== LINKER MAP RELEVANT SYMBOLS ===
+306:modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+314:modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+1227:                              modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj) (pow)
+1239:                              modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj) (expf)
+1247:                              modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj) (tanhf)
+1257:                              modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj) (sqrtf)
+4074: .text          0x0000000000000000        0x0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4075: .data          0x0000000000000000        0x0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4076: .bss           0x0000000000000000        0x0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4078:                0x0000000000000000       0x38 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4080:                0x0000000000000000       0x54 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4082:                0x0000000000000000       0x52 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4084:                0x0000000000000000       0x26 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4086:                0x0000000000000000       0x40 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4087: .debug_info    0x0000000000000000     0x1138 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4088: .debug_abbrev  0x0000000000000000      0x3e8 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4089: .debug_loc     0x0000000000000000      0x368 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4091:                0x0000000000000000       0x40 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4092: .debug_ranges  0x0000000000000000      0x150 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4093: .debug_line    0x0000000000000000      0x870 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4094: .debug_str     0x0000000000000000      0xe43 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4095: .comment       0x0000000000000000       0x21 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4096: .debug_frame   0x0000000000000000       0xb0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4115: .text._ZN6tflite12tensor_utils35MatrixBatchVectorMultiplyAccumulateEPKfiiS2_iPf
+4117: .text._ZN6tflite12tensor_utils35MatrixBatchVectorMultiplyAccumulateEPKaiiS2_PKfiPf
+4119: .text._ZN6tflite12tensor_utils35MatrixBatchVectorMultiplyAccumulateEPKaiiS2_PKfiPfS4_PKiPiS8_PbPNS_17CpuBackendContextE
+4121: .text._ZN6tflite12tensor_utils35MatrixBatchVectorMultiplyAccumulateEPKaiiS2_PKfiPiPfPNS_17CpuBackendContextE
+4123: .text._ZN6tflite12tensor_utils44SparseMatrixBatchVectorMultiplyAccumulate1x4EPKfPKiS4_iiS2_iPf
+4125: .text._ZN6tflite12tensor_utils41SparseMatrixBatchVectorMultiplyAccumulateEPKfPKhiiS2_iPf
+4127: .text._ZN6tflite12tensor_utils45SparseMatrixBatchVectorMultiplyAccumulate1x16EPKaPKiS4_iiS2_S4_iiiiS4_S4_iiiPa
+4129: .text._ZN6tflite12tensor_utils41SparseMatrixBatchVectorMultiplyAccumulateEPKaPKhiiS2_PKfiPfS6_
+4131: .text._ZN6tflite12tensor_utils35MatrixBatchVectorMultiplyAccumulateEPKaPKiS2_iiiiiiPiPsPNS_17CpuBackendContextE
+4133: .text._ZN6tflite12tensor_utils35MatrixBatchVectorMultiplyAccumulateEPKaPKiS2_iiiiiiPiPaPNS_17CpuBackendContextE
+4202: .group         0x0000000000000000        0x8 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4203: .group         0x0000000000000000        0x8 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4204: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4205: .group         0x0000000000000000        0x8 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4206: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4207: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4208: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4209: .group         0x0000000000000000        0x8 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4210: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4211: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4212: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4213: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4214: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4215: .group         0x0000000000000000        0x8 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4216: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4217: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4218: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4219: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4220: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4221: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4222: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4223: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4224: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4225: .group         0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4226: .text          0x0000000000000000        0x0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4227: .data          0x0000000000000000        0x0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4228: .bss           0x0000000000000000        0x0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4230:                0x0000000000000000       0xae modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4232:                0x0000000000000000       0x34 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4234:                0x0000000000000000       0x90 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4236:                0x0000000000000000       0x42 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4238:                0x0000000000000000      0x178 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4239: .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKfiiS2_iPf
+4240:                0x0000000000000000       0x7c modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4241: .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKaiiS2_PKfiPf
+4242:                0x0000000000000000       0x8a modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4243: .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKaiiS2_PKfiPfS4_PKiPiS8_PbPNS_17CpuBackendContextE
+4244:                0x0000000000000000      0x11e modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4245: .text._ZN6tflite12tensor_utils52PortableSparseMatrixBatchVectorMultiplyAccumulate1x4EPKfPKiS4_iiS2_iPf
+4246:                0x0000000000000000       0xa4 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4247: .text._ZN6tflite12tensor_utils53PortableSparseMatrixBatchVectorMultiplyAccumulate1x16EPKaPKiS4_iiS2_S4_iiiiS4_S4_iiiPa
+4248:                0x0000000000000000       0xea modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4249: .text._ZN6tflite12tensor_utils49PortableSparseMatrixBatchVectorMultiplyAccumulateEPKfPKhiiS2_iPf
+4250:                0x0000000000000000       0xa0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4251: .text._ZN6tflite12tensor_utils49PortableSparseMatrixBatchVectorMultiplyAccumulateEPKaPKhiiS2_PKfiPfS6_
+4252:                0x0000000000000000       0xc4 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4253: .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKaPKiS2_iiiiiiPiPsPNS_17CpuBackendContextE
+4254:                0x0000000000000000       0xa0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4255: .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKaPKiS2_iiiiiiPiPaPNS_17CpuBackendContextE
+4256:                0x0000000000000000       0x98 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4258:                0x0000000000000000       0xa0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4260:                0x0000000000000000       0xe4 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4262:                0x0000000000000000      0x158 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4264:                0x0000000000000000      0x150 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4266:                0x0000000000000000       0x40 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4268:                0x0000000000000000       0x94 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4270:                0x0000000000000000       0x9c modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4272:                0x0000000000000000       0x72 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4274:                0x0000000000000000       0x8a modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4276:                0x0000000000000000       0x5c modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4278:                0x0000000000000000       0x28 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4280:                0x0000000000000000       0x42 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4282:                0x0000000000000000       0x88 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4284:                0x0000000000000000       0x22 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4286:                0x0000000000000000       0x26 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4288:                0x0000000000000000       0x26 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4290:                0x0000000000000000       0xbc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4292:                0x0000000000000000       0x64 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4294:                0x0000000000000000       0x1a modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4296:                0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4298:                0x0000000000000000       0x90 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4300:                0x0000000000000000      0x100 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4302:                0x0000000000000000       0x54 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4304:                0x0000000000000000       0xac modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4306:                0x0000000000000000      0x128 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4308:                0x0000000000000000      0x148 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4310:                0x0000000000000000      0x154 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4312:                0x0000000000000000      0x154 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4314:                0x0000000000000000       0x5c modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4316:                0x0000000000000000       0xd4 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4318:                0x0000000000000000       0x5c modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4320:                0x0000000000000000       0xa6 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4322:                0x0000000000000000       0x64 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4324:                0x0000000000000000       0x96 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4326:                0x0000000000000000       0x96 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4328:                0x0000000000000000       0x96 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4330:                0x0000000000000000       0x96 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4332:                0x0000000000000000       0x96 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4334:                0x0000000000000000       0x96 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4336:                0x0000000000000000       0x96 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+4338:                0x0000000000000000       0x46 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+18070:                0x0000000080012f20       0x48 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+18073:                0x0000000080012f68      0x154 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+19325: .text._ZN6tflite8EvalLstmIffffEE12TfLiteStatusRKNS_10OpDataLSTMERNS_18LSTMKernelContentsERKNS_11LSTMBuffersIT1_EE
+19327:                0x000000008002672c                TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)
+23896: .comment       0x0000000000000020       0x21 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+24210:                0x0000000000002730      0x1e0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+24478: .debug_info    0x0000000000e5bac1    0x16981 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+24668: .debug_abbrev  0x00000000000255fb      0xad8 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+24858: .debug_line    0x000000000004bae1     0x4ddd modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+25040: .debug_frame   0x00000000000066a0      0x880 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+25378: .debug_str     0x00000000000bfcf8     0x9aa0 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+25630: .debug_loc     0x000000000004c7ee     0xf10d modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+25827: .debug_ranges  0x000000000000b6b8     0x49d8 modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+26247:                0x0000000000002530       0x3e modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+26255:                0x0000000000002628       0x3e modules/tflite-micro/libmodules__tflite-micro.a(portable_tensor_utils.cc.obj)
+
+=== END AUDIT ===
