@@ -1,0 +1,265 @@
+=== APPLICATION SINGLE-STEP LSTM CALLS ===
+353-  const int hidden = op_data->forward.size_info.state_dimension;
+354-
+355-  const float* input_data = input->data.f;
+356-  float* output_data = output->data.f;
+357-
+358-  if (time_steps <= 0 || input_dimension <= 0 || hidden <= 0 ||
+359-      input_data == nullptr || output_data == nullptr) {
+360-    MicroPrintf("Heatstroke BiLSTM: invalid single-step tensor data");
+361-    return kTfLiteError;
+362-  }
+363-
+364-  // Each view redirects the existing tensor data pointer to one timestep.
+365:  // Its dimensions remain the original tensor dimensions; EvalLstm's
+366-  // step manager supplies the single-step arithmetic shapes.
+367-  TfLiteEvalTensor forward_input_view = *input;
+368-  TfLiteEvalTensor forward_output_view = *output;
+369-
+370-  LSTMKernelContents forward_contents{};
+371-  PopulateDirectionContents(
+372-      context, node, 1, 5, 9, 25, 26,
+373-      &forward_input_view, &forward_output_view, &forward_contents);
+374-
+375-  LSTMBuffers<float> buffers =
+376-      CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+377-
+--
+381-  // Forward direction: original sequence order.
+382-  for (int t = 0; t < time_steps; ++t) {
+383-    const size_t input_offset =
+384-        static_cast<size_t>(t) * input_dimension;
+385-    const size_t output_offset =
+386-        static_cast<size_t>(t) * 2U * hidden;
+387-
+388-    forward_input_view.data.f =
+389-        const_cast<float*>(input_data + input_offset);
+390-    forward_output_view.data.f = output_data + output_offset;
+391-
+392-    TfLiteStatus status =
+393:        EvalLstm<float, float, float, float>(
+394-            forward_step_data, forward_contents, buffers);
+395-
+396-    if (status != kTfLiteOk) {
+397-      return status;
+398-    }
+399-  }
+400-
+401-  TfLiteEvalTensor backward_input_view = *input;
+402-  TfLiteEvalTensor backward_output_view = *output;
+403-
+404-  LSTMKernelContents backward_contents{};
+405-  PopulateDirectionContents(
+--
+414-  // corresponding original-time output row.
+415-  for (int t = time_steps - 1; t >= 0; --t) {
+416-    const size_t input_offset =
+417-        static_cast<size_t>(t) * input_dimension;
+418-    const size_t output_offset =
+419-        static_cast<size_t>(t) * 2U * hidden + hidden;
+420-
+421-    backward_input_view.data.f =
+422-        const_cast<float*>(input_data + input_offset);
+423-    backward_output_view.data.f = output_data + output_offset;
+424-
+425-    TfLiteStatus status =
+426:        EvalLstm<float, float, float, float>(
+427-            backward_step_data, backward_contents, buffers);
+428-
+429-    if (status != kTfLiteOk) {
+430-      return status;
+431-    }
+432-  }
+433-
+434-  return kTfLiteOk;
+435-}
+436-}  // namespace
+437-
+438-TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental() {
+
+=== TFLM FLOAT LSTM MATRIX OPERATIONS ===
+grep: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/lstm_eval.cc: No such file or directory
+
+=== MATRIX VECTOR FUNCTION DECLARATIONS ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-178-// dimension composed by input vectors independent from each other). The result
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-179-// of the multiplication is accumulated to the passed result buffer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-180-// More specifically, for a matrix M of shape [n, i] and a batched-vector
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-181-// of shape [i, batch] it will first compute the product of shape [n, batch].
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-182-// This product will be accumulated to the result buffer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:183:void MatrixBatchVectorMultiplyAccumulate(const float* matrix, int m_rows,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-184-                                         int m_cols, const float* vector,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-185-                                         int n_batch, float* result);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-186-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-187-// Same as the function above, but the matrix is a sparse tensor with block
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-188-// pattern 1x4.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-189-// This function assumes that m_cols is a multiple of the block size (4 in this
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-190-// case) so that there's no incomplete block.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:191:void SparseMatrixBatchVectorMultiplyAccumulate1x4(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-192-    const float* __restrict__ matrix, const int32_t* __restrict__ segments,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-193-    const int32_t* __restrict__ indices, int m_rows, int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-194-    const float* __restrict__ vector, int n_batch, float* __restrict__ result);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-195-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-196-// Same as the function above, but the matrix is stored in block compressed
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-197-// sparse row format with block pattern 1x16 which consists of two arrays:
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-198-//   1. A matrix array stores non-zero blocks of the matrix in row major.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-199-//   2. A ledger array stores nrows groups, one group per row. Each group starts
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-201-//      corresponding row and follows with column indexes of the first element
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-202-//      of each non-zero block.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-203-// This function assumes that
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-204-//   1. m_cols is a multiple of 16 so that all blocks are full blocks.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-205-//   2. m_cols < 254 * 16 so that block index can be represented by uint8.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:206:void SparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-207-    const float* __restrict__ matrix, const uint8_t* __restrict__ ledger,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-208-    int m_rows, int m_cols, const float* __restrict__ vector, int n_batch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-209-    float* __restrict__ result);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-210-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-211-// Same as the function above, but for values quantized using symmetric
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-212-// quantization (e.g. by calling SymmetricQuantizeFloats).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-213-// The passed scaling factors is a buffer of the quantization scaling factors
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-214-// that will be used to dequentize the products into the final result buffer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-215-// These scaling factors are the multiplication of the matrix scaling factor
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-216-// by the vector's scaling factor, one per batch (i.e. this allows quantizing
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-217-// each batch in the batch-vector matrix independently).
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:218:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-219-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-220-    const int8_t* __restrict__ vectors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-221-    const float* __restrict__ scaling_factors, int n_batch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-222-    float* __restrict__ result);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-223-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-224-// Same as the function above except that vector values
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-225-// are quantized with asymmetric quantization per-batch and the matrix
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-226-// is quantized per row.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:227:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-228-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-229-    const int8_t* __restrict__ vectors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-230-    const float* __restrict__ scaling_factors, int n_batch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-231-    float* __restrict__ result, const float* __restrict__ per_channel_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-232-    const int32_t* __restrict__ input_offset);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-233-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-234-// Same as the function above, but the matrix is a sparse tensor with block
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-235-// pattern 1x16.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-236-// This function assumes that m_cols is a multiple of the block size (16 in this
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-237-// case) so that there's no incomplete block. Also, it assumes all offsets of
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-238-// input, output and filter are zero.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:239:void SparseMatrixBatchVectorMultiplyAccumulate1x16(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-240-    const int8_t* __restrict__ matrix, const int32_t* __restrict__ segments,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-241-    const int32_t* __restrict__ indices, int m_rows, int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-242-    const int8_t* __restrict__ vector, const int32_t* __restrict__ bias_vector,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-243-    int n_batch, const int32_t input_offset, const int32_t output_multiplier,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-244-    int32_t output_shift, const int32_t* per_channel_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-245-    const int32_t* per_channel_shift, int32_t output_offset,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-246-    const int32_t output_activation_min, const int32_t output_activation_max,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-247-    int8_t* __restrict__ result);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-254-//      corresponding row followed by column index of the first element of
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-255-//      each non-zero block.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-256-// This function assumes that
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-257-//   1. m_cols is a multiple of 16 so that all blocks are full blocks.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-258-//   2. m_cols < 254 * 16 so that block index can be represented by uint8.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:259:void SparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-260-    const int8_t* __restrict__ matrix, const uint8_t* __restrict__ ledger,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-261-    const int m_rows, const int m_cols, const int8_t* __restrict__ vectors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-262-    const float* __restrict__ scaling_factors, int n_batch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-263-    float* __restrict__ result, const float* per_channel_scale = nullptr);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-264-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-265-// Same as the above 8, 8, 8 integer matmul except for the presence of zero
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-266-// point and non-accumulative.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-267-// TODO(b/148688698): remove this function by folding zero point calculation in
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-484-                          int32_t n_cell, int16_t* output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-485-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-486-// Same as the function above, but provide a scratch buffer for the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-487-// int8 x int8 -> int32 and a CpuBackendContext for the accumulator
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-488-// computation.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:489:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-490-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-491-    const int8_t* __restrict__ vectors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-492-    const float* __restrict__ scaling_factors, int n_batch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-493-    int32_t* __restrict__ scratch, float* __restrict__ result,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-494-    CpuBackendContext* __restrict__ context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-495-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-496-// Same as the function above except that can make use of cached row sums.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:497:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-498-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-499-    const int8_t* __restrict__ vectors, const float* scaling_factors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-500-    int n_batch, float* __restrict__ result, const float* per_channel_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-501-    const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-502-    bool* compute_row_sums, CpuBackendContext* context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-503-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-504-// Same as the function above, but provides separate scaling factor for the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-505-// matrix and the vectors. The scaling factors are multiplied in the
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-506-// scaling_factor_scratch buffer.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:507:inline void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-508-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-509-    const int8_t* __restrict__ vectors, const float matrix_scaling_factor,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-510-    const float* vector_scaling_factors, int n_batch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-511-    float* __restrict__ result, const float* per_channel_scale,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-512-    const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-513-    bool* compute_row_sums, float* scaling_factor_scratch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-514-    CpuBackendContext* context) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-515-  for (int b = 0; b < n_batch; ++b) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-516-    scaling_factor_scratch[b] =
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-517-        vector_scaling_factors[b] * matrix_scaling_factor;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-518-  }
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:519:  MatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-520-                                      scaling_factor_scratch, n_batch, result,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-521-                                      per_channel_scale, input_offset, scratch,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-522-                                      row_sums, compute_row_sums, context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-523-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-524-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-525-// Multiplies a matrix by a "batched" vector (i.e. a matrix with a batch
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-526-// dimension composed by input vectors independent from each other). The result
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-527-// of the multiplication is accumulated to the passed result buffer.
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-546-//     - multiplier and shift combined gives the scale.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-547-//     - assumes input zero point is 0.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-548-//     - scratch is created for optimization purpose only.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-549-// TODO(b/152066492): this can be removed if some future optimization
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-550-// work makes it unnecessary.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:551:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-552-    const int8_t* input, const int32_t* bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-553-    const int8_t* input_to_gate_weights, int32_t multiplier, int32_t shift,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-554-    int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-555-    int32_t* scratch, int16_t* output, CpuBackendContext* context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-556-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-557-// Multiplies a matrix by a "batched" vector (i.e. a matrix with a batch
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-558-// dimension composed by input vectors independent from each other). The result
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-559-// of the multiplication is accumulated to the passed result buffer.
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-577-//     - multiplier and shift combined gives the scale.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-578-//     - assumes input zero point is 0.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-579-//     - scratch is created for optimization purpose only.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-580-// TODO(b/152066492): this can be removed if some future optimization
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-581-// work makes it unnecessary.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:582:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-583-    const int8_t* input, const int32_t* bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-584-    const int8_t* input_to_gate_weights, int32_t multiplier, int32_t shift,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-585-    int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-586-    int32_t* scratch, int8_t* output, CpuBackendContext* context);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-587-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-588-// Apply Rectified Linear to elements of a vector.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-589-void ApplyReluToVector(const float* __restrict__ vector, int v_size,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h-590-                       float* __restrict__ result);
+--
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-54-                                      int8_t* quantized_values,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-55-                                      float* scaling_factor, int32_t* offset);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-56-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-57-// Multiply a matrix by a batch vector, and store results in a batch-size
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-58-// vector.
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:59:void PortableMatrixBatchVectorMultiplyAccumulate(const float* matrix,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-60-                                                 int m_rows, int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-61-                                                 const float* vector,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-62-                                                 int n_batch, float* result);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-63-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:64:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-65-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-66-    const int8_t* __restrict__ vectors, const float* scaling_factors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-67-    int n_batch, float* __restrict__ result);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-68-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:69:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-70-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-71-    const int8_t* __restrict__ vectors, const float* scaling_factors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h-72-    int n_batch, float* __restrict__ result, const float* per_channel_scale,
+
+=== END AUDIT ===
