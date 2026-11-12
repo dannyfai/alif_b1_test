@@ -1,0 +1,354 @@
+===== APPLICATION CMAKE =====
+     1	# Copyright (C) Alif Semiconductor - All Rights Reserved.
+     2	# Use, distribution and modification of this code is permitted under the
+     3	# terms stated in the Alif Semiconductor Software License Agreement
+     4	#
+     5	# You should have received a copy of the Alif Semiconductor Software
+     6	# License Agreement with this file. If not, please write to:
+     7	# contact@alifsemi.com, or visit: https://alifsemi.com/license
+     8	
+     9	cmake_minimum_required(VERSION 3.20.0)
+    10	
+    11	if(NOT ospi-flash IN_LIST SNIPPET)
+    12	  set(SNIPPET ospi-flash ${SNIPPET} CACHE STRING "" FORCE)
+    13	endif()
+    14	
+    15	# Locate the alif-mlek west module. Its Zephyr port lives in a sub-directory,
+    16	# so the module is not auto-discovered and must be registered explicitly. Ask
+    17	# west for the module path instead of hardcoding the workspace layout.
+    18	execute_process(
+    19	    COMMAND west list --format "{abspath}" alif-mlek
+    20	    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    21	    OUTPUT_VARIABLE MLEK_ROOT
+    22	    OUTPUT_STRIP_TRAILING_WHITESPACE
+    23	    RESULT_VARIABLE MLEK_LIST_RESULT
+    24	    ERROR_QUIET
+    25	)
+    26	if (MLEK_LIST_RESULT OR NOT EXISTS ${MLEK_ROOT})
+    27	    message(FATAL_ERROR
+    28	        "alif-mlek module not found. Enable and fetch it first:\n"
+    29	        "  west config manifest.project-filter -- +alif-mlek\n"
+    30	        "  west update\n")
+    31	endif()
+    32	
+    33	# Register the MLEK Zephyr port as an extra Zephyr module
+    34	list(APPEND ZEPHYR_EXTRA_MODULES ${MLEK_ROOT}/source/lib/ports/zephyr)
+    35	
+    36	# ---------------------------------------------------------------------------
+    37	# Ethos-U NPU selection
+    38	# ---------------------------------------------------------------------------
+    39	# When ETHOSU_TARGET_NPU_CONFIG is provided on the command line it is the single
+    40	# source of truth for the NPU. We must act on it BEFORE find_package(Zephyr) so
+    41	# that the matching Kconfig choice (CONFIG_ARM_ETHOS_U<arch>_<macs>) is fed into
+    42	# the build and the Ethos-U driver targets the requested NPU. This overrides the
+    43	# board default (E8 rtss_hp defaults to Ethos-U55 with 256 MACs).
+    44	#
+    45	# The parsed value is also used to pick the correct Vela-compiled model below.
+    46	# Vela config-ID prefix: U55 -> H, U65 -> Y, U85 -> Z (e.g. ethos-u85-256 -> Z256).
+    47	if (DEFINED ETHOSU_TARGET_NPU_CONFIG)
+    48	    string(TOLOWER "${ETHOSU_TARGET_NPU_CONFIG}" _npu_cfg)
+    49	    if (_npu_cfg MATCHES "^ethos-(u[0-9]+)-([0-9]+)$")
+    50	        set(_npu_arch "${CMAKE_MATCH_1}")
+    51	        set(_npu_macs "${CMAKE_MATCH_2}")
+    52	        if (_npu_arch STREQUAL "u55")
+    53	            set(_npu_prefix "H")
+    54	        elseif (_npu_arch STREQUAL "u65")
+    55	            set(_npu_prefix "Y")
+    56	        elseif (_npu_arch STREQUAL "u85")
+    57	            set(_npu_prefix "Z")
+    58	        else()
+    59	            message(FATAL_ERROR
+    60	                "Unsupported Ethos-U architecture '${_npu_arch}' in "
+    61	                "ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'")
+    62	        endif()
+    63	        set(ETHOS_U_NPU_CONFIG_ID "${_npu_prefix}${_npu_macs}")
+    64	
+    65	        # Feed the matching Kconfig choice into the Zephyr configuration.
+    66	        string(TOUPPER "${_npu_arch}" _npu_arch_uc)
+    67	        set(CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs} y
+    68	            CACHE INTERNAL "Selected Ethos-U NPU configuration" FORCE)
+    69	        message(STATUS
+    70	            "Ethos-U: ETHOSU_TARGET_NPU_CONFIG=${ETHOSU_TARGET_NPU_CONFIG} -> "
+    71	            "CONFIG_ARM_ETHOS_${_npu_arch_uc}_${_npu_macs}=y, model ID ${ETHOS_U_NPU_CONFIG_ID}")
+    72	    else()
+    73	        message(FATAL_ERROR
+    74	            "Invalid ETHOSU_TARGET_NPU_CONFIG='${ETHOSU_TARGET_NPU_CONFIG}'.\n"
+    75	            "Expected format: ethos-u<arch>-<macs>, e.g. ethos-u55-256 or ethos-u85-256")
+    76	    endif()
+    77	endif()
+    78	
+    79	find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+    80	
+    81	project(alif_asr)
+    82	
+    83	# Silence "changed in GCC 7.1" warnigns from C++ headers
+    84	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-psabi")
+    85	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-psabi")
+    86	
+    87	set(PLATFORM_DRIVERS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/hal/source/platform/zephyr)
+    88	
+    89	set(ML_FRAMEWORK TensorFlowLiteMicro)
+    90	
+    91	# ---------------------------------------------------------------------------
+    92	# Build-time model and labels generation from MLEK resources
+    93	# ---------------------------------------------------------------------------
+    94	set(MLEK_SCRIPTS_DIR ${MLEK_ROOT}/scripts)
+    95	set(RESOURCES_PATH ${MLEK_ROOT}/resources_downloaded CACHE PATH
+    96	    "Path to MLEK resources (models compiled with Vela)")
+    97	setup_source_generator()
+    98	
+    99	# Source generation output directories
+   100	set(SRC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/src)
+   101	set(INC_GEN_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/include)
+   102	file(MAKE_DIRECTORY ${SRC_GEN_DIR} ${INC_GEN_DIR})
+   103	
+   104	message(STATUS "Using SRC_GEN_DIR:    ${SRC_GEN_DIR}")
+   105	message(STATUS "Using INC_GEN_DIR:    ${INC_GEN_DIR}")
+   106	
+   107	# Determine NPU config ID based on Zephyr Kconfig.
+   108	# If ETHOSU_TARGET_NPU_CONFIG was supplied on the command line, ETHOS_U_NPU_CONFIG_ID
+   109	# has already been computed above. Otherwise fall back to the board Kconfig defaults.
+   110	if (NOT DEFINED ETHOS_U_NPU_CONFIG_ID)
+   111	    if (CONFIG_ARM_ETHOS_U85_256)
+   112	        set(ETHOS_U_NPU_CONFIG_ID "Z256")
+   113	    elseif (CONFIG_ARM_ETHOS_U55_256)
+   114	        set(ETHOS_U_NPU_CONFIG_ID "H256")
+   115	    else()
+   116	        set(ETHOS_U_NPU_CONFIG_ID "H128")
+   117	    endif()
+   118	endif()
+   119	
+   120	# Opt-in experiment. Default remains the production model and kernel.
+   121	option(HEATSTROKE_SINGLE_STEP_EXPERIMENT
+   122	    "Use repaired Vela model and single-step BiLSTM experiment" OFF)
+   123	
+   124	if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+   125	    set(POLYU_MODEL_PATH
+   126	        "${CMAKE_CURRENT_SOURCE_DIR}/model_candidates/vela_rank4_mean_shapes_fixed_performance/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_bilstm_rank4_mean_shapes_fixed_exp_vela.tflite"
+   127	        CACHE FILEPATH "Experimental PolyU heat-stress model" FORCE)
+   128	else()
+   129	    set(POLYU_MODEL_PATH
+   130	        "${CMAKE_CURRENT_SOURCE_DIR}/../PolyU/Heat_Stress_Model_1_v20260514/export/vela_h128_performance_broadcast_shape_fold/qdq_both_variance_eps_preprocess_fp32_v2_concat_fp32_broadcast_shape_fold_vela.tflite"
+   131	        CACHE FILEPATH "Production PolyU heat-stress model" FORCE)
+   132	endif()
+   133	
+   134	if (HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+   135	    set(POLYU_MODEL_PATH
+   136	        "${CMAKE_CURRENT_SOURCE_DIR}/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp.tflite"
+   137	        CACHE FILEPATH "Fused LayerNorm heat-stress experimental model" FORCE)
+   138	endif()
+   139	
+   140	option(HEATSTROKE_ETHOSU_ALIGNED_MODEL_EXPERIMENT
+   141	    "Use the FlatBuffer with 16-byte-aligned Ethos-U command streams" OFF)
+   142	
+   143	if (HEATSTROKE_ETHOSU_ALIGNED_MODEL_EXPERIMENT)
+   144	    set(POLYU_MODEL_PATH
+   145	        "${CMAKE_CURRENT_SOURCE_DIR}/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp_ethosu_aligned16_20261111.tflite"
+   146	        CACHE FILEPATH "16-byte-aligned Ethos-U heat-stress model" FORCE)
+   147	endif()
+   148	
+   149	if (NOT EXISTS "${POLYU_MODEL_PATH}")
+   150	    message(FATAL_ERROR "Combined PolyU model not found: ${POLYU_MODEL_PATH}")
+   151	endif()
+   152	
+   153	if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+   154	    set(POLYU_MODEL_SHA256_EXPECTED
+   155	        "72bf7dba9d0234458108fc413915cdb161050edccf4327dd6cf34597e1cb556a")
+   156	else()
+   157	    set(POLYU_MODEL_SHA256_EXPECTED
+   158	        "b8056848e68ecdb1fc1cd35f65639db6f836b53abf603033f58f90ec7f1003b3")
+   159	endif()
+   160	if (HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+   161	    set(POLYU_MODEL_SHA256_EXPECTED "06455fa9d1b41e2b920485b9bfd4a1a48d68ae0474d1aa7d9558c0a0afd02125")
+   162	endif()
+   163	
+   164	if (HEATSTROKE_ETHOSU_ALIGNED_MODEL_EXPERIMENT)
+   165	    set(POLYU_MODEL_SHA256_EXPECTED
+   166	        "f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d")
+   167	endif()
+   168	
+   169	file(SHA256 "${POLYU_MODEL_PATH}" POLYU_MODEL_SHA256_ACTUAL)
+   170	if (NOT "${POLYU_MODEL_SHA256_ACTUAL}" STREQUAL "${POLYU_MODEL_SHA256_EXPECTED}")
+   171	    message(FATAL_ERROR
+   172	        "Combined PolyU model SHA256 mismatch. "
+   173	        "Expected ${POLYU_MODEL_SHA256_EXPECTED}, got ${POLYU_MODEL_SHA256_ACTUAL}")
+   174	endif()
+   175	
+   176	message(STATUS "Using combined heat-stress model: ${POLYU_MODEL_PATH}")
+   177	message(STATUS "Combined model SHA256: ${POLYU_MODEL_SHA256_ACTUAL}")
+   178	
+   179	# The generator output filename is the complete model filename plus .cc.
+   180	generate_model_code(
+   181	    MODEL_PATH "${POLYU_MODEL_PATH}"
+   182	    DESTINATION "${SRC_GEN_DIR}"
+   183	    NAMESPACE "arm" "app" "polyu_heatstroke")
+   184	
+   185	get_filename_component(POLYU_MODEL_FILENAME "${POLYU_MODEL_PATH}" NAME)
+   186	set(POLYU_MODEL_CPP "${SRC_GEN_DIR}/${POLYU_MODEL_FILENAME}.cc")
+   187	set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+   188	
+   189	# Application-local includes for the heat-stress TFLM model.
+   190	target_include_directories(app PRIVATE
+   191	    src/application/main/include
+   192	    src/use_case/alif_asr/include
+   193	    src/power
+   194	    "${INC_GEN_DIR}"
+   195	)
+   196	
+   197	target_compile_definitions(app PRIVATE ACTIVATION_BUF_SZ=CONFIG_ACTIVATION_BUF_SZ)
+   198	
+   199	
+   200	if (CONFIG_USE_APP_MENU)
+   201	target_compile_definitions(app PRIVATE USE_APP_MENU)
+   202	endif()
+   203	
+   204	target_sources(app PRIVATE
+   205	    src/application/main/Main.cc
+   206	    src/use_case/alif_asr/src/MainLoop.cc
+   207	    src/use_case/alif_asr/src/reverse_v2.cc
+   208	    src/use_case/alif_asr/src/PolyUModel1.cc
+   209	    src/power/power_mgr.c
+   210	    "${POLYU_MODEL_CPP}"
+   211	)
+   212	
+   213	if (HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+   214	    target_sources(app PRIVATE
+   215	        src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc)
+   216	    target_compile_definitions(app PRIVATE
+   217	        HEATSTROKE_SINGLE_STEP_EXPERIMENT=1)
+   218	else()
+   219	    target_sources(app PRIVATE
+   220	        src/use_case/alif_asr/src/heatstroke_bidirectional_lstm.cc)
+   221	endif()
+   222	
+   223	
+   224	option(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT
+   225	       "Use application-local INT64-compatible CAST and SUM kernels" OFF)
+   226	
+   227	if (HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+   228	    target_sources(app PRIVATE
+   229	        src/use_case/alif_asr/src/heatstroke_int64_cast_sum.cc
+   230	    )
+   231	    target_compile_definitions(app PRIVATE
+   232	        HEATSTROKE_INT64_CAST_SUM_EXPERIMENT=1
+   233	    )
+   234	endif()
+   235	
+   236	option(HEATSTROKE_INT64_MUL_EXPERIMENT
+   237	       "Use application-local INT64-compatible MUL kernel" OFF)
+   238	
+   239	if (HEATSTROKE_INT64_MUL_EXPERIMENT)
+   240	    target_sources(app PRIVATE
+   241	        src/use_case/alif_asr/src/heatstroke_int64_mul.cc
+   242	    )
+   243	    target_compile_definitions(app PRIVATE
+   244	        HEATSTROKE_INT64_MUL_EXPERIMENT=1
+   245	    )
+   246	endif()
+   247	
+   248	option(HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT
+   249	       "Use application-local INT64-compatible FLOOR_MOD kernel" OFF)
+   250	
+   251	if (HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT)
+   252	    target_sources(app PRIVATE
+   253	        src/use_case/alif_asr/src/heatstroke_int64_floor_mod.cc
+   254	    )
+   255	    target_compile_definitions(app PRIVATE
+   256	        HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT=1
+   257	    )
+   258	endif()
+   259	
+   260	option(HEATSTROKE_INT64_SUB_EXPERIMENT
+   261	       "Use application-local INT64-compatible SUB kernel" OFF)
+   262	
+   263	if (HEATSTROKE_INT64_SUB_EXPERIMENT)
+   264	    target_sources(app PRIVATE
+   265	        src/use_case/alif_asr/src/heatstroke_int64_sub.cc
+   266	    )
+   267	    target_compile_definitions(app PRIVATE
+   268	        HEATSTROKE_INT64_SUB_EXPERIMENT=1
+   269	    )
+   270	endif()
+   271	
+   272	option(HEATSTROKE_INT64_ADD_EXPERIMENT
+   273	       "Use application-local INT64-compatible ADD kernel" OFF)
+   274	
+   275	if (HEATSTROKE_INT64_ADD_EXPERIMENT)
+   276	    target_sources(app PRIVATE
+   277	        src/use_case/alif_asr/src/heatstroke_int64_add.cc
+   278	    )
+   279	    target_compile_definitions(app PRIVATE
+   280	        HEATSTROKE_INT64_ADD_EXPERIMENT=1
+   281	    )
+   282	endif()
+   283	
+   284	option(HEATSTROKE_INT64_SPLIT_V_EXPERIMENT
+   285	       "Use application-local INT64-compatible SPLIT_V kernel" OFF)
+   286	
+   287	if (HEATSTROKE_INT64_SPLIT_V_EXPERIMENT)
+   288	    target_sources(app PRIVATE
+   289	        src/use_case/alif_asr/src/heatstroke_int64_split_v.cc
+   290	    )
+   291	    target_compile_definitions(app PRIVATE
+   292	        HEATSTROKE_INT64_SPLIT_V_EXPERIMENT=1
+   293	    )
+   294	endif()
+   295	
+   296	set(SRC_MAIN "src/application/main/Main.cc")
+   297	
+   298	list(APPEND SRC_MAIN_DEFS
+   299	    "PRJ_VER_STR=\"${CMAKE_PROJECT_VERSION}\""
+   300	    "PRJ_DES_STR=\"${CMAKE_PROJECT_DESCRIPTION}\""
+   301	    "PRJ_COMPILER=\"${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}\"")
+   302	
+   303	set_source_files_properties(${SRC_MAIN}
+   304	    PROPERTIES COMPILE_DEFINITIONS
+   305	    "${SRC_MAIN_DEFS}")
+   306	
+   307	target_link_libraries(app PRIVATE
+   308	    mlek::ml_framework_impl
+   309	)
+   310	
+   311	# Optional application-local fused LayerNorm/quantization kernel.
+   312	# Default builds do not compile or register this experimental operator.
+   313	option(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT
+   314	       "Compile the fused LayerNorm quantization experiment" OFF)
+   315	
+   316	if (HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+   317	    target_sources(app PRIVATE
+   318	        ${CMAKE_CURRENT_SOURCE_DIR}/src/use_case/alif_asr/src/heatstroke_fused_layernorm.cc
+   319	    )
+   320	    target_compile_definitions(app PRIVATE
+   321	        HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT=1
+   322	    )
+   323	endif()
+
+===== EXISTING APPLICATION CMAKE OVERRIDES =====
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:187:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/CMakeLists.txt:303:set_source_files_properties(${SRC_MAIN}
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/source_backups/int64_cast_sum_20261110/CMakeLists.txt:173:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/source_backups/int64_cast_sum_20261110/CMakeLists.txt:216:set_source_files_properties(${SRC_MAIN}
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_aligned_model_cmake_prepatch_20261111_151836/CMakeLists.txt:173:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_aligned_model_cmake_prepatch_20261111_151836/CMakeLists.txt:289:set_source_files_properties(${SRC_MAIN}
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_sub_prepatch_20261110_173015/CMakeLists.txt:173:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_sub_prepatch_20261110_173015/CMakeLists.txt:253:set_source_files_properties(${SRC_MAIN}
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_mul_prepatch_20261110_155618/CMakeLists.txt:173:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_mul_prepatch_20261110_155618/CMakeLists.txt:229:set_source_files_properties(${SRC_MAIN}
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_floor_mod_prepatch_20261110_164002/CMakeLists.txt:173:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_floor_mod_prepatch_20261110_164002/CMakeLists.txt:241:set_source_files_properties(${SRC_MAIN}
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_add_prepatch_20261111_090552/CMakeLists.txt:173:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_add_prepatch_20261111_090552/CMakeLists.txt:265:set_source_files_properties(${SRC_MAIN}
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_split_v_prepatch_20261111_093439/CMakeLists.txt:173:set_source_files_properties("${POLYU_MODEL_CPP}" PROPERTIES GENERATED TRUE)
+/home/user/sdk-alif/beeinventor/test_heatstroke/backups/heatstroke_int64_split_v_prepatch_20261111_093439/CMakeLists.txt:277:set_source_files_properties(${SRC_MAIN}
+
+===== BUILD CONFIGURATION =====
+BOARD:STRING=alif_b1_dk/ab1c1f4m51820ph0/rtss_he
+ZEPHYR_BASE:PATH=/home/user/sdk-alif/zephyr
+CMAKE_BUILD_TYPE:INTERNAL=Release
+CMAKE_GENERATOR:INTERNAL=Ninja
+CMAKE_HOME_DIRECTORY:INTERNAL=/home/user/sdk-alif/beeinventor/test_heatstroke
+
+===== CURRENT PRODUCTION COMPILE FLAGS =====
+Source: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc
+Optimization flags: ['-O3', '-Os']
+Object: modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc.obj
