@@ -1,0 +1,661 @@
+=== 1. APPLICATION LSTM RESOLVER REGISTRATION ===
+202-    /*
+203-     * The resolver's registrations_ array is public and mutable in this
+204-     * SDK version. Modify its entries directly before the interpreter
+205-     * captures their registration pointers.
+206-     *
+207-     * Keep every original callback and replace only invoke.
+208-     */
+209-    for (unsigned int i = 0;
+210-         i < this->m_opResolver.registrations_len_;
+211-         ++i) {
+212-
+213-        TFLMRegistration& registration =
+214-            this->m_opResolver.registrations_[i];
+215-
+216-        if (registration.builtin_code ==
+217:            tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM) {
+218-
+219-            if (registration.invoke != nullptr &&
+220-                registration.invoke != &HeatstrokeTimedBiLstmInvoke) {
+221-
+222-                g_heatstrokeOriginalBiLstmInvoke = registration.invoke;
+223-                registration.invoke = &HeatstrokeTimedBiLstmInvoke;
+224-            }
+225-        }
+226-
+227-        if (registration.builtin_code ==
+228-                tflite::BuiltinOperator_CUSTOM &&
+229-            ethos_name != nullptr &&
+230-            registration.custom_name != nullptr &&
+231-            std::strcmp(registration.custom_name, ethos_name) == 0) {
+232-
+233-            if (registration.invoke != nullptr &&
+234-                registration.invoke != &HeatstrokeTimedEthosUInvoke) {
+235-
+236-                g_heatstrokeOriginalEthosUInvoke = registration.invoke;
+237-                registration.invoke = &HeatstrokeTimedEthosUInvoke;
+--
+861- */
+862-#if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+863-namespace tflite {
+864-TFLMRegistration RegisterHeatstrokeLayerNormQuantize();
+865-}
+866-#endif
+867-
+868-TfLiteStatus ParseHeatstrokeBidirectionalSequenceLstm(
+869-    const tflite::Operator* op,
+870-    tflite::ErrorReporter* error_reporter,
+871-    tflite::BuiltinDataAllocator* allocator,
+872-    void** builtin_data)
+873-{
+874-    return tflite::ParseOpData(
+875-        op,
+876:        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+877-        error_reporter,
+878-        allocator,
+879-        builtin_data);
+880-}
+881-
+882-bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+883-{
+884-#define HS_ADD_REQUIRED(method)                                      \
+885-    do {                                                              \
+886-        const TfLiteStatus status = this->m_opResolver.method();      \
+887-        if (status != kTfLiteOk) {                                    \
+888-            printf_err(                                               \
+889-                "Failed to register heat-stress operator: %s\n",     \
+890-                #method);                                             \
+891-            return false;                                             \
+892-        }                                                             \
+893-    } while (0)
+894-
+895-    /*
+896-     * 28 stock ordinary built-in operators; GATHER is registered separately below.
+--
+1058-
+1059-    /*
+1060-     * Select the application-local BiLSTM implementation.
+1061-     * Experimental mode is opt-in and paired with the repaired model.
+1062-     */
+1063-    {
+1064-#if defined(HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+1065-        const TFLMRegistration registration =
+1066-            tflite::RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+1067-#else
+1068-        const TFLMRegistration registration =
+1069-            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+1070-#endif
+1071-
+1072-        if (this->m_opResolver.AddBuiltin(
+1073:                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+1074-                registration,
+1075-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+1076-            printf_err(
+1077-                "Failed to register heat-stress bidirectional LSTM.\n");
+1078-            return false;
+1079-        }
+1080-    }
+1081-
+1082-    /*
+1083-     * Ethos-U registration.
+1084-     *
+1085-     * AddEthosU() in this SDK can report success even when the hardware
+1086-     * registration is null. Therefore, explicitly verify FindOp().
+1087-     */
+1088-    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+1089-        printf_err("Failed to add Ethos-U to the resolver.\n");
+1090-        return false;
+1091-    }
+1092-
+1093-    const char* ethos_name = tflite::GetString_ETHOSU();
+--
+1144-        tflite::BuiltinOperator_MEAN,
+1145-        tflite::BuiltinOperator_MUL,
+1146-        tflite::BuiltinOperator_NEG,
+1147-        tflite::BuiltinOperator_QUANTIZE,
+1148-        tflite::BuiltinOperator_RESHAPE,
+1149-        tflite::BuiltinOperator_RSQRT,
+1150-        tflite::BuiltinOperator_SELECT_V2,
+1151-        tflite::BuiltinOperator_SIGN,
+1152-        tflite::BuiltinOperator_SOFTMAX,
+1153-        tflite::BuiltinOperator_SPLIT_V,
+1154-        tflite::BuiltinOperator_SQRT,
+1155-        tflite::BuiltinOperator_SQUARE,
+1156-        tflite::BuiltinOperator_SUB,
+1157-        tflite::BuiltinOperator_SUM,
+1158-        tflite::BuiltinOperator_TOPK_V2,
+1159:        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM
+1160-    };
+1161-
+1162-    for (const auto op : required_ops) {
+1163-        if (this->m_opResolver.FindOp(op) == nullptr) {
+1164-            printf_err(
+1165-                "Required heat-stress builtin registration is missing: %d\n",
+1166-                static_cast<int>(op));
+1167-            return false;
+1168-        }
+1169-
+1170-        if (this->m_opResolver.GetOpDataParser(op) == nullptr) {
+1171-            printf_err(
+1172-                "Required heat-stress builtin parser is missing: %d\n",
+1173-                static_cast<int>(op));
+1174-            return false;
+1175-        }
+1176-    }
+1177-
+1178-    info(
+1179-        "Heat-stress resolver ready: 31 built-ins plus Ethos-U (%s).\n",
+
+=== 2. TFLM LSTM IMPLEMENTATION FILES ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/mnist_lstm/trained_lstm_int8.tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/examples/mnist_lstm/trained_lstm.tflite
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/unidirectional_sequence_lstm.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_shared.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm_test.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval.h
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/lstm_eval_hifi.cc
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/unidirectional_sequence_lstm.cc
+
+=== 3. TFLM LSTM REGISTRATION AND COMPUTATION PATHS ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_pooling.h:55:TfLiteStatus AverageEvalQuantizedHifi(TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_pooling.h:63:TfLiteStatus MaxEvalQuantizedHifi(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/add.cc:127:      AddEvalQuantizedVision(context, node, *params, op_data, input1, input2,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc:45:      AverageEvalQuantizedHifi(context, node, params, op_data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc:53:      AveragePoolingEvalQuantized<int8_t>(context, node, params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc:82:      MaxEvalQuantizedHifi(context, node, params, op_data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc:90:      MaxPoolingEvalQuantized<int8_t>(context, node, params, reference_op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc:152:TfLiteStatus AverageEvalQuantizedHifi(TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling_int8.cc:247:TfLiteStatus MaxEvalQuantizedHifi(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/svdf.cc:346:      EvalFloatSvdfReference(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/add_vision.cc:103:TfLiteStatus AddEvalQuantizedVision(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/xtensa_add.h:37:TfLiteStatus AddEvalQuantizedVision(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling.cc:51:      AveragePoolingEvalFloat(context, node, params, reference_op_data, input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling.cc:57:      AverageEvalQuantizedHifi(context, node, params, op_data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling.cc:63:      AveragePoolingEvalQuantized<int8_t>(context, node, params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling.cc:69:      AveragePoolingEvalQuantized<int16_t>(context, node, params,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling.cc:102:      MaxPoolingEvalFloat(context, node, params, reference_op_data, input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling.cc:108:      MaxEvalQuantizedHifi(context, node, params, op_data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling.cc:114:      MaxPoolingEvalQuantized<int8_t>(context, node, params, reference_op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/xtensa/pooling.cc:120:      MaxPoolingEvalQuantized<int16_t>(context, node, params, reference_op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/depthwise_conv.cc:45:void EvalFloat(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/depthwise_conv.cc:115:void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/depthwise_conv.cc:221:      EvalFloat(context, node, params, data, input, filter, bias, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/depthwise_conv.cc:224:      EvalQuantizedPerChannel(context, node, params, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/conv.cc:44:void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/conv.cc:133:void EvalFloat(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/conv.cc:231:      EvalFloat(context, node, params, data, input, filter, bias, nullptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/conv.cc:235:      EvalQuantizedPerChannel(context, node, params, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/fully_connected.cc:76:__attribute__((optnone)) TfLiteStatus EvalQuantizedInt8CEVA(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/fully_connected.cc:135:TfLiteStatus EvalFloatCEVA(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/fully_connected.cc:223:      return EvalFloatCEVA(context, node, params->activation, input, filter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/ceva/fully_connected.cc:226:      return EvalQuantizedInt8CEVA(context, node, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling_common.cc:88:void AveragePoolingEvalFloat(const TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling_common.cc:109:void MaxPoolingEvalFloat(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc:139:TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/div.cc:200:    TF_LITE_ENSURE_OK(context, EvalQuantized(context, node, params, data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elementwise.cc:234:inline T AbsEvalQuantized(TfLiteContext* context, TfLiteNode* node, T i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elementwise.cc:256:inline T RsqrtEvalQuantized(TfLiteContext* context, TfLiteNode* node, T i) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elementwise.cc:305:          EvalImplQuantized<int8_t>(context, node, AbsEvalQuantized,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elementwise.cc:313:              : EvalImplQuantized<int16_t>(context, node, AbsEvalQuantized,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elementwise.cc:351:      return EvalImplQuantized<int8_t>(context, node, RsqrtEvalQuantized,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/elementwise.cc:354:      return EvalImplQuantized<int16_t>(context, node, RsqrtEvalQuantized,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_test.cc:416:TF_LITE_MICRO_TEST(TestLSTMEvalFloat) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/svdf_common.cc:289:void EvalFloatSvdfReference(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/embedding_lookup.cc:153:TfLiteStatus EvalHybrid(const OpData& op_data, const TfLiteEvalTensor* lookup,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/embedding_lookup.cc:196:        return EvalHybrid(op_data, lookup, value, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/depthwise_conv.cc:357:void EvalFloat(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/depthwise_conv.cc:594:void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/depthwise_conv.cc:652:      EvalFloat(context, node, params, data, input, filter, bias, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/depthwise_conv.cc:659:        EvalQuantizedPerChannel(context, node, params, data, input, filter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/conv.cc:552:void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/conv.cc:587:void EvalQuantizedPerChannelInt16(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/conv.cc:621:void EvalFloat(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/conv.cc:681:      EvalFloat(context, node, params, data, input, filter, bias, nullptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/conv.cc:689:        EvalQuantizedPerChannel(context, node, params, data, input, filter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/conv.cc:694:      EvalQuantizedPerChannelInt16(context, node, params, data, input, filter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/pooling.cc:158:void AverageEvalFloat(TfLiteContext* context, const TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/pooling.cc:266:void AverageEvalQuantized(TfLiteContext* context, const TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/pooling.cc:294:void MaxEvalFloat(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/pooling.cc:319:void MaxEvalQuantized(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/pooling.cc:362:      AverageEvalFloat(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/pooling.cc:368:        AverageEvalQuantized(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/pooling.cc:392:      MaxEvalFloat(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/pooling.cc:398:        MaxEvalQuantized(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/fully_connected.cc:374:TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/fully_connected.cc:405:TfLiteStatus EvalFloat(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/fully_connected.cc:454:      return EvalFloat(context, node, params->activation, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/arc_mli/fully_connected.cc:461:        return EvalQuantized(context, node, data, input, filter, bias, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.h:53:void AveragePoolingEvalFloat(const TfLiteContext* context,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.h:61:void AveragePoolingEvalQuantized(TfLiteContext* context, const TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.h:85:void MaxPoolingEvalFloat(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.h:91:void MaxPoolingEvalQuantized(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/svdf.cc:63:      EvalFloatSvdfReference(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/svdf.h:71:void EvalFloatSvdfReference(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.cc:43:      AveragePoolingEvalFloat(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.cc:46:      AveragePoolingEvalQuantized<int8_t>(context, node, params, data, input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.cc:50:      AveragePoolingEvalQuantized<int16_t>(context, node, params, data, input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.cc:76:      MaxPoolingEvalFloat(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.cc:79:      MaxPoolingEvalQuantized<int8_t>(context, node, params, data, input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/pooling.cc:83:      MaxPoolingEvalQuantized<int16_t>(context, node, params, data, input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/l2_pool_2d.cc:95:void L2EvalFloat(const TfLitePoolParams& params, const TfLiteEvalTensor& input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/l2_pool_2d.cc:126:      L2EvalFloat(*params, *input, &op_params, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/squared_difference.cc:183:void EvalQuantizedSquaredDifference(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/squared_difference.cc:248:    EvalQuantizedSquaredDifference<int8_t>(context, node, data, input1, input2,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/squared_difference.cc:251:    EvalQuantizedSquaredDifference<int16_t>(context, node, data, input1, input2,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:267:void EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:303:void EvalQuantizedPerChannelInt4(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:340:void EvalQuantizedPerChannel16x8(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:409:          EvalQuantizedPerChannel(context, node, params, data, input, filter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:414:          EvalQuantizedPerChannelInt4(context, node, params, data, input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:426:      EvalQuantizedPerChannel16x8(context, node, params, data, input, filter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:456:  EvalQuantizedPerChannel(context, node, params, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:480:  EvalQuantizedPerChannel16x8(context, node, params, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/depthwise_conv.cc:504:  EvalQuantizedPerChannelInt4(context, node, params, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/mul.cc:32:void EvalQuantized(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/mul.cc:115:      EvalQuantized(context, node, data, input1, input2, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/mul.cc:118:      EvalQuantized(context, node, data, input1, input2, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/mul.cc:149:  EvalQuantized(context, node, data, input1, input2, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/mul.cc:167:  EvalQuantized(context, node, data, input1, input2, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:245:TfLiteStatus EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:343:  return EvalQuantizedPerChannel<int8_t, int32_t, kTfLiteInt4>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:365:  return EvalQuantizedPerChannel<int8_t, int32_t, kTfLiteInt8>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:388:    return EvalQuantizedPerChannel<int16_t, int32_t, kTfLiteInt16>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:391:    return EvalQuantizedPerChannel<int16_t, int64_t, kTfLiteInt16>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:444:          return EvalQuantizedPerChannel<int8_t, int32_t, kTfLiteInt4>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:448:          return EvalQuantizedPerChannel<int8_t, int32_t, kTfLiteInt8>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:461:        return EvalQuantizedPerChannel<int16_t, int32_t, kTfLiteInt16>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/conv.cc:464:        return EvalQuantizedPerChannel<int16_t, int64_t, kTfLiteInt16>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/transpose_conv.cc:302:TfLiteStatus EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/transpose_conv.cc:433:      return EvalQuantizedPerChannel(context, node, params, data, input, filter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/transpose_conv.cc:501:  return EvalQuantizedPerChannel(context, node, params, data, input, filter,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/svdf.cc:384:      EvalFloatSvdfReference(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:73:void AverageEvalQuantized(TfLiteContext* context, const TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:109:TfLiteStatus MaxEvalQuantized(TfLiteContext* context, const TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:212:    AveragePoolingEvalFloat(context, node, params, &data.reference_op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:215:    AverageEvalQuantized(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:238:  AverageEvalQuantized(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:256:  AverageEvalQuantized(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:273:    MaxPoolingEvalFloat(context, node, params, &data.reference_op_data, input,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:276:    MaxEvalQuantized(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:299:  MaxEvalQuantized(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/pooling.cc:316:  MaxEvalQuantized(context, node, params, data, input, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:227:TfLiteStatus EvalQuantizedInt4(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:267:TfLiteStatus EvalQuantizedInt8(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:372:TfLiteStatus EvalQuantizedInt16(TfLiteContext* context, TfLiteNode* node,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:446:          return EvalQuantizedInt4(context, node, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:449:          return EvalQuantizedInt8(context, node, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:459:      return EvalQuantizedInt16(context, node, data, input, filter, bias,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:491:  return EvalQuantizedInt4(context, node, data, input, filter, bias, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:495:// function internally calls EvalQuantizedInt8, and there is similar name
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:520:  return EvalQuantizedInt8(context, node, data, input, filter, bias, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/cmsis_nn/fully_connected.cc:543:  return EvalQuantizedInt16(context, node, data, input, filter, bias, output);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:183:void MatrixBatchVectorMultiplyAccumulate(const float* matrix, int m_rows,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:191:void SparseMatrixBatchVectorMultiplyAccumulate1x4(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:206:void SparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:218:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:227:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:239:void SparseMatrixBatchVectorMultiplyAccumulate1x16(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:259:void SparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:489:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:497:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:507:inline void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:519:  MatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vectors,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:551:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.h:582:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:59:void PortableMatrixBatchVectorMultiplyAccumulate(const float* matrix,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:64:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:69:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:76:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:82:void PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:87:void PortableSparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:92:void PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:102:void PortableSparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:121:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils_impl.h:127:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:58:void MatrixBatchVectorMultiplyAccumulate(const float* matrix, int m_rows,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:61:  PortableMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vector,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:65:void MatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:71:  PortableMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vector,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:75:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:81:  PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:87:void MatrixBatchVectorMultiplyAccumulate(const int8_t* __restrict__ matrix,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:94:  PortableMatrixBatchVectorMultiplyAccumulate(matrix, m_rows, m_cols, vector,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:98:void SparseMatrixBatchVectorMultiplyAccumulate1x4(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:102:  PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:106:void SparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:110:  PortableSparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:114:void SparseMatrixBatchVectorMultiplyAccumulate1x16(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:124:  PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:131:void SparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:136:  PortableSparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:141:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:146:  PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:151:void MatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.h:156:  PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:121:void PortableMatrixBatchVectorMultiplyAccumulate(const float* matrix,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:140:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:165:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:172:    PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:208:void PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:232:void PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:270:void PortableSparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:299:void PortableSparseMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:338:void PortableMatrixBatchVectorMultiplyAccumulateImpl(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:367:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:372:  PortableMatrixBatchVectorMultiplyAccumulateImpl(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:377:void PortableMatrixBatchVectorMultiplyAccumulate(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc:382:  PortableMatrixBatchVectorMultiplyAccumulateImpl(
+
+=== 4. ALIF MLEK LSTM-SPECIFIC IMPLEMENTATIONS ===
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/coremltools/converters/mil/frontend/tensorflow/ssa_passes/expand_tf_lstm.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/coremltools/converters/mil/frontend/tensorflow/ssa_passes/__pycache__/expand_tf_lstm.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/coremltools/converters/mil/frontend/tensorflow/ssa_passes/__pycache__/tf_lstm_to_core_lstm.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/coremltools/converters/mil/frontend/tensorflow/ssa_passes/tf_lstm_to_core_lstm.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/lstm.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/__pycache__/lstm.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/BidirectionalSequenceLSTMOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/BidirectionalSequenceRNNOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/LSTMKernelType.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/LSTMOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/__pycache__/BidirectionalSequenceLSTMOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/__pycache__/BidirectionalSequenceRNNOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/__pycache__/LSTMKernelType.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/__pycache__/LSTMOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/__pycache__/ReverseSequenceOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/__pycache__/SequenceRNNOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/__pycache__/UnidirectionalSequenceLSTMOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/ReverseSequenceOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/SequenceRNNOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/ethosu/vela/tflite/UnidirectionalSequenceLSTMOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/arm/test/models/__pycache__/test_lstm_arm.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/arm/test/models/test_lstm_arm.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/cortex_m/test/ops/__pycache__/test_lstm.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/cortex_m/test/ops/test_lstm.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/BidirectionalSequenceLSTMOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/BidirectionalSequenceRNNOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/LSTMKernelType.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/LSTMOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/__pycache__/BidirectionalSequenceLSTMOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/__pycache__/BidirectionalSequenceRNNOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/__pycache__/LSTMKernelType.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/__pycache__/LSTMOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/__pycache__/ReverseSequenceOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/__pycache__/SequenceRNNOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/__pycache__/UnidirectionalSequenceLSTMOptions.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/ReverseSequenceOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/SequenceRNNOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/lib/tflite/UnidirectionalSequenceLSTMOptions.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/bidirectional_sequence_lstm_options.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/bidirectional_sequence_rnn_options.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/lstm_options.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/__pycache__/bidirectional_sequence_lstm_options.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/__pycache__/bidirectional_sequence_rnn_options.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/__pycache__/lstm_options.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/__pycache__/reverse_sequence_options.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/__pycache__/unidirectional_sequence_lstm_options.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/__pycache__/unidirectional_sequence_rnn_options.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/reverse_sequence_options.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/unidirectional_sequence_lstm_options.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/nxp/backend/ir/tflite_generator/builtin_options/unidirectional_sequence_rnn_options.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/test/suite/operators/__pycache__/test_lstm.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/test/suite/operators/test_lstm.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/xnnpack/test/ops/__pycache__/test_lstm.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/executorch/backends/xnnpack/test/ops/test_lstm.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/networkx/utils/__pycache__/random_sequence.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/networkx/utils/random_sequence.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/networkx/utils/tests/__pycache__/test_random_sequence.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/networkx/utils/tests/test_random_sequence.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/tests/__pycache__/test_unpack_sequence.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numba/tests/test_unpack_sequence.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/random/tests/__pycache__/test_seed_sequence.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/random/tests/test_seed_sequence.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_typing/_nested_sequence.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/_typing/__pycache__/_nested_sequence.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/typing/tests/data/fail/nested_sequence.pyi
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/numpy/typing/tests/data/reveal/nested_sequence.pyi
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/PIL/ImageSequence.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/PIL/__pycache__/ImageSequence.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/sklearn/gaussian_process/tests/_mini_sequence_kernel.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/sklearn/gaussian_process/tests/__pycache__/_mini_sequence_kernel.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/sympy/series/__pycache__/sequences.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/sympy/series/sequences.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/sympy/series/tests/__pycache__/test_sequences.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/sympy/series/tests/test_sequences.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torchao/prototype/sparsity/pruner/lstm_saliency_pruner.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torchao/prototype/sparsity/pruner/__pycache__/lstm_saliency_pruner.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/ao/pruning/_experimental/pruner/lstm_saliency_pruner.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/ao/pruning/_experimental/pruner/__pycache__/lstm_saliency_pruner.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/ao/quantization/fx/lstm_utils.py
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/ao/quantization/fx/__pycache__/lstm_utils.cpython-312.pyc
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_cell_compositeimplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_cell.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_cell_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_cell_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_compositeimplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_mps_backward_compositeexplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_mps_backward.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_mps_backward_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_mps_backward_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_lstm_mps_compositeexplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_lstm_mps.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_lstm_mps_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_lstm_mps_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/lstm_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pack_padded_sequence_backward_compositeimplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pack_padded_sequence_backward.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pack_padded_sequence_backward_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pack_padded_sequence_backward_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pack_padded_sequence_compositeexplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pack_padded_sequence.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pack_padded_sequence_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pack_padded_sequence_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pad_packed_sequence_compositeimplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pad_packed_sequence.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pad_packed_sequence_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_pad_packed_sequence_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/pad_sequence_compositeimplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/pad_sequence.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/pad_sequence_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/pad_sequence_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/quantized_lstm_cell_compositeimplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/quantized_lstm_cell.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/quantized_lstm_cell_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/quantized_lstm_cell_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_differentiable_lstm_cell_backward_compositeimplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_differentiable_lstm_cell_backward.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_differentiable_lstm_cell_backward_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_differentiable_lstm_cell_backward_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward_compositeimplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward_impl_compositeexplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward_impl_cuda_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward_impl.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward_impl_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward_impl_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_backward_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_compositeexplicitautograd_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_cuda_dispatch.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_native.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/ops/_thnn_fused_lstm_cell_ops.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/ATen/SequenceNumber.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/api/include/torch/data/detail/sequencers.h
+/home/user/sdk-alif/modules/alif-mlek/resources_downloaded/env/lib/python3.12/site-packages/torch/include/torch/csrc/distributed/c10d/sequence_num.hpp
+
+=== 5. CMSIS-NN LSTM KERNEL AVAILABILITY ===
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2025: * @param[in]   params                          Struct containg all information about the lstm operator, see
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2028: * lstm operator, see arm_nn_types.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2036:arm_cmsis_nn_status arm_nn_lstm_step_s8(const int8_t *data_in,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2039:                                        const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2040:                                        cmsis_nn_lstm_context *buffers,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2049: * @param[in]   params                          Struct containg all information about the lstm operator, see
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2052: * lstm operator, see arm_nn_types.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2060:arm_cmsis_nn_status arm_nn_lstm_step_s16(const int16_t *data_in,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2063:                                         const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2064:                                         cmsis_nn_lstm_context *buffers,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2074: * @param[in]   params                          Struct containing all information about the lstm_operation, see
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2078: * arm_nn_lstm_step_s8.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2081:arm_cmsis_nn_status arm_nn_lstm_calculate_gate_s8_s16(const int8_t *data_in,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2083:                                                      const cmsis_nn_lstm_gate *gate_data,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2084:                                                      const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2095: * @param[in]   params                          Struct containing all information about the lstm_operation, see
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2099: * arm_nn_lstm_step_s16.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2102:arm_cmsis_nn_status arm_nn_lstm_calculate_gate_s16(const int16_t *data_in,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2104:                                                   const cmsis_nn_lstm_gate *gate_data,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2105:                                                   const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2123: * @param[in]   batch_offset     Number of timesteps between consecutive batches in input, see arm_nn_lstm_step_s8. Note
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2153: * @param[in]   batch_offset     Number of timesteps between consecutive batches in input, see arm_nn_lstm_step_s16.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2180: * arm_nn_lstm_step_s8. Note that it is assumed that the input is stored with sequential batches.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnsupportfunctions.h:2206: * arm_nn_lstm_step_s16. Note that it is assumed that the input is stored with sequential batches.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nn_types.h:98:} cmsis_nn_lstm_dims;
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nn_types.h:238:} cmsis_nn_lstm_gate;
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nn_types.h:263:    cmsis_nn_lstm_gate forget_gate;
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nn_types.h:264:    cmsis_nn_lstm_gate input_gate;
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nn_types.h:265:    cmsis_nn_lstm_gate cell_gate;
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nn_types.h:266:    cmsis_nn_lstm_gate output_gate;
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nn_types.h:267:} cmsis_nn_lstm_params;
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nn_types.h:275:} cmsis_nn_lstm_context;
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2756: * @param[in]   params                     Struct containing all information about the lstm operator, see arm_nn_types.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2758: * lstm operator, see arm_nn_types.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2767:arm_cmsis_nn_status arm_lstm_unidirectional_s8(const int8_t *input,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2769:                                               const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2770:                                               cmsis_nn_lstm_context *buffers);
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2777: * @param[in]   params                     Struct containing all information about the lstm operator, see arm_nn_types.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2779: * lstm operator, see arm_nn_types.
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2788:arm_cmsis_nn_status arm_lstm_unidirectional_s16(const int16_t *input,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2790:                                                const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Include/arm_nnfunctions.h:2791:                                                cmsis_nn_lstm_context *buffers);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s16.c:21: * Title:        arm_nn_lstm_step_s16.c
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s16.c:46:arm_cmsis_nn_status arm_nn_lstm_step_s16(const int16_t *data_in,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s16.c:49:                                         const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s16.c:50:                                         cmsis_nn_lstm_context *buffers,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s16.c:61:    arm_nn_lstm_calculate_gate_s16(data_in, hidden_in, &params->forget_gate, params, forget_gate, batch_offset);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s16.c:76:    arm_nn_lstm_calculate_gate_s16(data_in, hidden_in, &params->input_gate, params, input_gate, batch_offset);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s16.c:78:    arm_nn_lstm_calculate_gate_s16(data_in, hidden_in, &params->cell_gate, params, cell_gate, batch_offset);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s16.c:93:    arm_nn_lstm_calculate_gate_s16(data_in, hidden_in, &params->output_gate, params, output_gate, batch_offset);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_calculate_gate_s8_s16.c:21: * Title:        arm_nn_lstm_calculate_gate_s8_s16.c
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_calculate_gate_s8_s16.c:54:arm_cmsis_nn_status arm_nn_lstm_calculate_gate_s8_s16(const int8_t *data_in,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_calculate_gate_s8_s16.c:56:                                                      const cmsis_nn_lstm_gate *gate,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_calculate_gate_s8_s16.c:57:                                                      const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_calculate_gate_s16.c:21: * Title:        arm_nn_lstm_calculate_gate_s16.c
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_calculate_gate_s16.c:47:arm_cmsis_nn_status arm_nn_lstm_calculate_gate_s16(const int16_t *data_in,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_calculate_gate_s16.c:49:                                                   const cmsis_nn_lstm_gate *gate,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_calculate_gate_s16.c:50:                                                   const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s8.c:21: * Title:        arm_nn_lstm_step_s8.c
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s8.c:45:arm_cmsis_nn_status arm_nn_lstm_step_s8(const int8_t *data_in,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s8.c:48:                                        const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s8.c:49:                                        cmsis_nn_lstm_context *buffers,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s8.c:60:    arm_nn_lstm_calculate_gate_s8_s16(data_in, hidden_in, &params->forget_gate, params, forget_gate, batch_offset);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s8.c:75:    arm_nn_lstm_calculate_gate_s8_s16(data_in, hidden_in, &params->input_gate, params, input_gate, batch_offset);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s8.c:76:    arm_nn_lstm_calculate_gate_s8_s16(data_in, hidden_in, &params->cell_gate, params, cell_gate, batch_offset);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/NNSupportFunctions/arm_nn_lstm_step_s8.c:91:    arm_nn_lstm_calculate_gate_s8_s16(data_in, hidden_in, &params->output_gate, params, output_gate, batch_offset);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s8.c:21: * Title:        arm_lstm_unidirectional_s8.c
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s8.c:49:arm_cmsis_nn_status arm_lstm_unidirectional_s8(const int8_t *input,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s8.c:51:                                               const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s8.c:52:                                               cmsis_nn_lstm_context *buffers)
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s8.c:64:            arm_cmsis_nn_status status = arm_nn_lstm_step_s8(data_in, hidden_in, hidden_out, params, buffers, 1);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s8.c:81:                arm_nn_lstm_step_s8(data_in, hidden_in, hidden_out, params, buffers, params->time_steps);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s16.c:21: * Title:        arm_lstm_unidirectional_s16.c
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s16.c:49:arm_cmsis_nn_status arm_lstm_unidirectional_s16(const int16_t *input,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s16.c:51:                                                const cmsis_nn_lstm_params *params,
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s16.c:52:                                                cmsis_nn_lstm_context *buffers)
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s16.c:64:            arm_cmsis_nn_status status = arm_nn_lstm_step_s16(data_in, hidden_in, hidden_out, params, buffers, 1);
+/home/user/sdk-alif/modules/cmsis-nn-src/Source/LSTMFunctions/arm_lstm_unidirectional_s16.c:81:                arm_nn_lstm_step_s16(data_in, hidden_in, hidden_out, params, buffers, params->time_steps);
+
+=== 6. ACTUAL COMPILER FLAGS FOR LSTM KERNELS ===
+
+SOURCE: /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+  -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include
+  -mcpu=cortex-m55
+  -mfpu=auto
+  -mfloat-abi=hard
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc
+  -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include
+  -mcpu=cortex-m55
+  -mfpu=auto
+  -mfloat-abi=hard
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc
+  -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include
+  -mcpu=cortex-m55
+  -mfpu=auto
+  -mfloat-abi=hard
+
+SOURCE: /home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/unidirectional_sequence_lstm.cc
+  -I/home/user/sdk-alif/modules/lib/cmsis-dsp/Include
+  -mcpu=cortex-m55
+  -mfpu=auto
+  -mfloat-abi=hard
+
+LSTM source compile entries: 4
+
+=== 7. ACTIVE CPU / MVE / CMSIS CONFIGURATION ===
+CONFIG_FPU=y
+# CONFIG_TENSORFLOW_LITE_MICRO_CMSIS_NN_KERNELS is not set
+# cmsis-dsp (/home/user/sdk-alif/modules/lib/cmsis-dsp)
+CONFIG_ZEPHYR_CMSIS_DSP_MODULE=y
+CONFIG_CMSIS_DSP=y
+CONFIG_CMSIS_DSP_BASICMATH=y
+CONFIG_CMSIS_DSP_COMPLEXMATH=y
+# CONFIG_CMSIS_DSP_CONTROLLER is not set
+CONFIG_CMSIS_DSP_FASTMATH=y
+# CONFIG_CMSIS_DSP_FILTERING is not set
+# CONFIG_CMSIS_DSP_INTERPOLATION is not set
+# CONFIG_CMSIS_DSP_MATRIX is not set
+# CONFIG_CMSIS_DSP_QUATERNIONMATH is not set
+CONFIG_CMSIS_DSP_STATISTICS=y
+# CONFIG_CMSIS_DSP_SUPPORT is not set
+CONFIG_CMSIS_DSP_TRANSFORM=y
+# CONFIG_CMSIS_DSP_SVM is not set
+# CONFIG_CMSIS_DSP_BAYES is not set
+# CONFIG_CMSIS_DSP_DISTANCE is not set
+# CONFIG_CMSIS_DSP_WINDOW is not set
+# CONFIG_CMSIS_DSP_HELIUM_EXPERIMENTAL is not set
+# CONFIG_CMSIS_DSP_LOOPUNROLL is not set
+# CONFIG_CMSIS_DSP_ROUNDING is not set
+# CONFIG_CMSIS_DSP_MATRIXCHECK is not set
+# CONFIG_CMSIS_DSP_AUTOVECTORIZE is not set
+CONFIG_CMSIS_DSP_FLOAT16=y
+CONFIG_CMSIS_DSP_LAX_VECTOR_CONVERSIONS=y
+# end of cmsis-dsp (/home/user/sdk-alif/modules/lib/cmsis-dsp)
+CONFIG_CPU_CORTEX_M55=y
+CONFIG_ARMV8_M_DSP=y
+CONFIG_ARMV8_1_M_MVEI=y
+CONFIG_ARMV8_1_M_MVEF=y
+CONFIG_CPU_HAS_FPU=y
+# DSP Options
+# end of DSP Options
+CONFIG_FPU_SHARING=y
+# CONFIG_DSP is not set
+
+=== 8. BIDIRECTIONAL LSTM MODEL OPTIONS ===
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794451169.635975  239710 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794451169.636155  239710 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+I0000 00:00:1794451169.665634  239710 cpu_feature_guard.cc:227] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+I0000 00:00:1794451170.467751  239710 port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+I0000 00:00:1794451170.467953  239710 cudart_stub.cc:31] Could not find cuda drivers on your machine, GPU will not be used.
+
+Operator index: 168 output: 305
+
+Operator index: 258 output: 460
+
+=== 9. MODEL IDENTITY ===
+f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp_ethosu_aligned16_20261111.tflite
+
+=== END AUDIT ===
