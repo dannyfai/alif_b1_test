@@ -1,0 +1,1230 @@
+=== 1. LSTM STEP IMPLEMENTATION ===
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-382-      step_info.CellStateOffset();
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-383-  // Tanh(cell_state)
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-384-  Tanh(cell_state_scale_power, cell_state_shape, cell_state_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-385-       cell_state_shape, buffer);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-386-  // Update the hidden state
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-387-  Mul(cell_state_shape, mul_params, buffer, output_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-388-      tflite::micro::GetTensorData<ActivationType>(hidden_state) +
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-389-          step_info.HiddenStateOffset());
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-390-}
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-391-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-392-template <typename ActivationType, typename WeightType, typename CellType,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-393-          typename BiasType>
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h:394:void LstmStep(const LstmStepManager& step_info, const OpDataLSTM& op_data,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-395-              LSTMKernelContents& kernel_content,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-396-              const LSTMBuffers<CellType>& buffers) {
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-397-  /*Step1: Calculate gate outputs to prepare cell state update*/
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-398-  CellType* gate_internal_buffer = buffers.buffer3;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-399-  CellType* forget_gate_output = buffers.buffer0;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-400-  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-401-      step_info, op_data.forget_gate_parameters,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-402-      // Input FC
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-403-      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-404-      kernel_content.GetInternalTensor(tflite::kLstmInputToForgetWeightsTensor),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-405-      kernel_content.GetInternalTensor(tflite::kLstmForgetGateBiasTensor),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-406-      // Recurrent FC
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-407-      kernel_content.HiddenStateTensor(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-408-      kernel_content.GetInternalTensor(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-409-          tflite::kLstmRecurrentToForgetWeightsTensor),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-410-      /*recurrent_bias*/ nullptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-411-      // Output
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-412-      forget_gate_output,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-413-      // Scratch arrays
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-414-      gate_internal_buffer, kTfLiteActSigmoid);
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-415-
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-416-  // Input Gate calculation;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-417-  CellType* input_gate_output = buffers.buffer1;
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-418-  CalculateLstmGate<ActivationType, WeightType, CellType, BiasType>(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-419-      step_info, op_data.input_gate_parameters,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-420-      // Input FC
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-421-      kernel_content.GetInternalTensor(tflite::kLstmInputTensor),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-422-      kernel_content.GetInternalTensor(tflite::kLstmInputToInputWeightsTensor),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-423-      kernel_content.GetInternalTensor(tflite::kLstmInputGateBiasTensor),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-424-      // Recurrent FC
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-425-      kernel_content.HiddenStateTensor(),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-426-      kernel_content.GetInternalTensor(
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-427-          tflite::kLstmRecurrentToInputWeightsTensor),
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-428-      /*recurrent_bias*/ nullptr,
+/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.h-429-      // Output
+
+=== 2. FP32 MATRIX DISPATCH IMPLEMENTATION ===
+109-    *scaling_factor = scale;
+110-    *offset = nudged_zero_point;
+111-  }
+112-  const float scaling_factor_inv = 1.0f / *scaling_factor;
+113-  for (int i = 0; i < size; ++i) {
+114-    const int32_t quantized_value = static_cast<int32_t>(
+115-        TfLiteRound(*offset + values[i] * scaling_factor_inv));
+116-    quantized_values[i] =
+117-        std::min(kMaxScale, std::max(kMinScale, quantized_value));
+118-  }
+119-}
+120-
+121:void PortableMatrixBatchVectorMultiplyAccumulate(const float* matrix,
+122-                                                 int m_rows, int m_cols,
+123-                                                 const float* vector,
+124-                                                 int n_batch, float* result) {
+125-  float* result_in_batch = result;
+126-  for (int b = 0; b < n_batch; b++) {
+127-    const float* matrix_ptr = matrix;
+128-    for (int r = 0; r < m_rows; r++) {
+129-      float dot_prod = 0.0f;
+130-      const float* vector_in_batch = vector + b * m_cols;
+131-      for (int c = 0; c < m_cols; c++) {
+132-        dot_prod += *matrix_ptr++ * *vector_in_batch++;
+133-      }
+134-      *result_in_batch += dot_prod;
+135-      ++result_in_batch;
+136-    }
+137-  }
+138-}
+139-
+140:void PortableMatrixBatchVectorMultiplyAccumulate(
+141-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+142-    const int8_t* __restrict__ vectors, const float* scaling_factors,
+143-    int n_batch, float* __restrict__ result) {
+144-  for (int batch = 0; batch < n_batch; ++batch, vectors += m_cols) {
+145-    const float batch_scaling_factor = scaling_factors[batch];
+146-    // Get the address of the first row.
+147-    const int8_t* row_ptr = matrix;
+148-    for (int row = 0; row < m_rows; ++row) {
+149-      // Initialize the dot product sum for the row to 0.
+150-      int32_t dotprod = 0;
+151-#if defined(__GNUC__)
+152-      // Prefetch the row to cache.
+153-      __builtin_prefetch(row_ptr, 0 /* prefetch for read */,
+154-                         3 /* temporal locality */);
+155-#endif
+156-      for (int col = 0; col < m_cols; ++col, ++row_ptr) {
+157-        dotprod += (*row_ptr) * (vectors[col]);
+158-      }  // for col
+159-      *result += dotprod * batch_scaling_factor;
+160-      ++result;
+161-    }  // for row
+162-  }  // for batch
+163-}
+164-
+165:void PortableMatrixBatchVectorMultiplyAccumulate(
+166-    const int8_t* __restrict__ matrix, const int m_rows, const int m_cols,
+167-    const int8_t* __restrict__ vectors, const float* scaling_factors,
+168-    int n_batch, float* __restrict__ result, const float* per_channel_scale,
+169-    const int32_t* input_offset, int32_t* scratch, int32_t* row_sums,
+170-    bool* compute_row_sums, CpuBackendContext* context) {
+171-  if (input_offset == nullptr) {
+172:    PortableMatrixBatchVectorMultiplyAccumulate(
+173-        matrix, m_rows, m_cols, vectors, scaling_factors, n_batch, result);
+174-    return;
+175-  }
+176-  if (!compute_row_sums || *compute_row_sums) {
+177-    PortableReductionSumVector(matrix, row_sums, m_rows, m_cols);
+178-    if (compute_row_sums) {
+179-      *compute_row_sums = false;
+180-    }
+181-  }
+182-
+183-  for (int batch = 0; batch < n_batch; ++batch, vectors += m_cols) {
+184-    const float batch_scaling_factor = scaling_factors[batch];
+185-    const int32_t batch_offset = input_offset[batch];
+186-    const int8_t* row_ptr = matrix;
+187-    for (int row = 0; row < m_rows; ++row) {
+188-      int32_t dotprod = 0;
+189-      float scale = batch_scaling_factor;
+190-      if (per_channel_scale) {
+191-        scale *= per_channel_scale[row];
+192-      }
+193-#if defined(__GNUC__)
+194-      // Prefetch the row to cache.
+195-      __builtin_prefetch(row_ptr, 0 /* prefetch for read */,
+196-                         3 /* temporal locality */);
+197-#endif
+198-      for (int col = 0; col < m_cols; ++col, ++row_ptr) {
+199-        dotprod += (*row_ptr) * vectors[col];
+200-      }  // for col
+201-      dotprod -= row_sums[row] * batch_offset;
+202-      *result += dotprod * scale;
+203-      ++result;
+204-    }  // for row
+205-  }  // for batch
+206-}
+207-
+208-void PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(
+209-    const float* __restrict__ matrix, const int32_t* __restrict__ segments,
+210-    const int32_t* __restrict__ indices, int m_rows, int m_cols,
+211-    const float* __restrict__ vector, int n_batch, float* __restrict__ result) {
+212-  const int kBlockSize = 4;
+213-  TFLITE_DCHECK_EQ(m_cols % kBlockSize, 0);
+214-  for (int batch = 0; batch < n_batch; batch++) {
+215-    const float* matrix_ptr = matrix;
+216-    for (int row = 0; row < m_rows; row++) {
+217-      float dot_prod = 0.0f;
+218-      const float* vector_in_batch = vector + batch * m_cols;
+219-      for (int i = segments[row]; i < segments[row + 1]; i++) {
+220-        const int block_start_index = indices[i] * kBlockSize;
+221-        const float* vector_block_in_batch_ptr =
+222-            vector_in_batch + block_start_index;
+223-        for (int c = 0; c < kBlockSize; c++) {
+224-          dot_prod += *matrix_ptr++ * *vector_block_in_batch_ptr++;
+225-        }
+226-      }
+227-      result[batch * m_rows + row] += dot_prod;
+--
+258-      dot_prod = MultiplyByQuantizedMultiplier(
+259-          dot_prod + bias_value,
+260-          per_channel_scale ? per_channel_scale[row] : output_multiplier,
+261-          per_channel_shift ? per_channel_shift[row] : output_shift);
+262-      dot_prod += output_offset;
+263-      result[batch * m_rows + row] =
+264-          static_cast<int8_t>(ActivationFunctionWithMinMax(
+265-              dot_prod, output_activation_min, output_activation_max));
+266-    }
+267-  }
+268-}
+269-
+270:void PortableSparseMatrixBatchVectorMultiplyAccumulate(
+271-    const float* __restrict__ matrix, const uint8_t* __restrict__ ledger,
+272-    int m_rows, int m_cols, const float* __restrict__ vector, int n_batch,
+273-    float* __restrict__ result) {
+274-  const int kBlockSize = 16;
+275-  TFLITE_DCHECK_EQ(  // NOLINT
+276-      m_cols % kBlockSize, 0);
+277-  for (int batch = 0; batch < n_batch; batch++) {
+278-    const float* matrix_ptr = matrix;
+279-    const uint8_t* ledger_ptr = ledger;
+280-    for (int row = 0; row < m_rows; row++) {
+281-      float dot_prod = 0.0f;
+282-      int num_nonzero_blocks = *ledger_ptr++;
+283-      if (num_nonzero_blocks > 0) {
+284-        const float* vector_in_batch = vector + batch * m_cols;
+285-        for (int i = 0; i < num_nonzero_blocks; i++) {
+286-          const int block_start_index = *ledger_ptr++ * kBlockSize;
+287-          const float* vector_block_in_batch_ptr =
+288-              vector_in_batch + block_start_index;
+289-          for (int c = 0; c < kBlockSize; c++) {
+290-            dot_prod += *matrix_ptr++ * *vector_block_in_batch_ptr++;
+291-          }
+292-        }
+293-      }
+294-      result[batch * m_rows + row] += dot_prod;
+295-    }
+296-  }
+297-}
+298-
+299:void PortableSparseMatrixBatchVectorMultiplyAccumulate(
+300-    const int8_t* __restrict__ matrix, const uint8_t* ledger, const int m_rows,
+301-    const int m_cols, const int8_t* __restrict__ vectors,
+302-    const float* scaling_factors, int n_batch, float* __restrict__ result,
+303-    const float* per_channel_scale) {
+304-  static const int kBlockSize = 16;
+305-  TFLITE_DCHECK_EQ(  // NOLINT
+306-      m_cols % kBlockSize, 0);
+307-  for (int batch = 0; batch < n_batch; ++batch, vectors += m_cols) {
+308-    const float batch_scaling_factor = scaling_factors[batch];
+309-    const uint8_t* ledger_ptr = ledger;
+310-    // Get the address of the first row.
+311-    const int8_t* row_ptr = matrix;
+312-    for (int row = 0; row < m_rows; ++row) {
+313-      // Initialize the dot product sum for the row to 0.
+314-      int32_t dotprod = 0;
+315-#if defined(__GNUC__)
+316-      // Prefetch the row to cache.
+317-      __builtin_prefetch(row_ptr, 0 /* prefetch for read */,
+318-                         3 /* temporal locality */);
+319-#endif
+320-      int num_nonzero_blocks = *ledger_ptr++;
+321-      for (int i = 0; i < num_nonzero_blocks; i++) {
+322-        const int block_start_index = *ledger_ptr++ * kBlockSize;
+323-        const int8_t* vector_block_ptr = vectors + block_start_index;
+324-        for (int c = 0; c < kBlockSize; c++) {
+325-          dotprod += (*row_ptr++) * (*vector_block_ptr++);
+326-        }  // for block
+327-      }  // for num_nonzero_blocks
+328-      float scaling_factor = batch_scaling_factor;
+329-      if (per_channel_scale) {
+330-        scaling_factor *= per_channel_scale[row];
+331-      }
+332-      result[batch * m_rows + row] += dotprod * scaling_factor;
+333-    }  // for row
+334-  }  // for batch
+335-}
+336-
+337-template <typename T>
+338-void PortableMatrixBatchVectorMultiplyAccumulateImpl(
+339-    const int8_t* input, const int32_t* bias,
+340-    const int8_t* input_to_gate_weights, int32_t multiplier, int32_t shift,
+341-    int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
+342-    T* output) {
+343-  const int16_t output_max = std::numeric_limits<T>::max();
+344-  const int16_t output_min = std::numeric_limits<T>::min();
+345-  for (int batch = 0; batch < n_batch; ++batch) {
+346-    for (int row = 0; row < n_output; ++row) {
+347-      int32_t acc = bias[row];
+348-      for (int col = 0; col < n_input; ++col) {
+349-        int8_t input_val = input[batch * n_input + col];
+350-        int8_t weights_val = input_to_gate_weights[row * n_input + col];
+351-        acc += input_val * weights_val;
+352-      }
+353-      acc = MultiplyByQuantizedMultiplier(acc, multiplier, shift);
+354-      acc += output_zp;
+355-      acc += output[batch * n_output + row];
+356-      if (acc > output_max) {
+357-        acc = output_max;
+358-      }
+359-      if (acc < output_min) {
+360-        acc = output_min;
+361-      }
+362-      output[batch * n_output + row] = static_cast<T>(acc);
+363-    }
+364-  }
+365-}
+366-
+367:void PortableMatrixBatchVectorMultiplyAccumulate(
+368-    const int8_t* input, const int32_t* bias,
+369-    const int8_t* input_to_gate_weights, int32_t multiplier, int32_t shift,
+370-    int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
+371-    int32_t* scratch, int16_t* output, CpuBackendContext* context) {
+372-  PortableMatrixBatchVectorMultiplyAccumulateImpl(
+373-      input, bias, input_to_gate_weights, multiplier, shift, n_batch, n_input,
+374-      n_output, output_zp, output);
+375-}
+376-
+377:void PortableMatrixBatchVectorMultiplyAccumulate(
+378-    const int8_t* input, const int32_t* bias,
+379-    const int8_t* input_to_gate_weights, int32_t multiplier, int32_t shift,
+380-    int32_t n_batch, int32_t n_input, int32_t n_output, int32_t output_zp,
+381-    int32_t* scratch, int8_t* output, CpuBackendContext* context) {
+382-  PortableMatrixBatchVectorMultiplyAccumulateImpl(
+383-      input, bias, input_to_gate_weights, multiplier, shift, n_batch, n_input,
+384-      n_output, output_zp, output);
+385-}
+386-
+387-void PortableMatrixBatchVectorMultiply(const int8_t* input,
+388-                                       int32_t input_zeropoint,
+389-                                       const int8_t* input_to_gate_weights,
+390-                                       int32_t input_to_gate_effective_scale_a,
+391-                                       int32_t input_to_gate_effective_scale_b,
+392-                                       int32_t n_batch, int32_t n_input,
+393-                                       int32_t n_cell, int8_t* gate_output,
+394-                                       int8_t gate_output_zp) {
+395-  const int32_t int8_max = std::numeric_limits<int8_t>::max();
+396-  const int32_t int8_min = std::numeric_limits<int8_t>::min();
+397-  for (int batch = 0; batch < n_batch; ++batch) {
+398-    for (int row = 0; row < n_cell; ++row) {
+399-      int32_t acc = 0;
+400-      for (int col = 0; col < n_input; ++col) {
+401-        int32_t input_val = input[batch * n_input + col];
+402-        int8_t weights_val = input_to_gate_weights[row * n_input + col];
+403-        acc += (input_val - input_zeropoint) * weights_val;
+404-      }
+405-      acc = MultiplyByQuantizedMultiplier(acc, input_to_gate_effective_scale_a,
+406-                                          input_to_gate_effective_scale_b);
+407-      acc += gate_output_zp;
+408-      if (acc > int8_max) {
+409-        acc = int8_max;
+410-      }
+411-      if (acc < int8_min) {
+412-        acc = int8_min;
+413-      }
+414-      gate_output[batch * n_cell + row] = static_cast<int8_t>(acc);
+415-    }
+416-  }
+417-}
+418-
+419-void PortableMatrixBatchVectorMultiply(
+420-    const int16_t* hidden, const int8_t* hidden_to_output_weights,
+421-    int32_t proj_effective_scale_a, int32_t proj_effective_scale_b,
+422-    const int32_t* gate_bias, int32_t n_batch, int32_t n_hidden,
+423-    int32_t n_output, int32_t output_zp, int8_t* proj_output) {
+424-  const int16_t int8_max = std::numeric_limits<int8_t>::max();
+425-  const int16_t int8_min = std::numeric_limits<int8_t>::min();
+426-  for (int batch = 0; batch < n_batch; ++batch) {
+427-    for (int row = 0; row < n_output; ++row) {
+428-      int64_t acc = gate_bias[row];
+429-      for (int col = 0; col < n_hidden; ++col) {
+430-        int16_t input_val = hidden[batch * n_hidden + col];
+431-        int8_t weights_val = hidden_to_output_weights[row * n_hidden + col];
+432-        int64_t curr = acc;
+
+=== 3. RESOLVE COMPILER OBJECTS ===
+SOURCE=/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc
+OBJECT=/home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/CMakeFiles/app.dir/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc.obj
+EXISTS=True
+SOURCE=/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.cc
+OBJECT=/home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.cc.obj
+EXISTS=True
+SOURCE=/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc
+OBJECT=/home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc.obj
+EXISTS=True
+SOURCE=/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc
+OBJECT=/home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc.obj
+EXISTS=True
+SOURCE=/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc
+OBJECT=/home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc.obj
+EXISTS=True
+
+=== 4. COMPILER BINUTILS ===
+CMAKE_NM:FILEPATH=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm
+CMAKE_OBJDUMP:FILEPATH=/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin/arm-zephyr-eabi-objdump
+
+=== 5. ACTUAL LSTM OBJECT RELOCATIONS ===
+
+--- OBJECT: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/CMakeFiles/app.dir/src/use_case/alif_asr/src/heatstroke_bidirectional_lstm_single_step_experiment.cc.obj ---
+			20: R_ARM_ABS32	tflite::(anonymous namespace)::HeatstrokeBidirectionalLstmEval(TfLiteContext*, TfLiteNode*)
+			24: R_ARM_ABS32	tflite::(anonymous namespace)::HeatstrokeBidirectionalLstmInit(TfLiteContext*, char const*, unsigned int)
+
+Disassembly of section .text._ZN6tflite13lstm_internal17CalculateLstmGateIffffEEvRKNS0_15LstmStepManagerERKNS_14GateParametersEPK16TfLiteEvalTensorSA_SA_SA_SA_SA_PT1_SC_21TfLiteFusedActivation:
+
+00000000 <void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	4604      	mov	r4, r0
+   6:	4693      	mov	fp, r2
+   8:	4699      	mov	r9, r3
+  16:	4618      	mov	r0, r3
+  18:	9f2c      	ldr	r7, [sp, #176]	; 0xb0
+  1a:	f89d a0c8 	ldrb.w	sl, [sp, #200]	; 0xc8
+  1e:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			1e: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+  22:	4621      	mov	r1, r4
+  24:	a814      	add	r0, sp, #80	; 0x50
+  26:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::InputShape() const>
+			26: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::InputShape() const
+  2a:	4659      	mov	r1, fp
+  2c:	a81b      	add	r0, sp, #108	; 0x6c
+  2e:	f7ff fffe 	bl	0 <tflite::micro::GetTensorShape(TfLiteEvalTensor const*)>
+			2e: R_ARM_THM_CALL	tflite::micro::GetTensorShape(TfLiteEvalTensor const*)
+  32:	4621      	mov	r1, r4
+  34:	a814      	add	r0, sp, #80	; 0x50
+  36:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			36: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+  3a:	992d      	ldr	r1, [sp, #180]	; 0xb4
+  3c:	a81b      	add	r0, sp, #108	; 0x6c
+  3e:	f7ff fffe 	bl	0 <tflite::micro::GetTensorShape(TfLiteEvalTensor const*)>
+			3e: R_ARM_THM_CALL	tflite::micro::GetTensorShape(TfLiteEvalTensor const*)
+  42:	4621      	mov	r1, r4
+  44:	a80d      	add	r0, sp, #52	; 0x34
+  46:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::InputShape() const>
+			46: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::InputShape() const
+  4a:	68a1      	ldr	r1, [r4, #8]
+  4c:	f8db 2000 	ldr.w	r2, [fp]
+  50:	a814      	add	r0, sp, #80	; 0x50
+  52:	eb02 0b81 	add.w	fp, r2, r1, lsl #2
+  64:	f7ff fffe 	bl	0 <tflite::micro::GetTensorShape(TfLiteEvalTensor const*)>
+			64: R_ARM_THM_CALL	tflite::micro::GetTensorShape(TfLiteEvalTensor const*)
+  68:	ab06      	add	r3, sp, #24
+  6a:	b107      	cbz	r7, 6e <void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)+0x6e>
+  6c:	683f      	ldr	r7, [r7, #0]
+  6e:	9702      	str	r7, [sp, #8]
+  70:	af1b      	add	r7, sp, #108	; 0x6c
+  72:	465a      	mov	r2, fp
+			82: R_ARM_THM_CALL	tflite::lstm_internal::FullyConnected(tflite::FullyConnectedParams const&, tflite::RuntimeShape const&, float const*, tflite::RuntimeShape const&, float const*, tflite::RuntimeShape const&, float const*, tflite::RuntimeShape const&, float*)
+  86:	4621      	mov	r1, r4
+  88:	a80d      	add	r0, sp, #52	; 0x34
+  8a:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			8a: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+  8e:	9b2d      	ldr	r3, [sp, #180]	; 0xb4
+  90:	6922      	ldr	r2, [r4, #16]
+  92:	681b      	ldr	r3, [r3, #0]
+  94:	992e      	ldr	r1, [sp, #184]	; 0xb8
+  ac:	f7ff fffe 	bl	0 <tflite::micro::GetTensorShape(TfLiteEvalTensor const*)>
+			ac: R_ARM_THM_CALL	tflite::micro::GetTensorShape(TfLiteEvalTensor const*)
+  b0:	f1b8 0f00 	cmp.w	r8, #0
+  b4:	d001      	beq.n	ba <void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)+0xba>
+  b6:	f8d8 8000 	ldr.w	r8, [r8]
+  ba:	9b31      	ldr	r3, [sp, #196]	; 0xc4
+  bc:	ac06      	add	r4, sp, #24
+  be:	464a      	mov	r2, r9
+  de:	f7ff fffe 	bl	0 <tflite::lstm_internal::AddElementWise(float const*, float const*, int, int, float*)>
+			de: R_ARM_THM_CALL	tflite::lstm_internal::AddElementWise(float const*, float const*, int, int, float*)
+  e2:	f1ba 0f04 	cmp.w	sl, #4
+  e6:	d009      	beq.n	fc <void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)+0xfc>
+  e8:	f1ba 0f06 	cmp.w	sl, #6
+  ec:	d103      	bne.n	f6 <void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)+0xf6>
+  ee:	4629      	mov	r1, r5
+  f0:	4620      	mov	r0, r4
+  f2:	f7ff fffe 	bl	0 <tflite::lstm_internal::Sigmoid(tflite::RuntimeShape const&, float*)>
+			f2: R_ARM_THM_CALL	tflite::lstm_internal::Sigmoid(tflite::RuntimeShape const&, float*)
+ 106:	9500      	str	r5, [sp, #0]
+ 108:	f7ff fffe 	bl	0 <tflite::lstm_internal::Tanh(int, tflite::RuntimeShape const&, float*, tflite::RuntimeShape const&, float*)>
+			108: R_ARM_THM_CALL	tflite::lstm_internal::Tanh(int, tflite::RuntimeShape const&, float*, tflite::RuntimeShape const&, float*)
+ 10c:	e7f3      	b.n	f6 <void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)+0xf6>
+
+Disassembly of section .text._ZN6tflite13lstm_internal8LstmStepIffffEEvRKNS0_15LstmStepManagerERKNS_10OpDataLSTMERNS_18LSTMKernelContentsERKNS_11LSTMBuffersIT1_EE:
+
+00000000 <void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	f04f 0a06 	mov.w	sl, #6
+   8:	f04f 0900 	mov.w	r9, #0
+   c:	461f      	mov	r7, r3
+  36:	9300      	str	r3, [sp, #0]
+  38:	6893      	ldr	r3, [r2, #8]
+  3a:	6812      	ldr	r2, [r2, #0]
+  3c:	f7ff fffe 	bl	0 <void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>
+			3c: R_ARM_THM_CALL	void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)
+  40:	687b      	ldr	r3, [r7, #4]
+  42:	e9cd 8a05 	strd	r8, sl, [sp, #20]
+  46:	e9cd 9303 	strd	r9, r3, [sp, #12]
+  4a:	9308      	str	r3, [sp, #32]
+  5a:	6b23      	ldr	r3, [r4, #48]	; 0x30
+  5c:	9300      	str	r3, [sp, #0]
+  5e:	e9d4 2300 	ldrd	r2, r3, [r4]
+  62:	f7ff fffe 	bl	0 <void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>
+			62: R_ARM_THM_CALL	void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)
+  66:	f8d7 a008 	ldr.w	sl, [r7, #8]
+  6a:	f896 3020 	ldrb.w	r3, [r6, #32]
+  6e:	e9cd 9a03 	strd	r9, sl, [sp, #12]
+  72:	e9cd 8305 	strd	r8, r3, [sp, #20]
+  86:	9300      	str	r3, [sp, #0]
+  88:	6822      	ldr	r2, [r4, #0]
+  8a:	68e3      	ldr	r3, [r4, #12]
+  8c:	f7ff fffe 	bl	0 <void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>
+			8c: R_ARM_THM_CALL	void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)
+  90:	687b      	ldr	r3, [r7, #4]
+  92:	f8d4 904c 	ldr.w	r9, [r4, #76]	; 0x4c
+  96:	4629      	mov	r1, r5
+  98:	a811      	add	r0, sp, #68	; 0x44
+  9a:	9309      	str	r3, [sp, #36]	; 0x24
+  9c:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			9c: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+  a0:	4649      	mov	r1, r9
+  a2:	a80a      	add	r0, sp, #40	; 0x28
+  a4:	f7ff fffe 	bl	0 <tflite::micro::GetTensorShape(TfLiteEvalTensor const*)>
+			a4: R_ARM_THM_CALL	tflite::micro::GetTensorShape(TfLiteEvalTensor const*)
+  a8:	4629      	mov	r1, r5
+  aa:	a811      	add	r0, sp, #68	; 0x44
+  ac:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			ac: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+  b0:	696a      	ldr	r2, [r5, #20]
+  b2:	f8d9 3000 	ldr.w	r3, [r9]
+  b6:	f506 71b4 	add.w	r1, r6, #360	; 0x168
+  ba:	eb03 0382 	add.w	r3, r3, r2, lsl #2
+  f0:	edd6 7a05 	vldr	s15, [r6, #20]
+  f4:	eef5 7ac0 	vcmpe.f32	s15, #0.0
+  f8:	eef1 fa10 	vmrs	APSR_nzcv, fpscr
+  fc:	dd0b      	ble.n	116 <void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)+0x116>
+  fe:	a811      	add	r0, sp, #68	; 0x44
+ 100:	f7ff fffe 	bl	0 <void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>
+			100: R_ARM_THM_CALL	tflite::RuntimeShape::FlatSize() const
+ 104:	696a      	ldr	r2, [r5, #20]
+ 106:	f8d9 3000 	ldr.w	r3, [r9]
+ 10a:	f106 0114 	add.w	r1, r6, #20
+ 138:	9300      	str	r3, [sp, #0]
+ 13a:	6923      	ldr	r3, [r4, #16]
+ 13c:	6822      	ldr	r2, [r4, #0]
+ 13e:	f7ff fffe 	bl	0 <void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>
+			13e: R_ARM_THM_CALL	void tflite::lstm_internal::CalculateLstmGate<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::GateParameters const&, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, TfLiteEvalTensor const*, float*, float*, TfLiteFusedActivation)
+ 142:	e9d4 8a12 	ldrd	r8, sl, [r4, #72]	; 0x48
+ 146:	4629      	mov	r1, r5
+ 148:	a811      	add	r0, sp, #68	; 0x44
+ 14a:	683f      	ldr	r7, [r7, #0]
+ 14c:	f8d6 b01c 	ldr.w	fp, [r6, #28]
+ 150:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			150: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+ 154:	4651      	mov	r1, sl
+ 156:	a80a      	add	r0, sp, #40	; 0x28
+ 158:	f7ff fffe 	bl	0 <tflite::micro::GetTensorShape(TfLiteEvalTensor const*)>
+			158: R_ARM_THM_CALL	tflite::micro::GetTensorShape(TfLiteEvalTensor const*)
+ 15c:	4629      	mov	r1, r5
+ 15e:	a811      	add	r0, sp, #68	; 0x44
+ 160:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			160: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+ 164:	4641      	mov	r1, r8
+ 166:	a80a      	add	r0, sp, #40	; 0x28
+ 168:	f7ff fffe 	bl	0 <tflite::micro::GetTensorShape(TfLiteEvalTensor const*)>
+			168: R_ARM_THM_CALL	tflite::micro::GetTensorShape(TfLiteEvalTensor const*)
+ 16c:	4629      	mov	r1, r5
+ 16e:	a811      	add	r0, sp, #68	; 0x44
+ 170:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			170: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+ 174:	6969      	ldr	r1, [r5, #20]
+ 176:	f8da 2000 	ldr.w	r2, [sl]
+ 17a:	ab11      	add	r3, sp, #68	; 0x44
+ 17c:	4658      	mov	r0, fp
+			1a0: R_ARM_THM_CALL	tflite::lstm_internal::Mul(tflite::RuntimeShape const&, tflite::ArithmeticParams const&, float const*, float const*, float*)
+ 1a4:	4629      	mov	r1, r5
+ 1a6:	a80a      	add	r0, sp, #40	; 0x28
+ 1a8:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			1a8: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+ 1ac:	6e21      	ldr	r1, [r4, #96]	; 0x60
+ 1ae:	a811      	add	r0, sp, #68	; 0x44
+ 1b0:	f7ff fffe 	bl	0 <tflite::micro::GetTensorShape(TfLiteEvalTensor const*)>
+			1b0: R_ARM_THM_CALL	tflite::micro::GetTensorShape(TfLiteEvalTensor const*)
+ 1c4:	4629      	mov	r1, r5
+ 1c6:	a811      	add	r0, sp, #68	; 0x44
+ 1c8:	eb04 0483 	add.w	r4, r4, r3, lsl #2
+ 1cc:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::StateShape() const>
+			1cc: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::StateShape() const
+ 1d0:	a811      	add	r0, sp, #68	; 0x44
+ 1d2:	f7ff fffe 	bl	0 <void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>
+			1d2: R_ARM_THM_CALL	tflite::RuntimeShape::FlatSize() const
+ 1d6:	4621      	mov	r1, r4
+ 1d8:	0082      	lsls	r2, r0, #2
+ 1da:	4630      	mov	r0, r6
+
+Disassembly of section .text._ZN6tflite8EvalLstmIffffEE12TfLiteStatusRKNS_10OpDataLSTMERNS_18LSTMKernelContentsERKNS_11LSTMBuffersIT1_EE:
+
+00000000 <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>:
+   0:	e92d 43f0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, lr}
+   4:	2400      	movs	r4, #0
+   6:	b089      	sub	sp, #36	; 0x24
+   8:	4605      	mov	r5, r0
+  12:	e9cd 4401 	strd	r4, r4, [sp, #4]
+  16:	e9cd 4403 	strd	r4, r4, [sp, #12]
+  1a:	e9cd 4405 	strd	r4, r4, [sp, #20]
+  1e:	b988      	cbnz	r0, 44 <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)+0x44>
+  20:	4604      	mov	r4, r0
+  22:	4681      	mov	r9, r0
+  24:	686b      	ldr	r3, [r5, #4]
+  26:	42a3      	cmp	r3, r4
+  28:	dd0f      	ble.n	4a <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)+0x4a>
+  2a:	f04f 0800 	mov.w	r8, #0
+  2e:	e01b      	b.n	68 <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)+0x68>
+  30:	463b      	mov	r3, r7
+  32:	4632      	mov	r2, r6
+  34:	4629      	mov	r1, r5
+  36:	a801      	add	r0, sp, #4
+  38:	f7ff fffe 	bl	0 <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>
+			38: R_ARM_THM_CALL	void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)
+  3c:	a801      	add	r0, sp, #4
+  3e:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::UpdateTime()>
+			3e: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::UpdateTime()
+  42:	3401      	adds	r4, #1
+  44:	68ab      	ldr	r3, [r5, #8]
+  46:	42a3      	cmp	r3, r4
+  48:	dcf2      	bgt.n	30 <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)+0x30>
+  4a:	2000      	movs	r0, #0
+  4c:	b009      	add	sp, #36	; 0x24
+  4e:	e8bd 83f0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, pc}
+  52:	463b      	mov	r3, r7
+  54:	4632      	mov	r2, r6
+  56:	4629      	mov	r1, r5
+  58:	a801      	add	r0, sp, #4
+  5a:	f7ff fffe 	bl	0 <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)>
+			5a: R_ARM_THM_CALL	void tflite::lstm_internal::LstmStep<float, float, float, float>(tflite::lstm_internal::LstmStepManager const&, tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)
+  5e:	a801      	add	r0, sp, #4
+  60:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::UpdateTime()>
+			60: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::UpdateTime()
+  64:	f108 0801 	add.w	r8, r8, #1
+  68:	68ab      	ldr	r3, [r5, #8]
+  6a:	4543      	cmp	r3, r8
+  6c:	dcf1      	bgt.n	52 <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)+0x52>
+  6e:	a801      	add	r0, sp, #4
+  70:	f7ff fffe 	bl	0 <tflite::lstm_internal::LstmStepManager::UpdateBatch()>
+			70: R_ARM_THM_CALL	tflite::lstm_internal::LstmStepManager::UpdateBatch()
+  74:	3401      	adds	r4, #1
+  76:	f8cd 9004 	str.w	r9, [sp, #4]
+  7a:	e7d3      	b.n	24 <TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)+0x24>
+
+Disassembly of section .text._ZN6tflite12_GLOBAL__N_131HeatstrokeBidirectionalLstmEvalEP13TfLiteContextP10TfLiteNode:
+
+00000000 <tflite::(anonymous namespace)::HeatstrokeBidirectionalLstmEval(TfLiteContext*, TfLiteNode*)>:
+ 11c:	a84e      	add	r0, sp, #312	; 0x138
+ 11e:	930f      	str	r3, [sp, #60]	; 0x3c
+ 120:	f7ff fffe 	bl	0 <tflite::(anonymous namespace)::HeatstrokeBidirectionalLstmEval(TfLiteContext*, TfLiteNode*)>
+			120: R_ARM_THM_CALL	TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)
+ 124:	4684      	mov	ip, r0
+ 126:	2800      	cmp	r0, #0
+ 128:	f47f af73 	bne.w	12 <tflite::(anonymous namespace)::HeatstrokeBidirectionalLstmEval(TfLiteContext*, TfLiteNode*)+0x12>
+ 12c:	e9dd 2109 	ldrd	r2, r1, [sp, #36]	; 0x24
+ 1b4:	f8cb 6000 	str.w	r6, [fp]
+ 1b8:	f8c8 5000 	str.w	r5, [r8]
+ 1bc:	f7ff fffe 	bl	0 <tflite::(anonymous namespace)::HeatstrokeBidirectionalLstmEval(TfLiteContext*, TfLiteNode*)>
+			1bc: R_ARM_THM_CALL	TfLiteStatus tflite::EvalLstm<float, float, float, float>(tflite::OpDataLSTM const&, tflite::LSTMKernelContents&, tflite::LSTMBuffers<float> const&)
+ 1c0:	4684      	mov	ip, r0
+ 1c2:	2800      	cmp	r0, #0
+ 1c4:	f47f af25 	bne.w	12 <tflite::(anonymous namespace)::HeatstrokeBidirectionalLstmEval(TfLiteContext*, TfLiteNode*)+0x12>
+ 1c8:	9b0a      	ldr	r3, [sp, #40]	; 0x28
+
+--- OBJECT: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/portable_tensor_utils.cc.obj ---
+No matching symbol or relocation text.
+
+--- OBJECT: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/kernels/internal/reference/portable_tensor_utils.cc.obj ---
+ 170:	00000000 	.word	0x00000000
+ 174:	c0600000 	.word	0xc0600000
+
+Disassembly of section .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKfiiS2_iPf:
+
+00000000 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(float const*, int, int, float const*, int, float*)>:
+   0:	f04f 0c00 	mov.w	ip, #0
+   4:	e92d 4ff7 	stmdb	sp!, {r0, r1, r2, r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   8:	9f0d      	ldr	r7, [sp, #52]	; 0x34
+   a:	ea21 78e1 	bic.w	r8, r1, r1, asr #31
+  1c:	ea4f 0e8e 	mov.w	lr, lr, lsl #2
+  20:	980c      	ldr	r0, [sp, #48]	; 0x30
+  22:	4584      	cmp	ip, r0
+  24:	da24      	bge.n	70 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(float const*, int, int, float const*, int, float*)+0x70>
+  26:	463d      	mov	r5, r7
+  28:	2400      	movs	r4, #0
+  2a:	9e01      	ldr	r6, [sp, #4]
+  2c:	e00f      	b.n	4e <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(float const*, int, int, float const*, int, float*)+0x4e>
+  2e:	ecf9 6a01 	vldmia	r9!, {s13}
+  32:	ecfa 7a01 	vldmia	sl!, {s15}
+  36:	eea6 7aa7 	vfma.f32	s14, s13, s15
+  3a:	3801      	subs	r0, #1
+  3c:	d1f7      	bne.n	2e <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(float const*, int, int, float const*, int, float*)+0x2e>
+  3e:	edd5 7a00 	vldr	s15, [r5]
+  42:	ee77 7a87 	vadd.f32	s15, s15, s14
+  46:	ece5 7a01 	vstmia	r5!, {s15}
+  4a:	4476      	add	r6, lr
+  4c:	3401      	adds	r4, #1
+  4e:	428c      	cmp	r4, r1
+  50:	db04      	blt.n	5c <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(float const*, int, int, float const*, int, float*)+0x5c>
+  52:	4447      	add	r7, r8
+  54:	f10c 0c01 	add.w	ip, ip, #1
+  58:	445b      	add	r3, fp
+  5a:	e7e1      	b.n	20 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(float const*, int, int, float const*, int, float*)+0x20>
+  5c:	2a00      	cmp	r2, #0
+  5e:	f102 0001 	add.w	r0, r2, #1
+  62:	469a      	mov	sl, r3
+  64:	46b1      	mov	r9, r6
+  66:	ed9f 7a04 	vldr	s14, [pc, #16]	; 78 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(float const*, int, int, float const*, int, float*)+0x78>
+  6a:	bfb8      	it	lt
+  6c:	2001      	movlt	r0, #1
+  6e:	e7e4      	b.n	3a <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(float const*, int, int, float const*, int, float*)+0x3a>
+  70:	b003      	add	sp, #12
+  72:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+  76:	bf00      	nop
+  78:	00000000 	.word	0x00000000
+
+Disassembly of section .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKaiiS2_PKfiPf:
+
+00000000 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*)>:
+   0:	f04f 0c00 	mov.w	ip, #0
+   4:	e92d 4ff7 	stmdb	sp!, {r0, r1, r2, r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   8:	9000      	str	r0, [sp, #0]
+   a:	ea21 70e1 	bic.w	r0, r1, r1, asr #31
+  18:	9001      	str	r0, [sp, #4]
+  1a:	980d      	ldr	r0, [sp, #52]	; 0x34
+  1c:	4584      	cmp	ip, r0
+  1e:	db02      	blt.n	26 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*)+0x26>
+  20:	b003      	add	sp, #12
+  22:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+  26:	ecf9 6a01 	vldmia	r9!, {s13}
+  2a:	f04f 0e00 	mov.w	lr, #0
+  2e:	9e00      	ldr	r6, [sp, #0]
+  30:	f8dd 8038 	ldr.w	r8, [sp, #56]	; 0x38
+  34:	458e      	cmp	lr, r1
+  36:	db06      	blt.n	46 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*)+0x46>
+  38:	980e      	ldr	r0, [sp, #56]	; 0x38
+  3a:	f10c 0c01 	add.w	ip, ip, #1
+  3e:	4438      	add	r0, r7
+  40:	900e      	str	r0, [sp, #56]	; 0x38
+  42:	4413      	add	r3, r2
+  44:	e7e9      	b.n	1a <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*)+0x1a>
+  46:	2500      	movs	r5, #0
+  48:	42aa      	cmp	r2, r5
+  4a:	f102 0001 	add.w	r0, r2, #1
+  4e:	462c      	mov	r4, r5
+  52:	2001      	movlt	r0, #1
+  54:	f896 f000 	pld	[r6]
+  58:	3801      	subs	r0, #1
+  5a:	d10e      	bne.n	7a <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*)+0x7a>
+  5c:	ee07 4a90 	vmov	s15, r4
+  60:	ed98 7a00 	vldr	s14, [r8]
+  64:	eef8 7ae7 	vcvt.f32.s32	s15, s15
+  68:	eea7 7aa6 	vfma.f32	s14, s15, s13
+  6e:	eca8 7a01 	vstmia	r8!, {s14}
+  72:	4406      	add	r6, r0
+  74:	f10e 0e01 	add.w	lr, lr, #1
+  78:	e7dc      	b.n	34 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*)+0x34>
+  7a:	f916 b005 	ldrsb.w	fp, [r6, r5]
+  7e:	f913 a005 	ldrsb.w	sl, [r3, r5]
+  82:	3501      	adds	r5, #1
+  84:	fb1b 440a 	smlabb	r4, fp, sl, r4
+  88:	e7e6      	b.n	58 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*)+0x58>
+
+Disassembly of section .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKaiiS2_PKfiPfS4_PKiPiS8_PbPNS_17CpuBackendContextE:
+
+00000000 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	b08b      	sub	sp, #44	; 0x2c
+   6:	e9dd 8714 	ldrd	r8, r7, [sp, #80]	; 0x50
+   a:	9707      	str	r7, [sp, #28]
+  1c:	e9dd e71a 	ldrd	lr, r7, [sp, #104]	; 0x68
+  20:	4614      	mov	r4, r2
+  22:	9301      	str	r3, [sp, #4]
+  24:	b926      	cbnz	r6, 30 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x30>
+  26:	b00b      	add	sp, #44	; 0x2c
+  28:	e8bd 4ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+  2c:	f7ff bffe 	b.w	0 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)>
+			2c: R_ARM_THM_JUMP24	tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*)
+  30:	b93f      	cbnz	r7, 42 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x42>
+  32:	4659      	mov	r1, fp
+  34:	2200      	movs	r2, #0
+  36:	4295      	cmp	r5, r2
+  38:	dc20      	bgt.n	7c <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x7c>
+  3a:	b12f      	cbz	r7, 48 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x48>
+  3c:	2300      	movs	r3, #0
+  3e:	703b      	strb	r3, [r7, #0]
+  40:	e002      	b.n	48 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x48>
+  42:	783b      	ldrb	r3, [r7, #0]
+  44:	2b00      	cmp	r3, #0
+  46:	d1f4      	bne.n	32 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x32>
+  48:	46c2      	mov	sl, r8
+  4a:	2700      	movs	r7, #0
+  4c:	ea25 73e5 	bic.w	r3, r5, r5, asr #31
+  50:	009b      	lsls	r3, r3, #2
+  58:	9309      	str	r3, [sp, #36]	; 0x24
+  5a:	9b07      	ldr	r3, [sp, #28]
+  5c:	429f      	cmp	r7, r3
+  5e:	db15      	blt.n	8c <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x8c>
+  60:	b00b      	add	sp, #44	; 0x2c
+  62:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+  66:	f911 a000 	ldrsb.w	sl, [r1, r0]
+  6a:	3001      	adds	r0, #1
+  6c:	44d1      	add	r9, sl
+  6e:	3b01      	subs	r3, #1
+  70:	d1f9      	bne.n	66 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x66>
+  72:	f84e 9022 	str.w	r9, [lr, r2, lsl #2]
+  76:	4421      	add	r1, r4
+  78:	3201      	adds	r2, #1
+  7a:	e7dc      	b.n	36 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x36>
+  7c:	2000      	movs	r0, #0
+  7e:	4284      	cmp	r4, r0
+  80:	f104 0301 	add.w	r3, r4, #1
+  84:	4681      	mov	r9, r0
+  86:	bfb8      	it	lt
+  88:	2301      	movlt	r3, #1
+  8a:	e7f0      	b.n	6e <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x6e>
+  8c:	9b03      	ldr	r3, [sp, #12]
+  8e:	ecba 6a01 	vldmia	sl!, {s12}
+  92:	f853 3027 	ldr.w	r3, [r3, r7, lsl #2]
+  96:	46d8      	mov	r8, fp
+  9a:	46e1      	mov	r9, ip
+  9c:	2300      	movs	r3, #0
+  9e:	42ab      	cmp	r3, r5
+  a0:	db06      	blt.n	b0 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0xb0>
+  a2:	9b06      	ldr	r3, [sp, #24]
+  a4:	3701      	adds	r7, #1
+  a6:	449c      	add	ip, r3
+  a8:	9b01      	ldr	r3, [sp, #4]
+  aa:	4423      	add	r3, r4
+  ac:	9301      	str	r3, [sp, #4]
+  ae:	e7d4      	b.n	5a <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x5a>
+  b0:	9a02      	ldr	r2, [sp, #8]
+  b2:	eeb0 7a46 	vmov.f32	s14, s12
+  b6:	b12a      	cbz	r2, c4 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0xc4>
+  b8:	eb02 0283 	add.w	r2, r2, r3, lsl #2
+  bc:	ed92 7a00 	vldr	s14, [r2]
+  c0:	ee26 7a07 	vmul.f32	s14, s12, s14
+  c4:	2100      	movs	r1, #0
+  d8:	9a04      	ldr	r2, [sp, #16]
+  da:	3a01      	subs	r2, #1
+  dc:	9204      	str	r2, [sp, #16]
+  de:	d112      	bne.n	106 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x106>
+  e0:	9a09      	ldr	r2, [sp, #36]	; 0x24
+  e2:	9905      	ldr	r1, [sp, #20]
+  e4:	4490      	add	r8, r2
+  e6:	f85e 2023 	ldr.w	r2, [lr, r3, lsl #2]
+  fa:	eee7 6a87 	vfma.f32	s13, s15, s14
+  fe:	3301      	adds	r3, #1
+ 100:	ece9 6a01 	vstmia	r9!, {s13}
+ 104:	e7cb      	b.n	9e <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0x9e>
+ 106:	f918 6001 	ldrsb.w	r6, [r8, r1]
+ 10a:	4632      	mov	r2, r6
+ 10c:	9e01      	ldr	r6, [sp, #4]
+ 10e:	5676      	ldrsb	r6, [r6, r1]
+ 114:	4616      	mov	r6, r2
+ 116:	9a08      	ldr	r2, [sp, #32]
+ 118:	fb16 0002 	smlabb	r0, r6, r2, r0
+ 11c:	e7dc      	b.n	d8 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int, int, signed char const*, float const*, int, float*, float const*, int const*, int*, int*, bool*, tflite::CpuBackendContext*)+0xd8>
+
+Disassembly of section .text._ZN6tflite12tensor_utils52PortableSparseMatrixBatchVectorMultiplyAccumulate1x4EPKfPKiS4_iiS2_iPf:
+
+00000000 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	b085      	sub	sp, #20
+   6:	e9cd 0101 	strd	r0, r1, [sp, #4]
+   a:	2100      	movs	r1, #0
+  12:	9300      	str	r3, [sp, #0]
+  14:	9b10      	ldr	r3, [sp, #64]	; 0x40
+  16:	4599      	cmp	r9, r3
+  18:	da3e      	bge.n	98 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)+0x98>
+  1a:	e9dd 5701 	ldrd	r5, r7, [sp, #4]
+  1e:	9b11      	ldr	r3, [sp, #68]	; 0x44
+  20:	2400      	movs	r4, #0
+  22:	eb03 0c88 	add.w	ip, r3, r8, lsl #2
+  26:	e018      	b.n	5a <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)+0x5a>
+  28:	f8d7 a000 	ldr.w	sl, [r7]
+  2c:	462b      	mov	r3, r5
+  2e:	4650      	mov	r0, sl
+  30:	ed9f 7a1b 	vldr	s14, [pc, #108]	; a0 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)+0xa0>
+  34:	f857 bf04 	ldr.w	fp, [r7, #4]!
+  38:	4583      	cmp	fp, r0
+  3a:	dc17      	bgt.n	6c <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)+0x6c>
+  3c:	eddc 7a00 	vldr	s15, [ip]
+  40:	ee77 7a87 	vadd.f32	s15, s15, s14
+  44:	ebab 030a 	sub.w	r3, fp, sl
+  48:	45d3      	cmp	fp, sl
+  58:	3401      	adds	r4, #1
+  5a:	9b00      	ldr	r3, [sp, #0]
+  5c:	429c      	cmp	r4, r3
+  5e:	dbe3      	blt.n	28 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)+0x28>
+  60:	4498      	add	r8, r3
+  62:	9b0e      	ldr	r3, [sp, #56]	; 0x38
+  64:	f109 0901 	add.w	r9, r9, #1
+  68:	4419      	add	r1, r3
+  6a:	e7d3      	b.n	14 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)+0x14>
+  6c:	f04f 0e04 	mov.w	lr, #4
+  70:	f04e e001 	dls	lr, lr
+  74:	9a03      	ldr	r2, [sp, #12]
+  76:	9e0f      	ldr	r6, [sp, #60]	; 0x3c
+  84:	ecf3 6a01 	vldmia	r3!, {s13}
+  88:	ecf2 7a01 	vldmia	r2!, {s15}
+  8c:	eea6 7aa7 	vfma.f32	s14, s13, s15
+  90:	f00f c009 	le	lr, 84 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)+0x84>
+  94:	3001      	adds	r0, #1
+  96:	e7cf      	b.n	38 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x4(float const*, int const*, int const*, int, int, float const*, int, float*)+0x38>
+  98:	b005      	add	sp, #20
+  9a:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+  9e:	bf00      	nop
+  a0:	00000000 	.word	0x00000000
+
+Disassembly of section .text._ZN6tflite12tensor_utils53PortableSparseMatrixBatchVectorMultiplyAccumulate1x16EPKaPKiS4_iiS2_S4_iiiiS4_S4_iiiPa:
+
+00000000 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	2500      	movs	r5, #0
+   6:	46aa      	mov	sl, r5
+   8:	46ab      	mov	fp, r5
+  12:	9304      	str	r3, [sp, #16]
+  14:	9b15      	ldr	r3, [sp, #84]	; 0x54
+  16:	459b      	cmp	fp, r3
+  18:	da64      	bge.n	e4 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0xe4>
+  1a:	9b1e      	ldr	r3, [sp, #120]	; 0x78
+  1c:	2400      	movs	r4, #0
+  1e:	4453      	add	r3, sl
+  20:	9303      	str	r3, [sp, #12]
+  22:	e9dd 3705 	ldrd	r3, r7, [sp, #20]
+  26:	9300      	str	r3, [sp, #0]
+  28:	e032      	b.n	90 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0x90>
+  2a:	6839      	ldr	r1, [r7, #0]
+  2c:	2000      	movs	r0, #0
+  2e:	460a      	mov	r2, r1
+  30:	f857 cf04 	ldr.w	ip, [r7, #4]!
+  34:	f8dd 8000 	ldr.w	r8, [sp]
+  38:	4594      	cmp	ip, r2
+  3a:	dc32      	bgt.n	a2 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0xa2>
+  3c:	ebac 0301 	sub.w	r3, ip, r1
+  40:	458c      	cmp	ip, r1
+  42:	ea4f 1303 	mov.w	r3, r3, lsl #4
+  46:	bfb8      	it	lt
+  4c:	441a      	add	r2, r3
+  4e:	9b14      	ldr	r3, [sp, #80]	; 0x50
+  50:	9200      	str	r2, [sp, #0]
+  52:	b10b      	cbz	r3, 58 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0x58>
+  54:	f853 3024 	ldr.w	r3, [r3, r4, lsl #2]
+  58:	4418      	add	r0, r3
+  5a:	9b19      	ldr	r3, [sp, #100]	; 0x64
+  5c:	9917      	ldr	r1, [sp, #92]	; 0x5c
+  5e:	b10b      	cbz	r3, 64 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0x64>
+  60:	f853 1024 	ldr.w	r1, [r3, r4, lsl #2]
+  64:	9b1a      	ldr	r3, [sp, #104]	; 0x68
+  66:	9a18      	ldr	r2, [sp, #96]	; 0x60
+  68:	b10b      	cbz	r3, 6e <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0x6e>
+  6a:	f853 2024 	ldr.w	r2, [r3, r4, lsl #2]
+  6e:	f7ff fffe 	bl	0 <tflite::MultiplyByQuantizedMultiplier(int, int, int)>
+			6e: R_ARM_THM_CALL	tflite::MultiplyByQuantizedMultiplier(int, int, int)
+  72:	9b1b      	ldr	r3, [sp, #108]	; 0x6c
+  8e:	9303      	str	r3, [sp, #12]
+  90:	9b04      	ldr	r3, [sp, #16]
+  92:	429c      	cmp	r4, r3
+  94:	dbc9      	blt.n	2a <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0x2a>
+  96:	449a      	add	sl, r3
+  98:	9b12      	ldr	r3, [sp, #72]	; 0x48
+  9a:	f10b 0b01 	add.w	fp, fp, #1
+  9e:	441d      	add	r5, r3
+  a0:	e7b8      	b.n	14 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0x14>
+  a2:	f04f 0e10 	mov.w	lr, #16
+  a6:	f04e e001 	dls	lr, lr
+  aa:	9b07      	ldr	r3, [sp, #28]
+  ac:	9e13      	ldr	r6, [sp, #76]	; 0x4c
+  ce:	fb13 0909 	smlabb	r9, r3, r9, r0
+  d2:	9816      	ldr	r0, [sp, #88]	; 0x58
+  d4:	fb00 9003 	mla	r0, r0, r3, r9
+  d8:	f00f c80f 	le	lr, be <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0xbe>
+  dc:	f108 0810 	add.w	r8, r8, #16
+  e0:	3201      	adds	r2, #1
+  e2:	e7a9      	b.n	38 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate1x16(signed char const*, int const*, int const*, int, int, signed char const*, int const*, int, int, int, int, int const*, int const*, int, int, int, signed char*)+0x38>
+  e4:	b009      	add	sp, #36	; 0x24
+  e6:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+
+Disassembly of section .text._ZN6tflite12tensor_utils49PortableSparseMatrixBatchVectorMultiplyAccumulateEPKfPKhiiS2_iPf:
+
+00000000 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	2400      	movs	r4, #0
+   6:	460e      	mov	r6, r1
+   8:	461f      	mov	r7, r3
+  10:	9003      	str	r0, [sp, #12]
+  12:	9b0f      	ldr	r3, [sp, #60]	; 0x3c
+  14:	459a      	cmp	sl, r3
+  16:	da3e      	bge.n	96 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x96>
+  18:	9b10      	ldr	r3, [sp, #64]	; 0x40
+  1a:	f04f 0c00 	mov.w	ip, #0
+  1e:	eb03 0889 	add.w	r8, r3, r9, lsl #2
+  22:	9903      	ldr	r1, [sp, #12]
+  24:	4633      	mov	r3, r6
+  26:	e02c      	b.n	82 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x82>
+  28:	f813 bb01 	ldrb.w	fp, [r3], #1
+  2c:	f1bb 0f00 	cmp.w	fp, #0
+  30:	d02e      	beq.n	90 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x90>
+  32:	eddf 7a1a 	vldr	s15, [pc, #104]	; 9c <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x9c>
+  36:	eb01 108b 	add.w	r0, r1, fp, lsl #6
+  3a:	e9cd 3001 	strd	r3, r0, [sp, #4]
+  3e:	f04f 0e10 	mov.w	lr, #16
+  42:	9d01      	ldr	r5, [sp, #4]
+  5a:	ecf1 6a01 	vldmia	r1!, {s13}
+  5e:	ecb0 7a01 	vldmia	r0!, {s14}
+  62:	eee6 7a87 	vfma.f32	s15, s13, s14
+  66:	f00f c009 	le	lr, 5a <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x5a>
+  6a:	9802      	ldr	r0, [sp, #8]
+  6c:	4288      	cmp	r0, r1
+  6e:	d1e6      	bne.n	3e <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x3e>
+  70:	445b      	add	r3, fp
+  72:	ed98 7a00 	vldr	s14, [r8]
+  76:	ee77 7a27 	vadd.f32	s15, s14, s15
+  7a:	ece8 7a01 	vstmia	r8!, {s15}
+  7e:	f10c 0c01 	add.w	ip, ip, #1
+  82:	4594      	cmp	ip, r2
+  84:	dbd0      	blt.n	28 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x28>
+  86:	f10a 0a01 	add.w	sl, sl, #1
+  8a:	4491      	add	r9, r2
+  8c:	443c      	add	r4, r7
+  8e:	e7c0      	b.n	12 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x12>
+  90:	eddf 7a02 	vldr	s15, [pc, #8]	; 9c <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x9c>
+  94:	e7ed      	b.n	72 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(float const*, unsigned char const*, int, int, float const*, int, float*)+0x72>
+  96:	b005      	add	sp, #20
+  98:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+  9c:	00000000 	.word	0x00000000
+
+Disassembly of section .text._ZN6tflite12tensor_utils49PortableSparseMatrixBatchVectorMultiplyAccumulateEPKaPKhiiS2_PKfiPfS6_:
+
+00000000 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	b089      	sub	sp, #36	; 0x24
+   6:	e9cd 0104 	strd	r0, r1, [sp, #16]
+   a:	2100      	movs	r1, #0
+  14:	9302      	str	r3, [sp, #8]
+  16:	9b14      	ldr	r3, [sp, #80]	; 0x50
+  18:	429e      	cmp	r6, r3
+  1a:	db02      	blt.n	22 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)+0x22>
+  1c:	b009      	add	sp, #36	; 0x24
+  1e:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+  22:	9b02      	ldr	r3, [sp, #8]
+  24:	f04f 0a00 	mov.w	sl, #0
+  32:	eb03 0481 	add.w	r4, r3, r1, lsl #2
+  36:	e9dd 3204 	ldrd	r3, r2, [sp, #16]
+  3a:	45ca      	cmp	sl, r9
+  3c:	db06      	blt.n	4c <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)+0x4c>
+  3e:	9b12      	ldr	r3, [sp, #72]	; 0x48
+  40:	9a06      	ldr	r2, [sp, #24]
+  42:	3601      	adds	r6, #1
+  44:	4413      	add	r3, r2
+  46:	9312      	str	r3, [sp, #72]	; 0x48
+  48:	4449      	add	r1, r9
+  4a:	e7e4      	b.n	16 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)+0x16>
+  4c:	f812 cb01 	ldrb.w	ip, [r2], #1
+  50:	f04f 0b00 	mov.w	fp, #0
+  54:	4690      	mov	r8, r2
+  56:	eb03 100c 	add.w	r0, r3, ip, lsl #4
+  5e:	9003      	str	r0, [sp, #12]
+  60:	9803      	ldr	r0, [sp, #12]
+  62:	4298      	cmp	r0, r3
+  64:	d116      	bne.n	94 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)+0x94>
+  66:	9816      	ldr	r0, [sp, #88]	; 0x58
+  68:	eeb0 7a46 	vmov.f32	s14, s12
+  6c:	4462      	add	r2, ip
+  6e:	b118      	cbz	r0, 78 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)+0x78>
+  70:	ed95 7a00 	vldr	s14, [r5]
+  74:	ee26 7a07 	vmul.f32	s14, s12, s14
+  78:	ee07 ba90 	vmov	s15, fp
+  7c:	edd4 6a00 	vldr	s13, [r4]
+  88:	f10a 0a01 	add.w	sl, sl, #1
+  8c:	ece4 6a01 	vstmia	r4!, {s13}
+  90:	3504      	adds	r5, #4
+  92:	e7d2      	b.n	3a <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)+0x3a>
+  94:	f04f 0e10 	mov.w	lr, #16
+  98:	f04e e001 	dls	lr, lr
+  9c:	f818 0b01 	ldrb.w	r0, [r8], #1
+  a0:	9f12      	ldr	r7, [sp, #72]	; 0x48
+  b6:	4638      	mov	r0, r7
+  b8:	9f07      	ldr	r7, [sp, #28]
+  ba:	fb17 bb00 	smlabb	fp, r7, r0, fp
+  be:	f00f c80d 	le	lr, a8 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)+0xa8>
+  c2:	e7cd      	b.n	60 <tflite::tensor_utils::PortableSparseMatrixBatchVectorMultiplyAccumulate(signed char const*, unsigned char const*, int, int, signed char const*, float const*, int, float*, float const*)+0x60>
+
+Disassembly of section .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKaPKiS2_iiiiiiPiPsPNS_17CpuBackendContextE:
+
+00000000 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, short*, tflite::CpuBackendContext*)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	f04f 0800 	mov.w	r8, #0
+   8:	4607      	mov	r7, r0
+   a:	4646      	mov	r6, r8
+  16:	9303      	str	r3, [sp, #12]
+  18:	9b0f      	ldr	r3, [sp, #60]	; 0x3c
+  1a:	455b      	cmp	r3, fp
+  1c:	dd3b      	ble.n	96 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, short*, tflite::CpuBackendContext*)+0x96>
+  1e:	f04f 0a00 	mov.w	sl, #0
+  22:	9b14      	ldr	r3, [sp, #80]	; 0x50
+  24:	46d1      	mov	r9, sl
+  26:	eb03 0546 	add.w	r5, r3, r6, lsl #1
+  2a:	e025      	b.n	78 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, short*, tflite::CpuBackendContext*)+0x78>
+  2c:	9b01      	ldr	r3, [sp, #4]
+  2e:	2c00      	cmp	r4, #0
+  30:	f853 0029 	ldr.w	r0, [r3, r9, lsl #2]
+  34:	9b02      	ldr	r3, [sp, #8]
+  42:	bfb8      	it	lt
+  44:	2301      	movlt	r3, #1
+  46:	3b01      	subs	r3, #1
+  48:	d11e      	bne.n	88 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, short*, tflite::CpuBackendContext*)+0x88>
+  4a:	9a0e      	ldr	r2, [sp, #56]	; 0x38
+  4c:	9903      	ldr	r1, [sp, #12]
+  4e:	f7ff fffe 	bl	0 <tflite::MultiplyByQuantizedMultiplier(int, int, int)>
+			4e: R_ARM_THM_CALL	tflite::MultiplyByQuantizedMultiplier(int, int, int)
+  52:	9b12      	ldr	r3, [sp, #72]	; 0x48
+  54:	4a11      	ldr	r2, [pc, #68]	; (9c <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, short*, tflite::CpuBackendContext*)+0x9c>)
+  56:	4418      	add	r0, r3
+  58:	f9b5 3000 	ldrsh.w	r3, [r5]
+  5c:	f109 0901 	add.w	r9, r9, #1
+  60:	4403      	add	r3, r0
+  74:	f825 3b02 	strh.w	r3, [r5], #2
+  78:	9b11      	ldr	r3, [sp, #68]	; 0x44
+  7a:	454b      	cmp	r3, r9
+  7c:	dcd6      	bgt.n	2c <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, short*, tflite::CpuBackendContext*)+0x2c>
+  7e:	f10b 0b01 	add.w	fp, fp, #1
+  82:	441e      	add	r6, r3
+  84:	44a0      	add	r8, r4
+  86:	e7c7      	b.n	18 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, short*, tflite::CpuBackendContext*)+0x18>
+  88:	f912 eb01 	ldrsb.w	lr, [r2], #1
+  8c:	f911 cb01 	ldrsb.w	ip, [r1], #1
+  90:	fb0e 000c 	mla	r0, lr, ip, r0
+  94:	e7d7      	b.n	46 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, short*, tflite::CpuBackendContext*)+0x46>
+  96:	b005      	add	sp, #20
+  98:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+  9c:	ffff8000 	.word	0xffff8000
+
+Disassembly of section .text._ZN6tflite12tensor_utils43PortableMatrixBatchVectorMultiplyAccumulateEPKaPKiS2_iiiiiiPiPaPNS_17CpuBackendContextE:
+
+00000000 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, signed char*, tflite::CpuBackendContext*)>:
+   0:	e92d 4ff0 	stmdb	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, lr}
+   4:	f04f 0800 	mov.w	r8, #0
+   8:	4607      	mov	r7, r0
+   a:	4646      	mov	r6, r8
+  16:	9303      	str	r3, [sp, #12]
+  18:	9b0f      	ldr	r3, [sp, #60]	; 0x3c
+  1a:	455b      	cmp	r3, fp
+  1c:	dd39      	ble.n	92 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, signed char*, tflite::CpuBackendContext*)+0x92>
+  1e:	f04f 0a00 	mov.w	sl, #0
+  22:	9b14      	ldr	r3, [sp, #80]	; 0x50
+  24:	46d1      	mov	r9, sl
+  26:	199d      	adds	r5, r3, r6
+  28:	e024      	b.n	74 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, signed char*, tflite::CpuBackendContext*)+0x74>
+  2a:	9b01      	ldr	r3, [sp, #4]
+  2c:	2c00      	cmp	r4, #0
+  2e:	f853 0029 	ldr.w	r0, [r3, r9, lsl #2]
+  32:	9b02      	ldr	r3, [sp, #8]
+  40:	bfb8      	it	lt
+  42:	2301      	movlt	r3, #1
+  44:	3b01      	subs	r3, #1
+  46:	d11d      	bne.n	84 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, signed char*, tflite::CpuBackendContext*)+0x84>
+  48:	9a0e      	ldr	r2, [sp, #56]	; 0x38
+  4a:	9903      	ldr	r1, [sp, #12]
+  4c:	f7ff fffe 	bl	0 <tflite::MultiplyByQuantizedMultiplier(int, int, int)>
+			4c: R_ARM_THM_CALL	tflite::MultiplyByQuantizedMultiplier(int, int, int)
+  70:	f805 3b01 	strb.w	r3, [r5], #1
+  74:	9b11      	ldr	r3, [sp, #68]	; 0x44
+  76:	454b      	cmp	r3, r9
+  78:	dcd7      	bgt.n	2a <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, signed char*, tflite::CpuBackendContext*)+0x2a>
+  7a:	f10b 0b01 	add.w	fp, fp, #1
+  7e:	441e      	add	r6, r3
+  80:	44a0      	add	r8, r4
+  82:	e7c9      	b.n	18 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, signed char*, tflite::CpuBackendContext*)+0x18>
+  84:	f912 eb01 	ldrsb.w	lr, [r2], #1
+  88:	f911 cb01 	ldrsb.w	ip, [r1], #1
+  8c:	fb0e 000c 	mla	r0, lr, ip, r0
+  90:	e7d8      	b.n	44 <tflite::tensor_utils::PortableMatrixBatchVectorMultiplyAccumulate(signed char const*, int const*, signed char const*, int, int, int, int, int, int, int*, signed char*, tflite::CpuBackendContext*)+0x44>
+  92:	b005      	add	sp, #20
+  94:	e8bd 8ff0 	ldmia.w	sp!, {r4, r5, r6, r7, r8, r9, sl, fp, pc}
+
+Disassembly of section .text._ZN6tflite12tensor_utils33PortableMatrixBatchVectorMultiplyEPKaiS2_iiiiiPaa:
+
+--- OBJECT: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval.cc.obj ---
+  46:	f842 0b04 	str.w	r0, [r2], #4
+  4a:	e7e0      	b.n	e <tflite::lstm_internal::Clipping(int, tflite::CellStateInfo const&, float*)+0xe>
+
+Disassembly of section .text._ZN6tflite13lstm_internal15LstmStepManager10UpdateTimeEv:
+
+00000000 <tflite::lstm_internal::LstmStepManager::UpdateTime()>:
+   0:	b510      	push	{r4, lr}
+   2:	6803      	ldr	r3, [r0, #0]
+   4:	3301      	adds	r3, #1
+   6:	6003      	str	r3, [r0, #0]
+   8:	6983      	ldr	r3, [r0, #24]
+   a:	781c      	ldrb	r4, [r3, #0]
+   c:	e9d3 1203 	ldrd	r1, r2, [r3, #12]
+  10:	b114      	cbz	r4, 18 <tflite::lstm_internal::LstmStepManager::UpdateTime()+0x18>
+  12:	685b      	ldr	r3, [r3, #4]
+  14:	4359      	muls	r1, r3
+  16:	435a      	muls	r2, r3
+  18:	6883      	ldr	r3, [r0, #8]
+  22:	60c3      	str	r3, [r0, #12]
+  24:	bd10      	pop	{r4, pc}
+
+Disassembly of section .text._ZN6tflite13lstm_internal15LstmStepManager11UpdateBatchEv:
+
+00000000 <tflite::lstm_internal::LstmStepManager::UpdateBatch()>:
+   0:	6843      	ldr	r3, [r0, #4]
+   2:	6982      	ldr	r2, [r0, #24]
+   4:	3301      	adds	r3, #1
+   6:	6043      	str	r3, [r0, #4]
+   8:	7813      	ldrb	r3, [r2, #0]
+   a:	b93b      	cbnz	r3, 1c <tflite::lstm_internal::LstmStepManager::UpdateBatch()+0x1c>
+   c:	6911      	ldr	r1, [r2, #16]
+   e:	6903      	ldr	r3, [r0, #16]
+  10:	440b      	add	r3, r1
+  12:	6103      	str	r3, [r0, #16]
+  1a:	6143      	str	r3, [r0, #20]
+  1c:	4770      	bx	lr
+
+Disassembly of section .text._ZNK6tflite13lstm_internal15LstmStepManager10InputShapeEv:
+
+00000000 <tflite::lstm_internal::LstmStepManager::InputShape() const>:
+   0:	b513      	push	{r0, r1, r4, lr}
+   2:	698a      	ldr	r2, [r1, #24]
+   4:	4603      	mov	r3, r0
+   6:	7811      	ldrb	r1, [r2, #0]
+   8:	b171      	cbz	r1, 28 <tflite::lstm_internal::LstmStepManager::InputShape() const+0x28>
+   a:	6851      	ldr	r1, [r2, #4]
+   c:	68d2      	ldr	r2, [r2, #12]
+   e:	461c      	mov	r4, r3
+  10:	9201      	str	r2, [sp, #4]
+  24:	b002      	add	sp, #8
+  26:	bd10      	pop	{r4, pc}
+  28:	2101      	movs	r1, #1
+  2a:	e7ef      	b.n	c <tflite::lstm_internal::LstmStepManager::InputShape() const+0xc>
+
+Disassembly of section .text._ZNK6tflite13lstm_internal15LstmStepManager10StateShapeEv:
+
+00000000 <tflite::lstm_internal::LstmStepManager::StateShape() const>:
+   0:	b513      	push	{r0, r1, r4, lr}
+   2:	698a      	ldr	r2, [r1, #24]
+   4:	4603      	mov	r3, r0
+   6:	7811      	ldrb	r1, [r2, #0]
+   8:	b171      	cbz	r1, 28 <tflite::lstm_internal::LstmStepManager::StateShape() const+0x28>
+   a:	6851      	ldr	r1, [r2, #4]
+   c:	6912      	ldr	r2, [r2, #16]
+   e:	461c      	mov	r4, r3
+  10:	9201      	str	r2, [sp, #4]
+  24:	b002      	add	sp, #8
+  26:	bd10      	pop	{r4, pc}
+  28:	2101      	movs	r1, #1
+  2a:	e7ef      	b.n	c <tflite::lstm_internal::LstmStepManager::StateShape() const+0xc>
+
+--- OBJECT: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/modules/tflite-micro/CMakeFiles/modules__tflite-micro.dir/home/user/sdk-alif/optional/modules/lib/tflite-micro/tensorflow/lite/micro/kernels/lstm_eval_common.cc.obj ---
+No matching symbol or relocation text.
+
+=== 6. FINAL MODEL AND FIRMWARE IDENTITY ===
+92aef3fcf3011d18009d429a6a42834973cd58527dff076131a60d2f90a42370  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.bin
+f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/ospi0.bin
+
+=== END AUDIT ===
