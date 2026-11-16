@@ -1,0 +1,400 @@
+=== O3 MULTI-SAMPLE VALIDATION PREFLIGHT ===
+
+=== CURRENT APPLICATION SOURCE IDENTITY ===
+557202968b65b0f75e3f58659359cc75a9486ac98095738f3522253b1c5b271d  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc
+635 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc
+
+=== TEST VECTOR HEADER ===
+5d01da6a1f06f821f573274a2a0ad9839d5fe52a1be9769e0882f9ad4936a4a0  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_smoke_test_vector.hpp
+  1726 183608 /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_smoke_test_vector.hpp
+
+=== MAINLOOP TEST / INFERENCE CODE ===
+
+--- MainLoop.cc lines 28-38 ---
+   28:  * limitations under the License.
+   29:  */
+   30: #include "BufAttributes.hpp"
+   31: #include "PolyUModel1.hpp"
+   32: #include "heatstroke_smoke_test_vector.hpp"
+   33: #include "mlek/fwk/iface/Tensor.hpp"
+   34: 
+   35: #include <cstddef>
+   36: #include <cstdint>
+   37: #include <cstring>
+   38: #include <cmath>
+
+--- MainLoop.cc lines 55-65 ---
+   55:  * Reads NPU STATUS and NVIC IRQ 55 only; does not alter either.
+   56:  */
+   57: namespace {
+   58: 
+   59: constexpr std::uintptr_t kHeatstrokeEthosuStatusAddress = 0x400E1004UL;
+   60: constexpr IRQn_Type kHeatstrokeEthosuIrq =
+   61:     static_cast<IRQn_Type>(55);
+   62: 
+   63: struct k_work g_heatstrokeEthosuMonitorWork;
+   64: struct k_timer g_heatstrokeEthosuMonitorTimer;
+   65: 
+
+--- MainLoop.cc lines 68-78 ---
+   68:     (void)work;
+   69: 
+   70:     const auto* statusRegister =
+   71:         reinterpret_cast<volatile const std::uint32_t*>(
+   72:             kHeatstrokeEthosuStatusAddress);
+   73:     const std::uint32_t status = *statusRegister;
+   74: 
+   75:     const unsigned int enabled = static_cast<unsigned int>(
+   76:         NVIC_GetEnableIRQ(kHeatstrokeEthosuIrq));
+   77:     const unsigned int pending = static_cast<unsigned int>(
+   78:         NVIC_GetPendingIRQ(kHeatstrokeEthosuIrq));
+
+--- MainLoop.cc lines 95-105 ---
+   95:         static_cast<unsigned int>((status >> 8U) & 1U),
+   96:         enabled, pending, active);
+   97: }
+   98: 
+   99: void HeatstrokeEthosuMonitorTimerHandler(struct k_timer* timer)
+  100: {
+  101:     (void)timer;
+  102:     (void)k_work_submit(&g_heatstrokeEthosuMonitorWork);
+  103: }
+  104: 
+  105: void StartHeatstrokeEthosuMonitor()
+
+--- MainLoop.cc lines 108-118 ---
+  108:         &g_heatstrokeEthosuMonitorWork,
+  109:         HeatstrokeEthosuMonitorWorkHandler);
+  110: 
+  111:     k_timer_init(
+  112:         &g_heatstrokeEthosuMonitorTimer,
+  113:         HeatstrokeEthosuMonitorTimerHandler,
+  114:         nullptr);
+  115: 
+  116:     const int initialSubmit =
+  117:         k_work_submit(&g_heatstrokeEthosuMonitorWork);
+  118: 
+
+--- MainLoop.cc lines 121-131 ---
+  121:                 initialSubmit);
+  122:     }
+  123: 
+  124:     k_timer_start(
+  125:         &g_heatstrokeEthosuMonitorTimer,
+  126:         K_SECONDS(1),
+  127:         K_SECONDS(1));
+  128: 
+  129:     LOG_INF("ETHOSU_DIAG: runtime monitor started; interval=1000ms");
+  130: }
+  131: 
+
+--- MainLoop.cc lines 159-169 ---
+  159: namespace arm {
+  160: namespace app {
+  161:     static uint8_t activationBuf[ACTIVATION_BUF_SZ] ACTIVATION_BUF_ATTRIBUTE;
+  162: 
+  163:     namespace polyu_heatstroke {
+  164: extern const uint8_t* GetModelPointer();
+  165: extern size_t GetModelLen();
+  166: } /* namespace polyu_heatstroke */
+  167: 
+  168: } /* namespace app */
+  169: } /* namespace arm */
+
+--- MainLoop.cc lines 314-324 ---
+  314:     }
+  315: 
+  316:     const std::vector<std::vector<size_t>> expectedInputs = {
+  317:         {1U, 900U, 6U},  /* x_values */
+  318:         {1U, 900U, 6U},  /* missing_mask */
+  319:         {1U, 900U, 3U},  /* x_mark */
+  320:         {1U, 30U}        /* worker_features */
+  321:     };
+  322: 
+  323:     const char* inputNames[] = {
+  324:         "x_values", "missing_mask", "x_mark", "worker_features"
+
+--- MainLoop.cc lines 325-335 ---
+  325:     };
+  326: 
+  327:     for (size_t i = 0; i < expectedInputs.size(); ++i) {
+  328:         if (!VerifyOneTensor(
+  329:                 "Input", i, model.GetInputTensor(i), expectedInputs[i])) {
+  330:             LOG_ERR("Input contract failed for %s", inputNames[i]);
+  331:             return false;
+  332:         }
+  333:     }
+  334: 
+  335:     const std::vector<std::vector<size_t>> expectedOutputs = {
+
+--- MainLoop.cc lines 340-350 ---
+  340:     const char* outputNames[] = {"rpe_logits", "psi_logits"};
+  341: 
+  342:     for (size_t i = 0; i < expectedOutputs.size(); ++i) {
+  343:         if (!VerifyOneTensor(
+  344:                 "Output", i, model.GetOutputTensor(i), expectedOutputs[i])) {
+  345:             LOG_ERR("Output contract failed for %s", outputNames[i]);
+  346:             return false;
+  347:         }
+  348:     }
+  349: 
+  350:     return true;
+
+--- MainLoop.cc lines 358-368 ---
+  358:     const std::uint32_t* sourceBits,
+  359:     size_t sourceBytes,
+  360:     const std::vector<size_t>& expectedShape)
+  361: {
+  362:     auto tensor = model.GetInputTensor(index);
+  363:     if (!VerifyOneTensor(name, index, tensor, expectedShape)) {
+  364:         return false;
+  365:     }
+  366: 
+  367:     if (tensor->Bytes() != sourceBytes || sourceBits == nullptr) {
+  368:         LOG_ERR("%s[%u] input payload size mismatch",
+
+--- MainLoop.cc lines 377-387 ---
+  377:             static_cast<unsigned int>(sourceBytes));
+  378:     return true;
+  379: }
+  380: 
+  381: static float DecodeSmokeReference(const std::uint32_t bits)
+  382: {
+  383:     float value = 0.0F;
+  384:     std::memcpy(&value, &bits, sizeof(value));
+  385:     return value;
+  386: }
+  387: 
+
+--- MainLoop.cc lines 407-417 ---
+  407:     }
+  408:     return best;
+  409: }
+  410: 
+  411: static bool RunHeatstrokeSmokeInference(PolyUModel1& model)
+  412: {
+  413:     using arm::app::fwk::iface::TensorIface;
+  414: 
+  415:     static_assert(sizeof(float) == sizeof(std::uint32_t),
+  416:                   "Smoke test requires 32-bit FP32");
+  417:     static_assert(sizeof(heatstroke_smoke::kXValuesBits) == 5400U * sizeof(float),
+
+--- MainLoop.cc lines 419-429 ---
+  419:     static_assert(sizeof(heatstroke_smoke::kMissingMaskBits) == 5400U * sizeof(float),
+  420:                   "missing_mask payload size mismatch");
+  421:     static_assert(sizeof(heatstroke_smoke::kXMarkBits) == 2700U * sizeof(float),
+  422:                   "x_mark payload size mismatch");
+  423:     static_assert(sizeof(heatstroke_smoke::kWorkerFeaturesBits) == 30U * sizeof(float),
+  424:                   "worker_features payload size mismatch");
+  425: 
+  426:     LOG_INF("=== ONE-SAMPLE HEATSTROKE MCU INFERENCE ===");
+  427:     LOG_INF("Calibration sample index: %u",
+  428:             static_cast<unsigned int>(heatstroke_smoke::kDatasetSampleIndex));
+  429:     LOG_INF("Missing positions: %u",
+
+--- MainLoop.cc lines 432-442 ---
+  432:             heatstroke_smoke::kInputReferenceSha256);
+  433: 
+  434:     if (!BindSmokeInputTensor(
+  435:             model, 0U, "x_values",
+  436:             heatstroke_smoke::kXValuesBits,
+  437:             sizeof(heatstroke_smoke::kXValuesBits),
+  438:             std::vector<size_t>{1U, 900U, 6U})) {
+  439:         return false;
+  440:     }
+  441: 
+  442:     if (!BindSmokeInputTensor(
+
+--- MainLoop.cc lines 448-458 ---
+  448:     }
+  449: 
+  450:     if (!BindSmokeInputTensor(
+  451:             model, 2U, "x_mark",
+  452:             heatstroke_smoke::kXMarkBits,
+  453:             sizeof(heatstroke_smoke::kXMarkBits),
+  454:             std::vector<size_t>{1U, 900U, 3U})) {
+  455:         return false;
+  456:     }
+  457: 
+  458:     if (!BindSmokeInputTensor(
+
+--- MainLoop.cc lines 462-472 ---
+  462:             std::vector<size_t>{1U, 30U})) {
+  463:         return false;
+  464:     }
+  465: 
+  466:     arm::app::fwk::tflm::ResetHeatstrokeOperatorTiming();
+  467:     const std::int64_t startMs = k_uptime_get();
+  468:     LOG_INF("HEATSTROKE_DIAG: entering TFLM RunInference()");
+  469:     StartHeatstrokeEthosuMonitor();
+  470:     const bool inferenceOk = model.RunInference();
+  471:     StopHeatstrokeEthosuMonitor();
+  472:     arm::app::fwk::tflm::LogHeatstrokeOperatorTiming();
+
+--- MainLoop.cc lines 475-485 ---
+  475:         return false;
+  476:     }
+  477:     const std::int64_t elapsedMs = k_uptime_get() - startMs;
+  478: 
+  479:     auto rpeTensor = model.GetOutputTensor(0U);
+  480:     auto psiTensor = model.GetOutputTensor(1U);
+  481: 
+  482:     if (!VerifyOneTensor(
+  483:             "Output rpe_logits", 0U, rpeTensor,
+  484:             std::vector<size_t>{1U, 4U}) ||
+  485:         !VerifyOneTensor(
+
+--- MainLoop.cc lines 503-513 ---
+  503:     double rpeErrorSum = 0.0;
+  504:     double psiErrorSum = 0.0;
+  505: 
+  506:     for (unsigned int i = 0U; i < 4U; ++i) {
+  507:         rpeRef[i] = DecodeSmokeReference(
+  508:             heatstroke_smoke::kReferenceRpeBits[i]);
+  509:         psiRef[i] = DecodeSmokeReference(
+  510:             heatstroke_smoke::kReferencePsiBits[i]);
+  511: 
+  512:         if (!std::isfinite(rpe[i]) || !std::isfinite(psi[i]) ||
+  513:             !std::isfinite(rpeRef[i]) || !std::isfinite(psiRef[i])) {
+
+--- MainLoop.cc lines 531-541 ---
+  531: 
+  532:     const float rpeMeanError = static_cast<float>(rpeErrorSum / 4.0);
+  533:     const float psiMeanError = static_cast<float>(psiErrorSum / 4.0);
+  534: 
+  535:     LOG_INF("TFLM RunInference: SUCCESS; elapsed=%u ms",
+  536:             static_cast<unsigned int>(elapsedMs));
+  537: 
+  538:     LOG_INF("RPE reference micro: [%d,%d,%d,%d]",
+  539:             SmokeFloatToMicro(rpeRef[0]), SmokeFloatToMicro(rpeRef[1]),
+  540:             SmokeFloatToMicro(rpeRef[2]), SmokeFloatToMicro(rpeRef[3]));
+  541:     LOG_INF("RPE MCU micro:       [%d,%d,%d,%d]",
+
+--- MainLoop.cc lines 560-570 ---
+  560:     const unsigned int psiRefClass = SmokeArgMax4(psiRef);
+  561:     const unsigned int rpeMcuClass = SmokeArgMax4(rpe);
+  562:     const unsigned int psiMcuClass = SmokeArgMax4(psi);
+  563: 
+  564:     LOG_INF("RPE class reference=%u MCU=%u match=%s",
+  565:             rpeRefClass, rpeMcuClass,
+  566:             rpeRefClass == rpeMcuClass ? "yes" : "no");
+  567:     LOG_INF("PSI class reference=%u MCU=%u match=%s",
+  568:             psiRefClass, psiMcuClass,
+  569:             psiRefClass == psiMcuClass ? "yes" : "no");
+  570: 
+
+--- MainLoop.cc lines 572-582 ---
+  572:             static_cast<unsigned int>(model.GetComputeBuffer().size));
+  573:     LOG_INF("Model buffer size: %u bytes",
+  574:             static_cast<unsigned int>(model.GetModelBuffer().size));
+  575: 
+  576:     LOG_INF("=== ONE-SAMPLE HEATSTROKE INFERENCE COMPLETE ===");
+  577:     return true;
+  578: }
+  579: 
+  580: void MainLoop()
+  581: {
+  582:     por_boot = true;
+
+--- MainLoop.cc lines 587-597 ---
+  587:         return;
+  588:     }
+  589: 
+  590:     const uint8_t* modelPointer =
+  591:         arm::app::polyu_heatstroke::GetModelPointer();
+  592:     const size_t modelLength =
+  593:         arm::app::polyu_heatstroke::GetModelLen();
+  594: 
+  595:     if (modelPointer == nullptr || modelLength == 0U) {
+  596:         LOG_ERR("Combined heat-stress model pointer or length is invalid");
+  597:         return;
+
+--- MainLoop.cc lines 626-635 ---
+  626:         return;
+  627:     }
+  628: 
+  629:     LOG_INF("Combined heat-stress model I/O contract verified.");
+  630:     if (!RunHeatstrokeSmokeInference(model)) {
+  631:         LOG_ERR("One-sample heat-stress inference failed");
+  632:         return;
+  633:     }
+  634:     LOG_INF("One-sample heat-stress inference: COMPLETE.");
+  635: }
+
+=== TEST VECTOR HEADER DECLARATIONS / METADATA ===
+    7: static const std::uint32_t kDatasetSampleIndex = 0U;
+    8: static const std::uint32_t kMissingCount = 2700U;
+    9: static const char kInputReferenceSha256[] = "5ab222dc10b33314d8ea64e782fcf21b7526b4ab69742c48cac397d809d2f36f";
+   10: static const char kStaticCheckpointSha256[] = "2b268a24d6e4f7ebbc3c7b41aba42e8b8c9ab4723181619d565bd47a646bd587";
+   12: static const std::uint32_t kXValuesBits[5400] = {
+  690: static const std::uint32_t kMissingMaskBits[5400] = {
+ 1368: static const std::uint32_t kXMarkBits[2700] = {
+ 1709: static const std::uint32_t kWorkerFeaturesBits[30] = {
+ 1716: static const std::uint32_t kReferenceRpeBits[4] = {
+ 1720: static const std::uint32_t kReferencePsiBits[4] = {
+
+=== DATASET PAIR AND LABEL AVAILABILITY ===
+-rw-rw-r-- 1 user user 20M May 11  2026 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/data/split_byid/test_seq.feather
+-rw-rw-r-- 1 user user 82K May 11  2026 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/data/split_byid/test_non_seq.csv
+Rows: 449
+Columns: ['time', 'exp_id', 'rpe', 'rpt', 'water_intake_ml', 'water_remark1', 'water_remark2', 'new_rpe', 'new_rpt', 'prev_rpe_0', 'prev_rpt_0', 'prev_rpe_1', 'prev_rpt_1', 'prev_rpe_2', 'prev_rpt_2', 'prev_total_water_intake', 'session', 'worker_id', 'worker_type1', 'age', 'gender', 'height', 'diseases', 'smoke', 'alcohol', 'missing_col', 'completeness', 'psi', 'sample_index']
+Unique sample_index: 449
+First sample_index values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+rpe: non-null=449, null=0
+psi: non-null=246, null=203
+
+=== POSSIBLE INPUT / VECTOR GENERATOR SCRIPTS ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_fp32_tflite_full_dataset.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_vela_tflite_smoke.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_qdq_onnx_stages_calibration_dataset.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_qdq_onnx_stages_one_sample.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_fp32_tflite_smoke.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_prevela_tflite_full_dataset.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_qdq_onnx_to_tflite_calibration.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_pre_shape_fix_qdq_tflite_full_dataset.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/validate_static_model_real_dataset.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_first_layernorm_operands.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/compare_regression_svf_linear.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/prepare_nxp_calibration.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/measure_expand3_branch.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/torch/sparse/_triton_ops.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/torch/autograd/gradcheck.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/torchao/prototype/quantization/mixed_precision/scripts/BO_acc_throughput.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/torchao/kernel/bsr_triton_ops.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/jax/_src/internal_test_util/export_back_compat_test_util.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/generation/utils.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/generation/logits_process.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/trainer.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/roc_bert/modeling_roc_bert.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/colqwen2/modular_colqwen2.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/colqwen2/processing_colqwen2.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/csm/generation_csm.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/csm/modular_csm.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/csm/modeling_csm.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/nemotron_h/modeling_nemotron_h.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/vibevoice/generation_vibevoice.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/nemotron_asr_streaming/generation_nemotron_asr_streaming.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/evolla/processing_evolla.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/mamba/modeling_mamba.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/grounding_dino/processing_grounding_dino.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/exaone4_5/modular_exaone4_5.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/exaone4_5/modeling_exaone4_5.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/lfm2_vl/processing_lfm2_vl.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/qwen3_omni_moe/modeling_qwen3_omni_moe.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/qwen3_omni_moe/modular_qwen3_omni_moe.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/ctrl/modeling_ctrl.py
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/lib/python3.14/site-packages/transformers/models/hyperclovax_vision_v2/modeling_hyperclovax_vision_v2.py
+
+=== CURRENT BUILD CONFIGURATION ===
+CONFIG_MAIN_STACK_SIZE=8192
+CONFIG_HEAP_MEM_POOL_SIZE=65536
+CONFIG_ACTIVATION_BUF_SZ=0x130000
+HEATSTROKE_LSTM_EVAL_O3_EXPERIMENT:BOOL=ON
+POLYU_MODEL_PATH:FILEPATH=/home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp_ethosu_aligned16_20261111.tflite
+
+=== CURRENT FIRMWARE / MODEL HASHES ===
+ef7a6ca3b0d574346f433522e9eeadea8042b87273396387ac5ef18c300ab8c6  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.bin
+f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/ospi0.bin
+f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d  /home/user/sdk-alif/beeinventor/test_heatstroke/model_candidates/vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp_ethosu_aligned16_20261111.tflite
+
+MULTISAMPLE_PREFLIGHT_COMPLETE
