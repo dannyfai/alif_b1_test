@@ -1,0 +1,158 @@
+=== MICROINTERPRETER PUBLIC METHODS ===
+53-  // variables through a top-level function. The interpreter doesn't do any
+54-  // deallocation of any of the pointed-to objects, ownership remains with the
+55-  // caller.
+56-  MicroInterpreter(const Model* model, const MicroOpResolver& op_resolver,
+57-                   uint8_t* tensor_arena, size_t tensor_arena_size,
+58:                   MicroResourceVariables* resource_variables = nullptr,
+59-                   MicroProfilerInterface* profiler = nullptr,
+60-                   bool preserve_all_tensors = false);
+61-
+62-  // Create an interpreter instance using an existing MicroAllocator instance.
+63-  // This constructor should be used when creating an allocator that needs to
+64-  // have allocation handled in more than one interpreter or for recording
+65-  // allocations inside the interpreter. The lifetime of the allocator must be
+66-  // as long as that of the interpreter object.
+67-  MicroInterpreter(const Model* model, const MicroOpResolver& op_resolver,
+68-                   MicroAllocator* allocator,
+69:                   MicroResourceVariables* resource_variables = nullptr,
+70-                   MicroProfilerInterface* profiler = nullptr);
+71-
+72-  ~MicroInterpreter();
+73-
+74-  // Runs through the model and allocates all necessary input, output and
+75-  // intermediate tensors.
+76:  TfLiteStatus AllocateTensors();
+77-
+78-  // In order to support partial graph runs for strided models, this can return
+79-  // values other than kTfLiteOk and kTfLiteError.
+80-  // TODO(b/149795762): Add this to the TfLiteStatus enum.
+81:  TfLiteStatus Invoke();
+82-
+83-  // This is the recommended API for an application to pass an external payload
+84-  // pointer as an external context to kernels. The life time of the payload
+85-  // pointer should be at least as long as this interpreter. TFLM supports only
+86-  // one external context.
+87-  TfLiteStatus SetMicroExternalContext(void* external_context_payload);
+88-
+89-  TfLiteTensor* input(size_t index);
+--
+123-  }
+124-
+125-  // Returns a pointer to the tensor for the corresponding tensor_index
+126-  TfLiteEvalTensor* GetTensor(int tensor_index, int subgraph_index = 0);
+127-
+128:  // Reset the state to be what you would expect when the interpreter is first
+129-  // created. i.e. after Init and Prepare is called for the very first time.
+130:  TfLiteStatus Reset();
+131-
+132-  TfLiteStatus initialization_status() const { return initialization_status_; }
+133-
+134-  // Populates node and registration pointers representing the inference graph
+135-  // of the model from values inside the flatbuffer (loaded from the TfLiteModel
+136-  // instance). Persistent data (e.g. operator data) is allocated from the
+137-  // arena.
+138-  TfLiteStatus PrepareNodeAndRegistrationDataFromFlatbuffer();
+139-
+140-  // For debugging only.
+141-  // Returns the actual used arena in bytes. This method gives the optimal arena
+142:  // size. It's only available after `AllocateTensors` has been called.
+143-  // Note that normally `tensor_arena` requires 16 bytes alignment to fully
+144-  // utilize the space. If it's not the case, the optimial arena size would be
+145-  // arena_used_bytes() + 16.
+146-  size_t arena_used_bytes() const { return allocator_.used_bytes(); }
+147-
+148-  // Returns True if all Tensors are being preserves
+149-  // TODO(b/297106074) : revisit making C++ example or test for
+150-  // preserve_all_tesnors
+--
+162-
+163-#ifdef USE_TFLM_COMPRESSION
+164-
+165-  // Set the alternate decompression memory regions.
+166-  // Can only be called during the MicroInterpreter kInit state (i.e. must
+167:  // be called before MicroInterpreter::AllocateTensors).
+168-  TfLiteStatus SetDecompressionMemory(
+169-      const std::initializer_list<MicroContext::AlternateMemoryRegion>&
+170-          regions);
+171-
+172-#endif  // USE_TFLM_COMPRESSION
+173-
+174- protected:
+175-  const MicroAllocator& allocator() const { return allocator_; }
+
+=== MICROINTERPRETER RESET IMPLEMENTATION ===
+305-
+306-TfLiteTensor* MicroInterpreter::output(size_t index) {
+307-  const size_t length = outputs_size();
+308-  if (index >= length) {
+309-    MicroPrintf("Output index %d out of range (length is %d)", index, length);
+310-    return nullptr;
+311-  }
+312-  return output_tensors_[index];
+313-}
+314-
+315:TfLiteStatus MicroInterpreter::Reset() {
+316-  TfLiteStatus status = graph_.ResetSubgraphs();
+317-  if (status != kTfLiteOk) {
+318-    return status;
+319-  }
+320:  return graph_.ResetVariableTensors();
+321-}
+322-
+323-TfLiteEvalTensor* MicroInterpreter::GetTensor(int tensor_index,
+324-                                              int subgraph_index) {
+325-  if (!allocator_.preserves_all_tensor()) {
+326-    MicroPrintf("GetTensor requires all tensors to be preserved");
+327-    return nullptr;
+328-  }
+329-  return &graph_.GetAllocations()[subgraph_index].tensors[tensor_index];
+330-}
+331-
+332-TfLiteStatus MicroInterpreter::SetMicroExternalContext(
+
+=== GRAPH RESET DECLARATION ===
+58-  // Calls TFLMRegistration->Invoke for every operator in a single subgraph
+59-  // in the model.
+60-  virtual TfLiteStatus InvokeSubgraph(int subgraph_idx);
+61-
+62-  // Zeros out all variable tensors in all subgraphs in the model.
+63:  virtual TfLiteStatus ResetVariableTensors();
+64-
+65-  // Number of tensor inputs to a specified subgraph in the model.
+66-  virtual size_t NumSubgraphInputs(int subgraph_idx);
+67-
+68-  // Get the specified input tensor of a specified subgraph in the model.
+69-  virtual TfLiteEvalTensor* GetSubgraphInput(int subgraph_idx, int input_idx);
+70-
+71-  // Number of tensor outputs from a specified subgraph in the model.
+
+=== MODEL BACKEND ACCESSOR IMPLEMENTATION ===
+411-/** @brief      Gets the pointer to the NN model data array. */
+412-const iface::MemoryRegion& TflmModel::GetModelBuffer() const
+413-{
+414-    return std::ref(this->m_modelBuffer);
+415-}
+416-
+417:const TflmBackendData& TflmModel::GetBackendData() const
+418-{
+419-    return std::ref(this->m_backendData);
+420-}
+421-
+422-} /* namespace arm::app::fwk::tflm */
+
+=== STATIC REFERENCE CHECKPOINT ===
+
+=== CURRENT APPLICATION AND BUILD IDENTITY ===
+557202968b65b0f75e3f58659359cc75a9486ac98095738f3522253b1c5b271d  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc
+5d01da6a1f06f821f573274a2a0ad9839d5fe52a1be9769e0882f9ad4936a4a0  /home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_smoke_test_vector.hpp
+ef7a6ca3b0d574346f433522e9eeadea8042b87273396387ac5ef18c300ab8c6  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.bin
+f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/ospi0.bin
+
+=== ACTIVE CONFIGURATION ===
+CONFIG_MAIN_STACK_SIZE=8192
+CONFIG_HEAP_MEM_POOL_SIZE=65536
+CONFIG_ACTIVATION_BUF_SZ=0x130000
+HEATSTROKE_LSTM_EVAL_O3_EXPERIMENT:BOOL=ON
+
+RESET_FINAL_DECISION_COMPLETE
