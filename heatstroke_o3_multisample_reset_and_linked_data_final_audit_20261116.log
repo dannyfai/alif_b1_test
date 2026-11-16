@@ -1,0 +1,188 @@
+=== TFLM RESET SUBGRAPHS IMPLEMENTATION ===
+        GetMicroContext(context_)->ResetDecompressionMemoryAllocations();
+#endif  // USE_TFLM_COMPRESSION
+      }
+      allocator_->FinishPrepareNodeAllocations(
+          /*node_id=*/current_operator_index_);
+    }
+  }
+  current_subgraph_index_ = previous_subgraph_idx;
+  current_operator_index_ = previous_operator_idx;
+  return kTfLiteOk;
+}
+
+TfLiteStatus MicroInterpreterGraph::ResetSubgraphs() {
+  int previous_subgraph_idx = current_subgraph_index_;
+  uint32_t previous_operator_idx = current_operator_index_;
+
+  for (size_t subgraph_idx = 0; subgraph_idx < subgraphs_->size();
+       subgraph_idx++) {
+    current_subgraph_index_ = subgraph_idx;
+    uint32_t operators_size = NumSubgraphOperators(model_, subgraph_idx);
+    for (current_operator_index_ = 0; current_operator_index_ < operators_size;
+         ++current_operator_index_) {
+      TfLiteNode* node = &(subgraph_allocations_[subgraph_idx]
+                               .node_and_registrations[current_operator_index_]
+                               .node);
+      const TFLMRegistration* registration =
+          subgraph_allocations_[subgraph_idx]
+              .node_and_registrations[current_operator_index_]
+              .registration;
+      // registration is allocated outside the interpreter, so double check to
+      // make sure it's not nullptr;
+      if (registration != nullptr && registration->reset != nullptr) {
+        registration->reset(context_, node->user_data);
+      }
+    }
+  }
+  current_subgraph_index_ = previous_subgraph_idx;
+  current_operator_index_ = previous_operator_idx;
+
+  return kTfLiteOk;
+}
+
+
+=== TFLM RESET VARIABLE TENSORS IMPLEMENTATION ===
+  return kTfLiteOk;
+}
+
+TfLiteStatus MicroInterpreterGraph::ResetVariableTensors() {
+  for (size_t subgraph_idx = 0; subgraph_idx < subgraphs_->size();
+       subgraph_idx++) {
+    const SubGraph* subgraph = (*subgraphs_)[subgraph_idx];
+    for (size_t i = 0; i < subgraph->tensors()->size(); ++i) {
+      auto* tensor = subgraph->tensors()->Get(i);
+      if (tensor->is_variable()) {
+        size_t buffer_size;
+        TF_LITE_ENSURE_STATUS(TfLiteEvalTensorByteLength(
+            &subgraph_allocations_[subgraph_idx].tensors[i], &buffer_size));
+
+        int value = 0;
+        if (tensor->type() == tflite::TensorType_INT8) {
+          value = tensor->quantization()->zero_point()->Get(0);
+        }
+        memset(subgraph_allocations_[subgraph_idx].tensors[i].data.raw, value,
+               buffer_size);
+      }
+    }
+  }
+  if (resource_variables_ != nullptr) {
+    resource_variables_->ResetAll();
+  }
+
+  return kTfLiteOk;
+}
+
+=== PUBLIC MICROINTERPRETER RESET IMPLEMENTATION ===
+
+TfLiteTensor* MicroInterpreter::output(size_t index) {
+  const size_t length = outputs_size();
+  if (index >= length) {
+    MicroPrintf("Output index %d out of range (length is %d)", index, length);
+    return nullptr;
+  }
+  return output_tensors_[index];
+}
+
+TfLiteStatus MicroInterpreter::Reset() {
+  TfLiteStatus status = graph_.ResetSubgraphs();
+  if (status != kTfLiteOk) {
+    return status;
+  }
+  return graph_.ResetVariableTensors();
+}
+
+TfLiteEvalTensor* MicroInterpreter::GetTensor(int tensor_index,
+
+=== MULTI-SAMPLE RESET CALL SITE ===
+432-                static_cast<unsigned int>(slot + 1U),
+433-                static_cast<unsigned int>(heatstroke_smoke::kSampleCount));
+434-        LOG_INF("Dataset position: %u; sample ID: %u",
+435-                static_cast<unsigned int>(sample.dataset_position),
+436-                static_cast<unsigned int>(sample.dataset_sample_id));
+437-        LOG_INF("Missing positions: %u",
+438-                static_cast<unsigned int>(sample.missing_count));
+439-        LOG_INF("Ground-truth labels RPE=%u PSI=%u",
+440-                static_cast<unsigned int>(sample.rpe_label),
+441-                static_cast<unsigned int>(sample.psi_label));
+442-        LOG_INF("Input-vector SHA256: %s", sample.input_sha256);
+443-
+444:        const auto resetStatus = backendData.m_pInterpreter->Reset();
+445-        if (resetStatus != kTfLiteOk) {
+446-            LOG_ERR("MicroInterpreter::Reset failed; status=%d",
+447-                    static_cast<int>(resetStatus));
+448-            return false;
+449-        }
+450-        LOG_INF("MicroInterpreter::Reset: SUCCESS");
+451-
+452-        if (!BindSmokeInputTensor(
+453-                model, 0U, "x_values", sample.x_values_bits,
+454-                5400U * sizeof(std::uint32_t),
+455-                std::vector<size_t>{1U, 900U, 6U})) {
+456-            return false;
+457-        }
+458-        if (!BindSmokeInputTensor(
+459-                model, 1U, "missing_mask", sample.missing_mask_bits,
+460-                5400U * sizeof(std::uint32_t),
+461-                std::vector<size_t>{1U, 900U, 6U})) {
+462-            return false;
+
+=== MULTI-SAMPLE LOOP AND INPUT BINDING ===
+354:static bool BindSmokeInputTensor(
+417:    LOG_INF("=== THREE-SAMPLE HEATSTROKE MCU INFERENCE ===");
+419:            static_cast<unsigned int>(heatstroke_smoke::kSampleCount));
+428:         slot < heatstroke_smoke::kSampleCount; ++slot) {
+429:        const auto& sample = heatstroke_smoke::kSamples[slot];
+433:                static_cast<unsigned int>(heatstroke_smoke::kSampleCount));
+452:        if (!BindSmokeInputTensor(
+458:        if (!BindSmokeInputTensor(
+464:        if (!BindSmokeInputTensor(
+470:        if (!BindSmokeInputTensor(
+570:        LOG_INF("=== SAMPLE %u COMPLETE ===", static_cast<unsigned int>(slot));
+573:    LOG_INF("=== THREE-SAMPLE HEATSTROKE INFERENCE COMPLETE ===");
+
+=== LINKED SAMPLE VECTOR SYMBOLS ===
+8004be24 00000010 r heatstroke_smoke::kSample0ReferencePsiBits
+8004be34 00000010 r heatstroke_smoke::kSample0ReferenceRpeBits
+8003ea9c 00000010 r heatstroke_smoke::kSample1ReferencePsiBits
+8003eaac 00000010 r heatstroke_smoke::kSample1ReferenceRpeBits
+80031714 00000010 r heatstroke_smoke::kSample2ReferencePsiBits
+80031724 00000010 r heatstroke_smoke::kSample2ReferenceRpeBits
+8004be44 00000078 r heatstroke_smoke::kSample0WorkerFeaturesBits
+8003eabc 00000078 r heatstroke_smoke::kSample1WorkerFeaturesBits
+80031734 00000078 r heatstroke_smoke::kSample2WorkerFeaturesBits
+80031684 00000090 r heatstroke_smoke::kSamples
+8004bebc 00002a30 r heatstroke_smoke::kSample0XMarkBits
+8003eb34 00002a30 r heatstroke_smoke::kSample1XMarkBits
+800317ac 00002a30 r heatstroke_smoke::kSample2XMarkBits
+80053d4c 00005460 r heatstroke_smoke::kSample0XValuesBits
+800469c4 00005460 r heatstroke_smoke::kSample1XValuesBits
+8003963c 00005460 r heatstroke_smoke::kSample2XValuesBits
+8004e8ec 00005460 r heatstroke_smoke::kSample0MissingMaskBits
+80041564 00005460 r heatstroke_smoke::kSample1MissingMaskBits
+800341dc 00005460 r heatstroke_smoke::kSample2MissingMaskBits
+
+=== STACK USAGE RECORDS ===
+
+=== FINAL LINKED SECTION SIZES ===
+text                              193784   2147485632
+rodata                            206204   2147685120
+datas                               4013    536911872
+bss                              1248745    536916224
+noinit                             82076    538164976
+Total                           33907317
+
+=== FINAL FIRMWARE AND MODEL HASHES ===
+49675390edeea04b939eb4634d406e4689f23a732580c4ab638a64fed35ae618  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.bin
+f76150bcfef7b5fb0378eff51196045d8139c7ba805b5af9192afd178702389d  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/ospi0.bin
+637ea2c920f6d1b424e9a0c0b6e6913ec29330142a362013aa263b0e685d73e7  /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.elf
+
+=== ACTIVE CONFIGURATION ===
+CONFIG_MAIN_STACK_SIZE=8192
+CONFIG_ISR_STACK_SIZE=4096
+CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=1024
+CONFIG_HEAP_MEM_POOL_SIZE=65536
+CONFIG_ACTIVATION_BUF_SZ=0x130000
+HEATSTROKE_LSTM_EVAL_O3_EXPERIMENT:BOOL=ON
+
+RESET_AND_LINKED_DATA_FINAL_AUDIT_COMPLETE
