@@ -1,0 +1,671 @@
+============================================================
+OSPI CLOCK / MPU MAIR / XIP FINAL AUDIT
+2026-11-16T13:50:37+08:00
+
+=== 1. MPU MAIR DEFINITIONS ===
+
+#define NORMAL_OUTER_INNER_NON_CACHEABLE                                                           \
+	((NORMAL_O_NON_C | (R_NON_W_NON << 4)) | (NORMAL_I_NON_C | R_NON_W_NON))
+
+/* Common cache-ability configuration for Flash, SRAM regions */
+#define MPU_CACHE_ATTRIBUTES_FLASH        NORMAL_OUTER_INNER_WRITE_THROUGH_READ_ALLOCATE_NON_TRANS
+/* clang-format off */
+#define MPU_CACHE_ATTRIBUTES_SRAM                                                                  \
+	NORMAL_OUTER_INNER_WRITE_BACK_WRITE_READ_ALLOCATE_NON_TRANS
+/* clang-format on */
+#define MPU_CACHE_ATTRIBUTES_SRAM_NOCACHE NORMAL_OUTER_INNER_NON_CACHEABLE
+
+/* Global MAIR configurations */
+#define MPU_MAIR_ATTR_FLASH         MPU_CACHE_ATTRIBUTES_FLASH
+#define MPU_MAIR_INDEX_FLASH        0
+#define MPU_MAIR_ATTR_SRAM          MPU_CACHE_ATTRIBUTES_SRAM
+#define MPU_MAIR_INDEX_SRAM         1
+#define MPU_MAIR_ATTR_SRAM_NOCACHE  MPU_CACHE_ATTRIBUTES_SRAM_NOCACHE
+#define MPU_MAIR_INDEX_SRAM_NOCACHE 2
+#define MPU_MAIR_ATTR_DEVICE        DEVICE_nGnRnE
+#define MPU_MAIR_INDEX_DEVICE       3
+/* Flash region(s): Attribute-0
+ * SRAM region(s): Attribute-1
+ * SRAM no cache-able regions(s): Attribute-2
+ * DEVICE no cache-able regions(s): Attribute-3
+ */
+#define MPU_MAIR_ATTRS                                                                             \
+	((MPU_MAIR_ATTR_FLASH << (MPU_MAIR_INDEX_FLASH * 8)) |                                     \
+	 (MPU_MAIR_ATTR_SRAM << (MPU_MAIR_INDEX_SRAM * 8)) |                                       \
+	 (MPU_MAIR_ATTR_SRAM_NOCACHE << (MPU_MAIR_INDEX_SRAM_NOCACHE * 8)) |                       \
+	 (MPU_MAIR_ATTR_DEVICE << (MPU_MAIR_INDEX_DEVICE * 8)))
+
+/* Some helper defines for common regions.
+ *
+ * Note that the ARMv8-M/R MPU architecture requires that the
+ * enabled MPU regions are non-overlapping. Therefore, it is
+ * recommended to use these helper defines only for configuring
+ * fixed MPU regions at build-time (i.e. regions that are not
+ * expected to be re-programmed or re-adjusted at run-time so
+ * that they do not overlap with other MPU regions).
+ */
+
+=== 2. OSPI BUS SPEED IMPLEMENTATION ===
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-485- * \brief       Enable slave mode in the OSPI instance.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-486- * \param[in]   ospi     Pointer to the OSPI register map
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-487- * \return      none
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-488- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-489-static inline void ospi_mode_slave(struct ospi_regs *ospi)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-490-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-491-	ospi_disable(ospi);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-492-	ospi->OSPI_CTRLR0 &= ~SPI_CTRLR0_SSI_IS_MST_MASTER;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-493-	ospi_enable(ospi);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-494-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-495-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-496-/***
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:497: * \fn          static inline void ospi_set_bus_speed(struct ospi_regs *ospi,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-498- *                                       uint32_t speed, uint32_t clk)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-499- * \brief       Set the bus speed for the OSPI instance.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-500- * \param[in]   ospi    Pointer to the OSPI register map
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-501- * \param[in]   speed   The bus speed to be set
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-502- * \param[in]   clk     OSPI input clk
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-503- * \return      none
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-504- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:505:static inline void ospi_set_bus_speed(struct ospi_regs *ospi,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-506-					uint32_t speed, uint32_t clk)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-507-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-508-	ospi_disable(ospi);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-509-	ospi->OSPI_BAUDR = (clk / speed);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-510-	ospi_enable(ospi);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-511-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-512-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-513-/***
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-514- * \fn          static inline void ospi_aes_set_baud2_delay(struct ospi_aes_regs *aes,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-515- *                                                          bool baud2_delay_en)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-516- * \brief       Enable or disable BAUD2 delay
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-517- * \param[in]   ospi    Pointer to the AES register map
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-518- * \param[in]   baud2_delay_en  Enable \c true or disable \c false
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-519- * \return      none
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-520- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-521-static inline void ospi_aes_set_baud2_delay(struct ospi_aes_regs *aes,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-522-	bool baud2_delay_en)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-523-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-524-#if defined(CONFIG_SOC_SERIES_E1C) || defined(CONFIG_SOC_SERIES_B1)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-525-	if (baud2_delay_en) {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-526-		aes->AES_INTR_MASK |= AES_INTR_MASK_BAUD2_DELAY_MASK;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-527-	} else {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-528-		aes->AES_INTR_MASK &= ~AES_INTR_MASK_BAUD2_DELAY_MASK;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-529-	}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-530-#else
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-531-	(void)aes;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-532-	(void)baud2_delay_en;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-533-#endif
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-534-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-535-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-536-#if defined(CONFIG_ENSEMBLE_GEN2)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-537-#define AES_SIGNAL_0_DELAY_POS                 (0)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-538-#define AES_SIGNAL_1_DELAY_POS                 (8)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-539-#define AES_SIGNAL_2_DELAY_POS                 (16)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-540-#define AES_SIGNAL_3_DELAY_POS                 (24)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-541-#define AES_SIGNAL_4_DELAY_POS                 (0)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-542-#define AES_SIGNAL_5_DELAY_POS                 (8)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-543-#define AES_SIGNAL_6_DELAY_POS                 (16)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-544-#define AES_SIGNAL_7_DELAY_POS                 (24)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-545-#define AES_SIGNAL_8_DELAY_POS                 (0)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-546-#define AES_SIGNAL_9_DELAY_POS                 (8)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-547-#define AES_SIGNAL_10_DELAY_POS                (16)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-548-#define AES_SIGNAL_11_DELAY_POS                (24)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-549-#define AES_SIGNAL_12_DELAY_POS                (0)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-550-#define AES_SIGNAL_13_DELAY_POS                (8)
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-127-	ospi_set_tx_threshold(ospi_regs, init_d->tx_fifo_threshold);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-128-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-129-	ospi_set_rx_threshold(ospi_regs, init_d->rx_fifo_threshold);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-130-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-131-	ospi_set_rx_sample_delay(ospi_regs, init_d->rx_sample_delay);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-132-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-133-	ospi_set_ddr_drive_edge(ospi_regs, init_d->ddr_drive_edge);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-134-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-135-	ospi_mask_interrupts(ospi_regs);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-136-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-137-	ospi_mode_master(ospi_regs);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-138-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c:139:	ospi_set_bus_speed(ospi_regs, init_d->bus_speed, init_d->core_clk);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-140-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-141-	aes_regs = (struct ospi_aes_regs *) init_d->aes_regs;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-142-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-143-	aes_regs->AES_RXDS_DLY = init_d->rx_ds_delay;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-144-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-145-	switch (init_d->baud2_delay) {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-146-	case OSPI_BAUD2_DELAY_DISABLE:
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-147-		ospi_aes_set_baud2_delay(aes_regs, false);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-148-		break;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-149-	case OSPI_BAUD2_DELAY_ENABLE:
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-150-		ospi_aes_set_baud2_delay(aes_regs, true);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-151-		break;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-152-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-153-	case OSPI_BAUD2_DELAY_AUTO:
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-154-	    /* 'automatic' setting based on divisor */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-155-		ospi_aes_set_baud2_delay(aes_regs, ospi_regs->OSPI_BAUDR == 2);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-156-		break;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-157-	default:
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-158-		return OSPI_ERR_INVALID_PARAM;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-159-	}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-160-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-161-	return OSPI_ERR_NONE;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-162-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-163-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-164-/**
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-165- * \fn          alif_hal_ospi_deInit
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-166- * \brief       Release the initialized the instance.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-167- * \param[in]   handle  Instance handler
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-168- * \return      0 on Success, else error code.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-169- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-170-int32_t alif_hal_ospi_deinit(HAL_OSPI_Handle_T handle)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-171-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-172-	struct hal_ospi_inst *ospi_inst;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-173-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-174-	ospi_inst = get_inst_by_handle(handle);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-175-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-176-	if (ospi_inst == NULL)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-177-		return OSPI_ERR_INVALID_HANDLE;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-178-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-179-	ospi_inst->is_avail = 1;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-180-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-181-	/* Clear rest. */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-182-	ospi_inst->cs_pin = -1;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-183-	ospi_inst->regs = 0;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-184-	ospi_inst->bus_speed = 0;
+--
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-81-	}
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-82-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-83-	baud = (config->input_clk / config->bus_speed);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-84-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-85-	if (baud == 0) {
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-86-		return -ENOTSUP;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-87-	}
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-88-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-89-	if (baud < 4) {
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-90-		aes_set_signal_delay(config->aes_regs, config->signal_delay);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-91-	}
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-92-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c:93:	ospi_set_bus_speed(config->regs, config->bus_speed, config->input_clk);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-94-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-95-	ospi_set_ddr_drive_edge(config->regs, S80KS2564_DDR_DRIVE_EDGE);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-96-	ospi_set_rx_sample_delay(config->regs, S80KS2564_RX_SAMPLE_DELAY);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-97-	aes_set_rxds_delay(config->aes_regs, config->rxds_delay);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-98-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-99-	/*
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-100-	 * CA bit assignment for Configuration Register 0 write operation
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-101-	 * bit[47] - bit[40] -> 60h
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-102-	 * bit[39] - bit[32] -> 00h
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-103-	 * bit[31] - bit[24] -> 01h
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-104-	 * bit[23] - bit[16] -> 00h
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-105-	 * bit[15] - bit[8]  -> 00h
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-106-	 * bit[7]  - bit[0]  -> 00h
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-107-	 */
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-108-	cmd_buff[0] = 0x60000100; /* bit[8] - bit[47] */
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-109-	cmd_buff[1] = 0x0;        /* bit[0] - bit[7] */
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-110-	cmd_buff[2] = ((1 << S80KS2564_OPERATION_MODE_POS)
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-111-		| (0 << S80KS2564_DRIVE_STRENGTH_POS)    /* 34 ohm drive strength */
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-112-		| (((config->latency_val - 5) & 0xF) << S80KS2564_INIT_LATENCY_POS) /* latency */
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-113-		| (0 << S80KS2564_FIXED_LATENCY_EN_POS)    /* variable latency */
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-114-		| (1 << S80KS2564_WRAPPED_BURST_SEQ_POS)   /* standard wrapped burst sequence */
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-115-		| (2 << S80KS2564_BURST_LEN_POS));         /* 16-word (32-byte) wrap */
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-116-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-117-	hspi_cfg.spi_frf        = SPI_FRF_OCTAL;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-118-	hspi_cfg.ddr            = 1;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-119-	hspi_cfg.inst_len       = SPI_CTRLR0_INST_L_0bit;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-120-	hspi_cfg.addr_len       = 12;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-121-	hspi_cfg.dummy_cycle    = 0;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-122-	hspi_cfg.tx_total_cnt   = 3;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-123-	hspi_cfg.tx_current_cnt = 0;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-124-	hspi_cfg.tx_buff        = cmd_buff;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-125-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-126-	ospi_set_dfs(config->regs, S80KS2564_WRITE_CONFIG_REG_DFS);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-127-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-128-	ospi_control_ss(config->regs, config->cs_pin, SPI_SS_STATE_ENABLE);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-129-	ospi_hyperbus_send(config->regs, &hspi_cfg);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-130-	ospi_control_ss(config->regs, config->cs_pin, SPI_SS_STATE_DISABLE);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-131-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-132-	ospi_set_dfs(config->regs, S80KS2564_DFS);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-133-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-134-	xip_cfg.xip_wait_cycles = config->latency_val;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-135-	xip_cfg.xip_cs_pin = config->cs_pin;
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-136-	ospi_hyperbus_xip_init(config->regs, &xip_cfg, SPI_MODE_DUAL_OCTAL);
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-137-
+/home/user/sdk-alif/zephyr/drivers/memc/memc_alif_hspi_s80ks2564.c-138-	aes_enable_xip(config->aes_regs);
+
+=== 3. OSPI BAUD DIVIDER AND REGISTER DEFINITIONS ===
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-73-typedef int8_t HAL_OSPI_Handle_T;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-74-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-75-typedef void hal_event_notify_cb(uint32_t event, void *u_data);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-76-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-77-/**
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:78: * enum ospi_baud2_delay
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:79: * BAUD2 delay configuration
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-80- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:81:enum ospi_baud2_delay {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:82:	OSPI_BAUD2_DELAY_DISABLE = 0,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:83:	OSPI_BAUD2_DELAY_ENABLE = 1,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:84:	OSPI_BAUD2_DELAY_AUTO = 2 /* Set BAUD2 delay based on calculated BAUDR divisor */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-85-};
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-86-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-87-/*---- OSPI Event ---------------------*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-88-struct ospi_init {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-89-	uint32_t  bus_speed;                    /* Contrllor speed. */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-90-	uint32_t  tx_fifo_threshold;            /* Tx Fifo Threshold */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-91-	uint32_t  rx_fifo_threshold;            /* Rx Fifo Threshold */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-92-	uint32_t  rx_sample_delay;              /* Rx Sample Delay */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-93-	uint32_t  ddr_drive_edge;               /* DDR Drive Edge */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-94-	uint32_t  core_clk;                     /* System Clock */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-95-	uint32_t  cs_pin;                       /* Slave Pin */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-96-	uint32_t  rx_ds_delay;                  /* Rx-DS Delay */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:97:	enum ospi_baud2_delay baud2_delay;      /* BAUD2 delay initial setting */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-98-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-99-	uint32_t  *base_regs;                   /* OSPI REG */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-100-	uint32_t  *aes_regs;                    /* AES REG */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-101-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-102-	void      *user_data;                   /* User data*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-103-	hal_event_notify_cb *event_cb;          /* Event Callback*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-104-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-105-	uint16_t  xip_wrap_cmd;			/* WRAP OpCode*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-106-	uint16_t  xip_incr_cmd;			/* INCR mode OpCode*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-107-	uint16_t  xip_cnt_time_out;		/* Timeout value*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-108-	uint16_t  xip_aes_rxds_dly;		/* AES RxDS Delay*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-109-	uint16_t  xip_wait_cycles;		/* XiP Wait Cycle*/
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-18-	volatile uint32_t  OSPI_CTRLR0;      /* 0x00 Control Reg 0           */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-19-	volatile uint32_t  OSPI_CTRLR1;      /* 0x04 Control Reg 1           */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-20-	volatile uint32_t  OSPI_ENR;         /* 0x08 Enable Reg              */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-21-	volatile uint32_t  RESERVED;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-22-	volatile uint32_t  OSPI_SER;         /* 0x10 Slave Enable            */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:23:	volatile uint32_t  OSPI_BAUDR;       /* 0x14 Baud Rate               */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-24-	volatile uint32_t  OSPI_TXFTLR;      /* 0x18 Tx FIFO Thrshold Lvl    */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-25-	volatile uint32_t  OSPI_RXFTLR;      /* 0x1C Rx FIFO Thrshold Lvl    */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-26-	volatile uint32_t  OSPI_TXFLR;       /* 0x20 Tx FIFO Level Reg       */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-27-	volatile uint32_t  OSPI_RXFLR;       /* 0x24 Receive FIFO Level Reg  */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-28-	volatile uint32_t  OSPI_SR;          /* 0x28 Status Reg              */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-29-	volatile uint32_t  OSPI_IMR;         /* 0x2C Interrupt Mask Reg      */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-30-	volatile uint32_t  OSPI_ISR;         /* 0x30 Interrupt Status Reg    */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-31-	volatile uint32_t  OSPI_RISR;        /* 0x34 Raw Intr Status Reg     */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-32-	volatile uint32_t  OSPI_TXEICR;      /* 0x38 Tx FIFO Err Intr clr    */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-33-	volatile uint32_t  OSPI_RXOICR;      /* 0x3C Rx FIFO o-flow Intr clr */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-34-	volatile uint32_t  OSPI_RXUICR;      /* 0x40 Rx FIFO u-flow Intr clr */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-35-	volatile uint32_t  RESERVED1;
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-339-#define AES_CONTROL_LD_KEY              (1U << 7)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-340-#define AES_CONTROL_XIP_EN              (1U << 4)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-341-#define AES_CONTROL_DECRYPT_EN          (1U << 0)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-342-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-343-/* AES_INTR_MASK fields */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:344:#define AES_INTR_MASK_BAUD2_DELAY       30U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:345:#define AES_INTR_MASK_BAUD2_DELAY_MASK  (1U << AES_INTR_MASK_BAUD2_DELAY)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-346-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-347-/**
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-348- * enum spi_frame_format.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-349- * SPI frame formats.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-350- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-351-enum spi_frame_format {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-352-	SPI_FRAME_FORMAT_STANDARD,          /* Standard SPI frame format */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-353-	SPI_FRAME_FORMAT_DUAL,              /* Dual SPI frame format */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-354-	SPI_FRAME_FORMAT_QUAD,              /* Quad SPI frame format */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-355-	SPI_FRAME_FORMAT_OCTAL              /* Octal SPI frame format */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-356-};
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-357-
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-504- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-505-static inline void ospi_set_bus_speed(struct ospi_regs *ospi,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-506-					uint32_t speed, uint32_t clk)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-507-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-508-	ospi_disable(ospi);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:509:	ospi->OSPI_BAUDR = (clk / speed);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-510-	ospi_enable(ospi);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-511-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-512-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-513-/***
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:514: * \fn          static inline void ospi_aes_set_baud2_delay(struct ospi_aes_regs *aes,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:515: *                                                          bool baud2_delay_en)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:516: * \brief       Enable or disable BAUD2 delay
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-517- * \param[in]   ospi    Pointer to the AES register map
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:518: * \param[in]   baud2_delay_en  Enable \c true or disable \c false
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-519- * \return      none
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-520- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:521:static inline void ospi_aes_set_baud2_delay(struct ospi_aes_regs *aes,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:522:	bool baud2_delay_en)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-523-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-524-#if defined(CONFIG_SOC_SERIES_E1C) || defined(CONFIG_SOC_SERIES_B1)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:525:	if (baud2_delay_en) {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:526:		aes->AES_INTR_MASK |= AES_INTR_MASK_BAUD2_DELAY_MASK;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-527-	} else {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:528:		aes->AES_INTR_MASK &= ~AES_INTR_MASK_BAUD2_DELAY_MASK;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-529-	}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-530-#else
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-531-	(void)aes;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:532:	(void)baud2_delay_en;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-533-#endif
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-534-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-535-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-536-#if defined(CONFIG_ENSEMBLE_GEN2)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-537-#define AES_SIGNAL_0_DELAY_POS                 (0)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-538-#define AES_SIGNAL_1_DELAY_POS                 (8)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-539-#define AES_SIGNAL_2_DELAY_POS                 (16)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-540-#define AES_SIGNAL_3_DELAY_POS                 (24)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-541-#define AES_SIGNAL_4_DELAY_POS                 (0)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-542-#define AES_SIGNAL_5_DELAY_POS                 (8)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-543-#define AES_SIGNAL_6_DELAY_POS                 (16)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-544-#define AES_SIGNAL_7_DELAY_POS                 (24)
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-571-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-572-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-573-/***
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-574- * \fn          static inline void aes_set_signal_delay
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-575- *                   (struct ospi_aes_regs *aes, uint8_t delay)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:576: * \brief       Set OSPI Signal Delay for BAUD2 speed
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-577- * \param[in]   aes        Pointer to the AES register map
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-578- * \param[in]   delay      Delay value for signals
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-579- * \return      none
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-580- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-581-static inline void aes_set_signal_delay(struct ospi_aes_regs *aes, uint8_t delay)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-582-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-583-	aes->AES_RXD_DELAY_0 = ((delay << AES_SIGNAL_0_DELAY_POS)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-584-				| (delay << AES_SIGNAL_1_DELAY_POS)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-585-				| (delay << AES_SIGNAL_2_DELAY_POS)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-586-				| (delay << AES_SIGNAL_3_DELAY_POS));
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-587-	aes->AES_RXD_DELAY_1 = ((delay << AES_SIGNAL_4_DELAY_POS)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-588-				| (delay << AES_SIGNAL_5_DELAY_POS)
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-723- * \param[in]   clk     OSPI input clk
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-724- * \return      Current bus speed
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-725- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-726-static inline uint32_t ospi_get_bus_speed(struct ospi_regs *ospi, uint32_t clk)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-727-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:728:	return clk / ospi->OSPI_BAUDR;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-729-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-730-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-731-/***
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-732- * \fn          static inline void ospi_mask_interrupts(struct ospi_regs *spi)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-733- * \brief       Mask all the interrupts for the OSPI instance
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-734- * \param[in]   ospi       Pointer to the SPI register map
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-735- * \return      none
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-736- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-737-static inline void ospi_mask_interrupts(struct ospi_regs *ospi)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-738-{
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-739-	ospi->OSPI_IMR = 0;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-740-}
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-140-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-141-	aes_regs = (struct ospi_aes_regs *) init_d->aes_regs;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-142-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-143-	aes_regs->AES_RXDS_DLY = init_d->rx_ds_delay;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-144-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c:145:	switch (init_d->baud2_delay) {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c:146:	case OSPI_BAUD2_DELAY_DISABLE:
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c:147:		ospi_aes_set_baud2_delay(aes_regs, false);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-148-		break;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c:149:	case OSPI_BAUD2_DELAY_ENABLE:
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c:150:		ospi_aes_set_baud2_delay(aes_regs, true);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-151-		break;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-152-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c:153:	case OSPI_BAUD2_DELAY_AUTO:
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-154-	    /* 'automatic' setting based on divisor */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c:155:		ospi_aes_set_baud2_delay(aes_regs, ospi_regs->OSPI_BAUDR == 2);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-156-		break;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-157-	default:
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-158-		return OSPI_ERR_INVALID_PARAM;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-159-	}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-160-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-161-	return OSPI_ERR_NONE;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-162-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-163-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-164-/**
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-165- * \fn          alif_hal_ospi_deInit
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-166- * \brief       Release the initialized the instance.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c-167- * \param[in]   handle  Instance handler
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-73-typedef int8_t HAL_OSPI_Handle_T;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-74-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-75-typedef void hal_event_notify_cb(uint32_t event, void *u_data);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-76-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-77-/**
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:78: * enum ospi_baud2_delay
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:79: * BAUD2 delay configuration
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-80- */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:81:enum ospi_baud2_delay {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:82:	OSPI_BAUD2_DELAY_DISABLE = 0,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:83:	OSPI_BAUD2_DELAY_ENABLE = 1,
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:84:	OSPI_BAUD2_DELAY_AUTO = 2 /* Set BAUD2 delay based on calculated BAUDR divisor */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-85-};
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-86-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-87-/*---- OSPI Event ---------------------*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-88-struct ospi_init {
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-89-	uint32_t  bus_speed;                    /* Contrllor speed. */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-90-	uint32_t  tx_fifo_threshold;            /* Tx Fifo Threshold */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-91-	uint32_t  rx_fifo_threshold;            /* Rx Fifo Threshold */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-92-	uint32_t  rx_sample_delay;              /* Rx Sample Delay */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-93-	uint32_t  ddr_drive_edge;               /* DDR Drive Edge */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-94-	uint32_t  core_clk;                     /* System Clock */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-95-	uint32_t  cs_pin;                       /* Slave Pin */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-96-	uint32_t  rx_ds_delay;                  /* Rx-DS Delay */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h:97:	enum ospi_baud2_delay baud2_delay;      /* BAUD2 delay initial setting */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-98-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-99-	uint32_t  *base_regs;                   /* OSPI REG */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-100-	uint32_t  *aes_regs;                    /* AES REG */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-101-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-102-	void      *user_data;                   /* User data*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-103-	hal_event_notify_cb *event_cb;          /* Event Callback*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-104-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-105-	uint16_t  xip_wrap_cmd;			/* WRAP OpCode*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-106-	uint16_t  xip_incr_cmd;			/* INCR mode OpCode*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-107-	uint16_t  xip_cnt_time_out;		/* Timeout value*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-108-	uint16_t  xip_aes_rxds_dly;		/* AES RxDS Delay*/
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi_hal.h-109-	uint16_t  xip_wait_cycles;		/* XiP Wait Cycle*/
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-18-	volatile uint32_t  OSPI_CTRLR0;      /* 0x00 Control Reg 0           */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-19-	volatile uint32_t  OSPI_CTRLR1;      /* 0x04 Control Reg 1           */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-20-	volatile uint32_t  OSPI_ENR;         /* 0x08 Enable Reg              */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-21-	volatile uint32_t  RESERVED;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-22-	volatile uint32_t  OSPI_SER;         /* 0x10 Slave Enable            */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:23:	volatile uint32_t  OSPI_BAUDR;       /* 0x14 Baud Rate               */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-24-	volatile uint32_t  OSPI_TXFTLR;      /* 0x18 Tx FIFO Thrshold Lvl    */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-25-	volatile uint32_t  OSPI_RXFTLR;      /* 0x1C Rx FIFO Thrshold Lvl    */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-26-	volatile uint32_t  OSPI_TXFLR;       /* 0x20 Tx FIFO Level Reg       */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-27-	volatile uint32_t  OSPI_RXFLR;       /* 0x24 Receive FIFO Level Reg  */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-28-	volatile uint32_t  OSPI_SR;          /* 0x28 Status Reg              */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-29-	volatile uint32_t  OSPI_IMR;         /* 0x2C Interrupt Mask Reg      */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-30-	volatile uint32_t  OSPI_ISR;         /* 0x30 Interrupt Status Reg    */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-31-	volatile uint32_t  OSPI_RISR;        /* 0x34 Raw Intr Status Reg     */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-32-	volatile uint32_t  OSPI_TXEICR;      /* 0x38 Tx FIFO Err Intr clr    */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-33-	volatile uint32_t  OSPI_RXOICR;      /* 0x3C Rx FIFO o-flow Intr clr */
+
+=== 4. ACTIVE XIP CONFIGURATION ===
+58:CONFIG_DCACHE=y
+67:CONFIG_CACHE=y
+577:CONFIG_USE_ALIF_HAL_OSPI=y
+736:CONFIG_ICACHE=y
+1017:CONFIG_OSPI_FLASH_IS25WX=y
+1021:CONFIG_ALIF_OSPI_FLASH_XIP=y
+
+=== 5. GENERATED OSPI0 DEVICETREE NODE ===
+		};
+		lpcam: lpcam@43003000 {
+			compatible = "alif,cam";
+			reg = < 0x43003000 0x1000 >;
+			interrupts = < 0x36 0x0 >;
+			lp-cam;
+			clocks = < &clockctrl 0x16086 >;
+			clock-names = "cam_clk";
+			pinctrl-0 = < &pinctrl_lpcam >;
+			pinctrl-names = "default";
+			status = "disabled";
+		};
+		ospi0: ospi0@83000000 {
+			compatible = "snps,designware-ospi";
+			#address-cells = < 0x1 >;
+			#size-cells = < 0x0 >;
+			reg = < 0x83000000 0x1000 >;
+			pinctrl-0 = < &pinctrl_flash >;
+			pinctrl-names = "default";
+			interrupt-parent = < &nvic >;
+			interrupts = < 0x60 0x0 >;
+			aes-reg = < 0x83001000 0x100 >;
+			bus-speed = < 0x4c4b400 >;
+			clock-frequency = < 0x9896800 >;
+			cs-pin = < 0x1 >;
+			ddr-drive-edge = < 0x1 >;
+			rx-ds-delay = < 0xb >;
+			baud2-delay = < 0x1 >;
+			tx-fifo-threshold = < 0x40 >;
+			xip-rxds-vl-en;
+			xip-wait-cycles = < 0xf >;
+			xip-base-address = < 0xb0000000 0x20000000 >;
+			status = "okay";
+			ospi_flash: ospi_flash@0 {
+				compatible = "issi,xspi-flash-controller";
+				reg = < 0x0 >;
+				erase-value = < 0xff >;
+				num-of-sector = < 0x4000 >;
+				page-size = < 0x1000 >;
+				sector-size = < 0x1000 >;
+				write-block-size = < 0x2 >;
+
+=== 6. XIP PREFETCH IMPLEMENTATION ===
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-270-#define SPI_CTRLR0_INST_L_8bit                  0x2U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-271-#define SPI_CTRLR0_INST_L_16bit                 0x3U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-272-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-273-#define SPI_DMACR_TDMAE                         2U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-274-#define SPI_DMACR_RDMAE                         1U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-275-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-276-/* Bit fields in XIP_CTRL */
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-277-#define XIP_CTRL_RXDS_VL_EN_OFFSET              30U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:278:#define XIP_CTRL_XIP_PREFETCH_EN_OFFSET         29U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-279-#define XIP_CTRL_XIP_MBL_OFFSET                 26U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-280-#define XIP_CTRL_RXDS_SIG_EN_OFFSET             25U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-281-#define XIP_CTRL_XIP_HYPERBUS_EN_OFFSET         24U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:282:#define XIP_CTRL_CONT_XFER_EN_OFFSET            23U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-283-#define XIP_CTRL_INST_EN_OFFSET                 22U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:284:#define XIP_CTRL_RXDS_EN_OFFSET                 21U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-285-#define XIP_CTRL_INST_DDR_EN_OFFSET             20U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h:286:#define XIP_CTRL_DDR_EN_OFFSET                  19U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-287-#define XIP_CTRL_DFS_HC_OFFSET                  18U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-288-#define XIP_CTRL_WAIT_CYCLES_OFFSET             13U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-289-#define XIP_CTRL_MD_BITS_EN_OFFSET              12U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-290-#define XIP_CTRL_INST_L_OFFSET                  9U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-291-#define XIP_CTRL_ADDR_L_OFFSET                  4U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-292-#define XIP_CTRL_TRANS_TYPE_OFFSET              2U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-293-#define XIP_CTRL_FRF_OFFSET                     0U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-294-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-295-#define XIP_WRITE_CTRL_XIPWR_DFS_HC_OFFSET      21U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-296-#define XIP_WRITE_CTRL_XIPWR_WAIT_CYCLES        16U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-297-#define XIP_WRITE_CTRL_XIPWR_DM_EN_OFFSET       14U
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/include/ospi.h-298-#define XIP_WRITE_CTRL_XIPWR_RXDS_SIG_EN_OFFSET 13U
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-68-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-69-	val = (OCTAL << XIP_CTRL_FRF_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-70-	| (0x2 << XIP_CTRL_TRANS_TYPE_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-71-	| (XIP_CTRL_ADDR_LEN_36_BIT << XIP_CTRL_ADDR_L_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-72-	| (xip_cfg->xip_inst_len << XIP_CTRL_INST_L_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-73-	| (0x0 << XIP_CTRL_MD_BITS_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-74-	| (xip_cfg->xip_wait_cycles << XIP_CTRL_WAIT_CYCLES_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-75-	| (0x1 << XIP_CTRL_DFS_HC_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c:76:	| (0x1 << XIP_CTRL_DDR_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-77-	| (xip_cfg->xip_inst_ddr_en << XIP_CTRL_INST_DDR_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c:78:	| (0x1 << XIP_CTRL_RXDS_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-79-	| (0x1 << XIP_CTRL_INST_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c:80:	| (0x0 << XIP_CTRL_CONT_XFER_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-81-	| (0x0 << XIP_CTRL_XIP_HYPERBUS_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-82-	| (0x0 << XIP_CTRL_RXDS_SIG_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-83-	| (0x0 << XIP_CTRL_XIP_MBL_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c:84:	| (0x0 << XIP_CTRL_XIP_PREFETCH_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-85-	| (xip_cfg->xip_rxds_vl_en << XIP_CTRL_RXDS_VL_EN_OFFSET);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-86-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-87-	return val;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-88-}
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-89-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-90-/**
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-91- * \fn          void ospi_set_mode(struct ospi_regs *ospi, enum spi_mode mode)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-92- * \brief       Set the OSPI mode for the OSPI instance.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-93- * \param[in]   ospi     Pointer to the OSPI register map
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-94- * \param[in]   mode    The mode to be set.
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-95- * \return      none
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-96- */
+--
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-508-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-509-	val = (SPI_FRAME_FORMAT_OCTAL << XIP_CTRL_FRF_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-510-			| (trans_type << XIP_CTRL_TRANS_TYPE_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-511-			| (0x8 << XIP_CTRL_ADDR_L_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-512-			| (0x3 << XIP_CTRL_INST_L_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-513-			| (0x0 << XIP_CTRL_MD_BITS_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-514-			| (xip_cfg->xip_wait_cycles << XIP_CTRL_WAIT_CYCLES_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-515-			| (0x1 << XIP_CTRL_DFS_HC_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c:516:			| (0x1 << XIP_CTRL_DDR_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-517-			| (0x1 << XIP_CTRL_INST_DDR_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c:518:			| (0x1 << XIP_CTRL_RXDS_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-519-			| (0x1 << XIP_CTRL_INST_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c:520:			| (0x0 << XIP_CTRL_CONT_XFER_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-521-			| (0x0 << XIP_CTRL_XIP_HYPERBUS_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-522-			| (0x0 << XIP_CTRL_RXDS_SIG_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-523-			| (0x0 << XIP_CTRL_XIP_MBL_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c:524:			| (0x0 << XIP_CTRL_XIP_PREFETCH_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-525-			| (0x1 << XIP_CTRL_RXDS_VL_EN_OFFSET);
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-526-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-527-	ospi->OSPI_XIP_CTRL = val;
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-528-
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-529-	val = (SPI_FRAME_FORMAT_OCTAL << XIP_WRITE_CTRL_WR_FRF_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-530-			| (trans_type << XIP_WRITE_CTRL_WR_TRANS_TYPE_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-531-			| (0x8 << XIP_WRITE_CTRL_WR_ADDR_L_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-532-			| (0x3 << XIP_WRITE_CTRL_WR_INST_L_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-533-			| (0x1 << XIP_WRITE_CTRL_WR_SPI_DDR_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-534-			| (0x1 << XIP_WRITE_CTRL_WR_INST_DDR_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-535-			| (0x0 << XIP_WRITE_CTRL_XIPWR_HYPERBUS_EN_OFFSET)
+/home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c-536-			| (0x0 << XIP_WRITE_CTRL_XIPWR_RXDS_SIG_EN_OFFSET)
+
+=== 7. MPU STATIC REGION CONFIGURATION ===
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-27-	.r_limit = REGION_LIMIT_ADDR(base, size),  \
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-28-}
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-29-
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-30-#if DT_NODE_HAS_STATUS(OSPI_RAM_NODE, okay)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:31:#define OSPI0_XIP_REGION_NAME			"OSPI0_RAM_XIP"
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:32:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_DEVICE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-33-#elif DT_NODE_HAS_STATUS(OSPI_FLASH_NODE, okay)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:34:#define OSPI0_XIP_REGION_NAME			"OSPI0_FLASH_XIP"
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:35:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_SRAM_NOCACHE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-36-#else
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:37:#define OSPI0_XIP_REGION_NAME			"OSPI0_XIP"
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:38:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_DEVICE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-39-#endif
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-40-
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-41-#define MRAM_SECTOR_SIZE		DT_PROP(DT_NODELABEL(mram_storage), erase_block_size)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-42-
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-43-#define MRAM_BOOT_PARTITION_ADDR	DT_FIXED_PARTITION_ADDR(DT_NODELABEL(boot_partition))
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-44-#define MRAM_BOOT_PARTITION_SIZE	DT_REG_SIZE(DT_NODELABEL(boot_partition))
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-45-#define MRAM_SLOT0_PARTITION_ADDR	DT_FIXED_PARTITION_ADDR(DT_NODELABEL(slot0_partition))
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-46-#define MRAM_SLOT0_PARTITION_SIZE	DT_REG_SIZE(DT_NODELABEL(slot0_partition))
+--
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-92-#define DEVICE_MRAM_BASE_ADDR	MRAM_STORAGE_PARTITION_ADDR
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-93-#define DEVICE_MRAM_SIZE	MRAM_STORAGE_PARTITION_SIZE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-94-#endif
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-95-
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:96:static const struct arm_mpu_region mpu_regions[] = {
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-97-	/* Region 0: Executable MRAM */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-98-	MPU_REGION_ENTRY("FLASH_MRAM", FLASH_MRAM_BASE_ADDR,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-99-			 REGION_FLASH_ATTR(FLASH_MRAM_BASE_ADDR, FLASH_MRAM_SIZE)),
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-100-	/* Region 1: Writable MRAM (device mode for write access) */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-101-	MPU_REGION_ENTRY("DEVICE_MRAM", DEVICE_MRAM_BASE_ADDR,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-102-			 REGION_DEVICE_ATTR(DEVICE_MRAM_BASE_ADDR, DEVICE_MRAM_SIZE)),
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-103-	/* Region 2 */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-104-	MPU_REGION_ENTRY("ITCM", DT_REG_ADDR(DT_NODELABEL(itcm)),
+--
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-115-	MPU_REGION_ENTRY("PERIPHERALS", ALIF_HOST_PERIPHERAL_BASE,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-116-			 REGION_DEVICE_ATTR(ALIF_HOST_PERIPHERAL_BASE,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-117-							ALIF_HOST_PERIPHERAL_SIZE)),
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-118-	/* Region 6 */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:119:	MPU_REGION_ENTRY(OSPI0_XIP_REGION_NAME, ALIF_HOST_OSPI0_XIP_BASE,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:120:			 REGION_OSPI_XIP_ATTR(OSPI0_XIP_MAIR_INDEX,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-121-					      ALIF_HOST_OSPI0_XIP_BASE,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-122-					      ALIF_HOST_OSPI0_XIP_SIZE)),
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-123-};
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-124-
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-125-const struct arm_mpu_config mpu_config = {
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:126:	.num_regions = ARRAY_SIZE(mpu_regions),
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:127:	.mpu_regions = mpu_regions,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c-128-};
+
+============================================================
+OSPI CLOCK / MAIR / XIP AUDIT COMPLETE
+============================================================
