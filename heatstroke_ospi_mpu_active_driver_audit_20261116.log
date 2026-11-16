@@ -1,0 +1,559 @@
+============================================================
+OSPI MPU ATTRIBUTES AND ACTIVE DRIVER AUDIT
+2026-11-16T13:01:29+08:00
+
+=== 1. B1 MPU REGION IMPLEMENTATION ===
+/*
+ * Copyright (c) 2024 Alif Semiconductor.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <zephyr/sys/slist.h>
+#include <zephyr/arch/arm/mpu/arm_mpu.h>
+
+#define OSPI0_NODE			DT_NODELABEL(ospi0)
+#define OSPI_FLASH_NODE			DT_NODELABEL(ospi_flash)
+#define OSPI_RAM_NODE			DT_NODELABEL(ospi_ram)
+
+#define ALIF_HOST_OSPI_REG		0x83000000
+#define ALIF_HOST_OSPI_SIZE		KB(16)
+
+#define ALIF_HOST_PERIPHERAL_BASE	0x1A000000
+#define ALIF_HOST_PERIPHERAL_SIZE	MB(16)
+
+#define ALIF_HOST_OSPI0_XIP_BASE	DT_PROP_BY_IDX(OSPI0_NODE, xip_base_address, 0)
+#define ALIF_HOST_OSPI0_XIP_SIZE	DT_PROP_BY_IDX(OSPI0_NODE, xip_base_address, 1)
+
+#define REGION_OSPI_XIP_ATTR(index, base, size) \
+{\
+	.rbar = FULL_ACCESS_Msk | NON_SHAREABLE_Msk, \
+	.mair_idx = index, \
+	.r_limit = REGION_LIMIT_ADDR(base, size),  \
+}
+
+#if DT_NODE_HAS_STATUS(OSPI_RAM_NODE, okay)
+#define OSPI0_XIP_REGION_NAME			"OSPI0_RAM_XIP"
+#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_DEVICE
+#elif DT_NODE_HAS_STATUS(OSPI_FLASH_NODE, okay)
+#define OSPI0_XIP_REGION_NAME			"OSPI0_FLASH_XIP"
+#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_SRAM_NOCACHE
+#else
+#define OSPI0_XIP_REGION_NAME			"OSPI0_XIP"
+#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_DEVICE
+#endif
+
+#define MRAM_SECTOR_SIZE		DT_PROP(DT_NODELABEL(mram_storage), erase_block_size)
+
+#define MRAM_BOOT_PARTITION_ADDR	DT_FIXED_PARTITION_ADDR(DT_NODELABEL(boot_partition))
+#define MRAM_BOOT_PARTITION_SIZE	DT_REG_SIZE(DT_NODELABEL(boot_partition))
+#define MRAM_SLOT0_PARTITION_ADDR	DT_FIXED_PARTITION_ADDR(DT_NODELABEL(slot0_partition))
+#define MRAM_SLOT0_PARTITION_SIZE	DT_REG_SIZE(DT_NODELABEL(slot0_partition))
+#define MRAM_SLOT1_PARTITION_ADDR	DT_FIXED_PARTITION_ADDR(DT_NODELABEL(slot1_partition))
+#define MRAM_SLOT1_PARTITION_SIZE	DT_REG_SIZE(DT_NODELABEL(slot1_partition))
+#define MRAM_SCRATCH_PARTITION_ADDR	DT_FIXED_PARTITION_ADDR(DT_NODELABEL(scratch_partition))
+#define MRAM_SCRATCH_PARTITION_SIZE	DT_REG_SIZE(DT_NODELABEL(scratch_partition))
+#define MRAM_STORAGE_PARTITION_ADDR	DT_FIXED_PARTITION_ADDR(DT_NODELABEL(storage_partition))
+#define MRAM_STORAGE_PARTITION_SIZE	DT_REG_SIZE(DT_NODELABEL(storage_partition))
+
+#ifdef CONFIG_MCUBOOT
+/*
+ * MCUBoot bootloader builds
+ * MCUBoot executes from boot partition.
+ */
+#define FLASH_MRAM_BASE_ADDR	MRAM_BOOT_PARTITION_ADDR
+#define FLASH_MRAM_SIZE		MRAM_BOOT_PARTITION_SIZE
+/* Writable regions: slot0, slot1, scratch, storage */
+#define DEVICE_MRAM_BASE_ADDR	MRAM_SLOT0_PARTITION_ADDR
+#define DEVICE_MRAM_SIZE	(MRAM_STORAGE_PARTITION_ADDR + MRAM_STORAGE_PARTITION_SIZE \
+						- MRAM_SLOT0_PARTITION_ADDR)
+#elif defined(CONFIG_BOOTLOADER_MCUBOOT)
+/*
+ * MCUBoot-compatible app builds
+ * Application executes from slot0, needs to write trailer for swap operations.
+ * boot and slot0 (minus trailer sector) are executable.
+ * The last sector of slot0 is reserved as writable device memory for MCUBoot API
+ * trailer writes (boot_write_img_confirmed, boot_request_upgrade, etc.). Though the
+ * actual app-writable trailer area is much less than a sector, the entire last
+ * sector is reserved to align the MPU region on a sector boundary.
+ */
+#define FLASH_MRAM_BASE_ADDR	MRAM_BOOT_PARTITION_ADDR
+#define FLASH_MRAM_SIZE		(MRAM_SLOT0_PARTITION_ADDR + MRAM_SLOT0_PARTITION_SIZE - \
+				 MRAM_BOOT_PARTITION_ADDR - MRAM_SECTOR_SIZE)
+/* Writable regions: slot0 trailer sector, slot1, scratch, storage */
+#define DEVICE_MRAM_BASE_ADDR	(MRAM_SLOT0_PARTITION_ADDR + MRAM_SLOT0_PARTITION_SIZE \
+						- MRAM_SECTOR_SIZE)
+#define DEVICE_MRAM_SIZE	(MRAM_STORAGE_PARTITION_ADDR + MRAM_STORAGE_PARTITION_SIZE \
+						- DEVICE_MRAM_BASE_ADDR)
+#else
+/*
+ * Regular non-MCUBoot app builds
+ * Application uses entire flash area as executable.
+ * Only storage partition needs device attribute for write access.
+ */
+#define FLASH_MRAM_BASE_ADDR	MRAM_BOOT_PARTITION_ADDR
+#define FLASH_MRAM_SIZE		(MRAM_STORAGE_PARTITION_ADDR - MRAM_BOOT_PARTITION_ADDR)
+/* Writable region: storage only */
+#define DEVICE_MRAM_BASE_ADDR	MRAM_STORAGE_PARTITION_ADDR
+#define DEVICE_MRAM_SIZE	MRAM_STORAGE_PARTITION_SIZE
+#endif
+
+static const struct arm_mpu_region mpu_regions[] = {
+	/* Region 0: Executable MRAM */
+	MPU_REGION_ENTRY("FLASH_MRAM", FLASH_MRAM_BASE_ADDR,
+			 REGION_FLASH_ATTR(FLASH_MRAM_BASE_ADDR, FLASH_MRAM_SIZE)),
+	/* Region 1: Writable MRAM (device mode for write access) */
+	MPU_REGION_ENTRY("DEVICE_MRAM", DEVICE_MRAM_BASE_ADDR,
+			 REGION_DEVICE_ATTR(DEVICE_MRAM_BASE_ADDR, DEVICE_MRAM_SIZE)),
+	/* Region 2 */
+	MPU_REGION_ENTRY("ITCM", DT_REG_ADDR(DT_NODELABEL(itcm)),
+			 REGION_FLASH_ATTR(DT_REG_ADDR(DT_NODELABEL(itcm)),
+							DT_REG_SIZE(DT_NODELABEL(itcm)))),
+	/* Region 3 */
+	MPU_REGION_ENTRY("DTCM", DT_REG_ADDR(DT_NODELABEL(dtcm)),
+			 REGION_RAM_ATTR(DT_REG_ADDR(DT_NODELABEL(dtcm)),
+							DT_REG_SIZE(DT_NODELABEL(dtcm)))),
+	/* Region 4 */
+	MPU_REGION_ENTRY("OSPI_CTRL", ALIF_HOST_OSPI_REG,
+			 REGION_DEVICE_ATTR(ALIF_HOST_OSPI_REG, ALIF_HOST_OSPI_SIZE)),
+	/* Region 5 */
+	MPU_REGION_ENTRY("PERIPHERALS", ALIF_HOST_PERIPHERAL_BASE,
+			 REGION_DEVICE_ATTR(ALIF_HOST_PERIPHERAL_BASE,
+							ALIF_HOST_PERIPHERAL_SIZE)),
+	/* Region 6 */
+	MPU_REGION_ENTRY(OSPI0_XIP_REGION_NAME, ALIF_HOST_OSPI0_XIP_BASE,
+			 REGION_OSPI_XIP_ATTR(OSPI0_XIP_MAIR_INDEX,
+					      ALIF_HOST_OSPI0_XIP_BASE,
+					      ALIF_HOST_OSPI0_XIP_SIZE)),
+};
+
+const struct arm_mpu_config mpu_config = {
+	.num_regions = ARRAY_SIZE(mpu_regions),
+	.mpu_regions = mpu_regions,
+};
+
+=== 2. OSPI MEMORY ATTRIBUTE DEFINITIONS ===
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:143:#define MPU_MAIR_INDEX_SRAM_NOCACHE 2
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:145:#define MPU_MAIR_INDEX_DEVICE       3
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:154:	 (MPU_MAIR_ATTR_SRAM_NOCACHE << (MPU_MAIR_INDEX_SRAM_NOCACHE * 8)) |                       \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:155:	 (MPU_MAIR_ATTR_DEVICE << (MPU_MAIR_INDEX_DEVICE * 8)))
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:198:		.mair_idx = MPU_MAIR_INDEX_SRAM_NOCACHE,              /* Cache-ability */          \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:223:		.mair_idx = MPU_MAIR_INDEX_DEVICE,                    /* Cache-ability */          \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:252:		.mair_idx = MPU_MAIR_INDEX_SRAM_NOCACHE,              /* Cache-ability */          \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:278:		.mair_idx = MPU_MAIR_INDEX_DEVICE,                    /* Cache-ability */          \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:363:				  MPU_MAIR_INDEX_SRAM_NOCACHE})
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:366:				  MPU_MAIR_INDEX_SRAM_NOCACHE})
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:369:				  MPU_MAIR_INDEX_SRAM_NOCACHE})
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:372:				  MPU_MAIR_INDEX_SRAM_NOCACHE})
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:377:				  MPU_MAIR_INDEX_SRAM_NOCACHE})
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v8.h:380:				  MPU_MAIR_INDEX_SRAM_NOCACHE})
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm/mpu/arm_mpu_v7m.h:129:#define REGION_FLASH_ATTR(size) {(NORMAL_OUTER_INNER_WRITE_THROUGH_NON_SHAREABLE | size | RO_Msk)}
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/cortex_r/arm_mpu.h:104:#define MPU_MAIR_INDEX_DEVICE		0U
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/cortex_r/arm_mpu.h:117:#define MPU_MAIR_INDEX_SRAM_NOCACHE	3U
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/cortex_r/arm_mpu.h:123:	((MPU_MAIR_ATTR_DEVICE << (MPU_MAIR_INDEX_DEVICE * 8)) | \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/cortex_r/arm_mpu.h:126:	 (MPU_MAIR_ATTR_SRAM_NOCACHE << (MPU_MAIR_INDEX_SRAM_NOCACHE * 8)))
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/cortex_r/arm_mpu.h:140:		.mair_idx = MPU_MAIR_INDEX_DEVICE,		      \
+/home/user/sdk-alif/zephyr/include/zephyr/arch/arm64/cortex_r/arm_mpu.h:156:		.mair_idx = MPU_MAIR_INDEX_SRAM_NOCACHE,	      \
+/home/user/sdk-alif/zephyr/include/zephyr/drivers/mm/system_mm.h:72:/** Region will be executable (normally forbidden) */
+/home/user/sdk-alif/zephyr/include/zephyr/drivers/mm/system_mm.h:75:/** Region will be accessible to user mode (normally supervisor-only) */
+/home/user/sdk-alif/zephyr/include/zephyr/kernel/mm.h:63:/** Region will be executable (normally forbidden) */
+/home/user/sdk-alif/zephyr/include/zephyr/kernel/mm.h:66:/** Region will be accessible to user mode (normally supervisor-only) */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:23:#define REGION_OSPI_XIP_ATTR(index, base, size) \
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:32:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_DEVICE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:35:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_SRAM_NOCACHE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:38:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_DEVICE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:120:			 REGION_OSPI_XIP_ATTR(OSPI0_XIP_MAIR_INDEX,
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/mpu_regions.c:23:	.mair_idx = MPU_MAIR_INDEX_SRAM_NOCACHE, \
+/home/user/sdk-alif/zephyr/boards/snps/em_starterkit/arc_mpu_regions.c:13: * All regions not listed here are shared by secure world and normal world.
+/home/user/sdk-alif/zephyr/boards/snps/em_starterkit/arc_mpu_regions.c:56: * Region peripheral is shared by secure world and normal world by default,
+/home/user/sdk-alif/zephyr/boards/snps/nsim/arc_classic/arc_mpu_regions.c:14: * All regions not listed here are shared by secure world and normal world.
+/home/user/sdk-alif/zephyr/boards/snps/nsim/arc_classic/arc_mpu_regions.c:89: * Region peripheral is shared by secure world and normal world by default,
+/home/user/sdk-alif/zephyr/boards/qemu/arc/arc_mpu_regions.c:14: * All regions not listed here are shared by secure world and normal world.
+/home/user/sdk-alif/zephyr/boards/qemu/arc/arc_mpu_regions.c:62: * Region peripheral is shared by secure world and normal world by default,
+/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core_A/Include/core_ca.h:1873:                                   region.mem_t = NORMAL; \
+/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core_A/Include/core_ca.h:1888:                                   region.mem_t = NORMAL; \
+/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core_A/Include/core_ca.h:1903:                                   region.mem_t = NORMAL; \
+/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core_A/Include/core_ca.h:1918:                                   region.mem_t = NORMAL; \
+/home/user/sdk-alif/modules/hal/cmsis/CMSIS/Core_A/Include/core_ca.h:1933:                                   region.mem_t = NORMAL; \
+/home/user/sdk-alif/modules/lib/cmsis-dsp/Testing/cmsis_build/RTE/Device/ARMCA7/mmu_ARMCA7.c:91://Recall: When the Shareable attribute is applied to a memory region that is not Write-Back, Normal memory, data held in this region is treated as Non-cacheable.
+/home/user/sdk-alif/modules/lib/cmsis-dsp/Testing/cmsis_build/RTE/Device/ARMCA5/mmu_ARMCA5.c:91://Recall: When the Shareable attribute is applied to a memory region that is not Write-Back, Normal memory, data held in this region is treated as Non-cacheable.
+/home/user/sdk-alif/modules/lib/cmsis-dsp/Testing/cmsis_build/RTE/Device/ARMCA9/mmu_ARMCA9.c:91://Recall: When the Shareable attribute is applied to a memory region that is not Write-Back, Normal memory, data held in this region is treated as Non-cacheable.
+/home/user/sdk-alif/modules/lib/gui/lvgl/src/draw/nanovg/lv_draw_nanovg_mask_rect.c:54:    /* Nesting cropping regions using rounded rectangles and normal rectangles */
+/home/user/sdk-alif/modules/lib/gui/lvgl/src/draw/vg_lite/lv_draw_vg_lite_mask_rect.c:59:    /* Nesting cropping regions using rounded rectangles and normal rectangles */
+/home/user/sdk-alif/modules/lib/gui/lvgl/src/libs/thorvg/tvgSwRasterTexmap.h:711:    auto regionTop = region ? region->min.y : image->rle->spans->y;  //Normal Image or Rle Image?
+/home/user/sdk-alif/modules/lib/picolibc/picocrt/machine/aarch64/crt0.c:192:         * Region 0 is Normal memory
+/home/user/sdk-alif/modules/lib/executorch/third-party/ao/third_party/cutlass/include/cutlass/gemm/threadblock/threadblock_swizzle_streamk.h:739:    int big_block_iters = (sk_big_blocks_per_region * sk_iters_per_normal_block()) + sk_big_blocks_per_region;   // number of iterations in the region's big blocks
+/home/user/sdk-alif/modules/lib/executorch/third-party/ao/third_party/cutlass/include/cutlass/gemm/threadblock/threadblock_swizzle_streamk.h:740:    int normal_block_iters = iter_in_region - big_block_iters;                                                 // number of iterations in the region's normal blocks
+/home/user/sdk-alif/modules/lib/executorch/third-party/ao/third_party/cutlass/include/cutlass/gemm/threadblock/threadblock_swizzle_streamk.h:743:    int normal_block_idx_in_region = sk_big_blocks_per_region + div_mod_sk_iters_per_normal_block.div(normal_block_iters);
+/home/user/sdk-alif/modules/lib/executorch/third-party/ao/third_party/cutlass/include/cutlass/gemm/threadblock/threadblock_swizzle_streamk.h:765:    block_iter_begin = (region_idx * sk_iters_per_region) + (block_idx_in_region * sk_iters_per_normal_block());
+
+=== 3. ACTIVE ZEHPYR IS25WX DRIVER INITIALIZATION ===
+126:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_0_BITS;
+127:	dev_data->trans_conf.ddr_enable = OSPI_DDR_ENABLE;
+128:	dev_data->trans_conf.wait_cycles = 8;
+133:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+180:	dev_data->trans_conf.frame_size = dfs;
+183:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+296:		dev_data->trans_conf.wait_cycles = 16;
+297:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+298:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+301:						     &dev_data->trans_conf);
+353:	dev_data->trans_conf.wait_cycles = 16;
+354:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+355:	dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+358:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+421:		dev_data->trans_conf.wait_cycles = 16;
+422:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+423:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+426:						     &dev_data->trans_conf);
+523:		dev_data->trans_conf.wait_cycles = 0;
+524:		dev_data->trans_conf.addr_len = 0;
+527:						     &dev_data->trans_conf);
+561:		dev_data->trans_conf.wait_cycles = 0;
+562:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+563:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+566:						     &dev_data->trans_conf);
+633:		dev_data->trans_conf.wait_cycles = 0;
+634:		dev_data->trans_conf.addr_len = 0;
+636:		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+682:		dev_data->trans_conf.wait_cycles = 0;
+683:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+684:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+686:		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+758:		dev_data->trans_conf.wait_cycles = 0;
+759:		dev_data->trans_conf.addr_len = 0;
+762:						     &dev_data->trans_conf);
+797:		dev_data->trans_conf.wait_cycles = 0;
+798:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+799:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+802:						     &dev_data->trans_conf);
+870:	dev_data->trans_conf.wait_cycles = 0;
+871:	dev_data->trans_conf.addr_len = 0;
+873:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+906:	dev_data->trans_conf.wait_cycles = 0;
+907:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+909:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+971:		dev_data->trans_conf.wait_cycles = 0;
+972:		dev_data->trans_conf.addr_len = 0;
+974:		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+1047:static int flash_is25wx_ospi_init(const struct device *dev)
+1059:	init_config.core_clk = DT_PROP(OSPI_CTRL_NODE, clock_frequency);
+1060:	init_config.bus_speed = DT_PROP(OSPI_CTRL_NODE, bus_speed);
+1066:	init_config.rx_ds_delay = DT_PROP(OSPI_CTRL_NODE, rx_ds_delay);
+1076:	init_config.xip_wait_cycles = DT_PROP(OSPI_CTRL_NODE, xip_wait_cycles);
+1078:	init_config.xip_inst_ddr_en = 0;
+1080:	memset(&dev_data->trans_conf, 0, sizeof(struct ospi_trans_config));
+1082:	dev_data->trans_conf.frame_size = OSPI_DFS_BITS_8;
+1083:	dev_data->trans_conf.frame_format = OSPI_FRF_STANDRAD;
+1084:	dev_data->trans_conf.addr_len = 0;
+1085:	dev_data->trans_conf.wait_cycles = 0;
+1086:	dev_data->trans_conf.ddr_enable = OSPI_DDR_DISABLE;
+1087:	dev_data->trans_conf.inst_len = OSPI_INST_LENGTH_8_BITS;
+1088:	dev_data->trans_conf.trans_type = 0;
+1089:	dev_data->trans_conf.rx_ds_enable = 0;
+1100:	ret = alif_hal_ospi_initialize(&dev_data->ospi_handle, &init_config);
+1106:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+1121:		dev_data->cmd_buf[2] = OCTAL_DDR;
+1127:		dev_data->cmd_buf[4] = OCTAL_DDR;
+1129:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_24_BITS;
+1137:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+1182:	dev_data->trans_conf.frame_size = OSPI_DFS_BITS_16;
+1183:	dev_data->trans_conf.frame_format = OSPI_FRF_OCTAL;
+1184:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_0_BITS;
+1185:	dev_data->trans_conf.wait_cycles = 0;
+1186:	dev_data->trans_conf.ddr_enable = OSPI_DDR_ENABLE;
+1189:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+1201:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+1202:	dev_data->trans_conf.ddr_enable = OSPI_DDR_ENABLE;
+1205:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+1244:		alif_hal_ospi_xip_enable(dev_data->ospi_handle);
+1298:	ret = flash_is25wx_ospi_init(dev);
+1412:DEVICE_DT_DEFINE(OSPI_FLASH_NODE, &flash_is25wx_ospi_init,
+	set_cs_pin(dev_data->ospi_handle, SLAVE_DE_ACTIVATE);
+
+	k_sem_give(&dev_data->sem);
+
+	return ret;
+}
+
+static int flash_is25wx_ospi_init(const struct device *dev)
+{
+	int ret, dfs;
+	uint32_t event;
+
+	struct alif_flash_ospi_config *dev_cfg = (struct alif_flash_ospi_config *)dev->config;
+	struct alif_flash_ospi_dev_data *dev_data = (struct alif_flash_ospi_dev_data *)dev->data;
+
+	struct ospi_init init_config;
+
+	memset(&init_config, 0, sizeof(struct ospi_init));
+
+	init_config.core_clk = DT_PROP(OSPI_CTRL_NODE, clock_frequency);
+	init_config.bus_speed = DT_PROP(OSPI_CTRL_NODE, bus_speed);
+	init_config.tx_fifo_threshold = DT_PROP(OSPI_CTRL_NODE, tx_fifo_threshold);
+	init_config.rx_fifo_threshold = 0;
+	init_config.rx_sample_delay = 0;
+	init_config.ddr_drive_edge = DT_PROP(OSPI_CTRL_NODE, ddr_drive_edge);
+	init_config.cs_pin = DT_PROP(OSPI_CTRL_NODE, cs_pin);
+	init_config.rx_ds_delay = DT_PROP(OSPI_CTRL_NODE, rx_ds_delay);
+	init_config.baud2_delay = DT_PROP(OSPI_CTRL_NODE, baud2_delay);
+	init_config.base_regs = dev_cfg->regs;
+	init_config.aes_regs = dev_cfg->aes_regs;
+	init_config.event_cb = hal_event_update;
+	init_config.user_data = dev_data;
+
+	init_config.xip_incr_cmd = ISSI_XIP_INCR_CMD;
+	init_config.xip_wrap_cmd = ISSI_XIP_WRAP_CMD;
+	init_config.xip_rxds_vl_en = DT_PROP(OSPI_CTRL_NODE, xip_rxds_vl_en);
+	init_config.xip_wait_cycles = DT_PROP(OSPI_CTRL_NODE, xip_wait_cycles);
+	init_config.xip_inst_len = XIP_CTRL_INST_LEN_8_BIT;
+	init_config.xip_inst_ddr_en = 0;
+
+	memset(&dev_data->trans_conf, 0, sizeof(struct ospi_trans_config));
+
+	dev_data->trans_conf.frame_size = OSPI_DFS_BITS_8;
+	dev_data->trans_conf.frame_format = OSPI_FRF_STANDRAD;
+	dev_data->trans_conf.addr_len = 0;
+	dev_data->trans_conf.wait_cycles = 0;
+	dev_data->trans_conf.ddr_enable = OSPI_DDR_DISABLE;
+	dev_data->trans_conf.inst_len = OSPI_INST_LENGTH_8_BITS;
+	dev_data->trans_conf.trans_type = 0;
+	dev_data->trans_conf.rx_ds_enable = 0;
+
+	/* initialize semaphore */
+	k_sem_init(&dev_data->sem, 1, 1);
+	k_event_init(&dev_data->event_f);
+
+	pinctrl_apply_state(dev_cfg->pcfg, PINCTRL_STATE_DEFAULT);
+
+	/* IRQ Init */
+	dev_cfg->irq_config(dev);
+
+	ret = alif_hal_ospi_initialize(&dev_data->ospi_handle, &init_config);
+	if (ret != 0) {
+		ret = err_map_alif_hal_to_zephyr(ret);
+		return ret;
+	}
+	/* Initialize Configuration */
+	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+	if (ret != 0) {
+		ret = err_map_alif_hal_to_zephyr(ret);
+		return ret;
+	}
+
+	ret = set_write_enable(dev, OSPI_DFS_BITS_8);
+	if (ret != 0) {
+		return ret;
+	}
+
+	/* Prepare command and address for setting flash in octal mode */
+	if (IS_ENABLED(CONFIG_FLASH_ADDRESS_IN_SINGLE_FIFO_LOCATION)) {
+		dev_data->cmd_buf[0] = CMD_WRITE_VOL_CONFIG;
+		dev_data->cmd_buf[1] = (uint8_t)(IO_MODE_ADDRESS >> 0);
+		dev_data->cmd_buf[2] = OCTAL_DDR;
+	} else {
+		dev_data->cmd_buf[0] = CMD_WRITE_VOL_CONFIG;
+		dev_data->cmd_buf[1] = (uint8_t)(IO_MODE_ADDRESS >> 16);
+		dev_data->cmd_buf[2] = (uint8_t)(IO_MODE_ADDRESS >> 8);
+		dev_data->cmd_buf[3] = (uint8_t)(IO_MODE_ADDRESS >> 0);
+		dev_data->cmd_buf[4] = OCTAL_DDR;
+	}
+	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_24_BITS;
+
+	/* Select Chip */
+	ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+	if (ret != 0) {
+		return ret;
+	}
+
+	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+	if (ret != 0) {
+		ret = err_map_alif_hal_to_zephyr(ret);
+		return ret;
+	}
+
+	k_event_clear(&dev_data->event_f, OSPI_EVENT_TRANSFER_COMPLETE | OSPI_EVENT_DATA_LOST);
+
+	ret = alif_hal_ospi_send(dev_data->ospi_handle,
+			dev_data->cmd_buf, CONFIG_FLASH_PREPARE_CMD_LEN);
+	if (ret != 0) {
+		ret = err_map_alif_hal_to_zephyr(ret);
+		return ret;
+	}
+
+	event = flash_ospi_wait_event(dev,
+			     OSPI_EVENT_TRANSFER_COMPLETE | OSPI_EVENT_DATA_LOST);
+
+	if (!(event & OSPI_EVENT_TRANSFER_COMPLETE)) {
+		/* De-Select slave */
+		set_cs_pin(dev_data->ospi_handle, SLAVE_DE_ACTIVATE);
+		return -EIO;
+	}
+
+	/* De-Select slave */
+	ret = set_cs_pin(dev_data->ospi_handle, SLAVE_DE_ACTIVATE);
+	if (ret != 0) {
+		return ret;
+	}
+
+	/* Set Default Wait Cycle */
+	dev_data->cmd_buf[0] = CMD_WRITE_VOL_CONFIG;
+	dev_data->cmd_buf[1] = WAIT_CYCLE_ADDRESS;
+	dev_data->cmd_buf[2] = DEFAULT_WAIT_CYCLES;
+	dev_data->cmd_buf[3] = DEFAULT_WAIT_CYCLES;
+
+	/** Update DFS */
+	dfs = get_dfs(dev_cfg->flash_param.write_block_size);
+	if (dfs == 0) {
+		return -EINVAL;
+	}
+
+	/** R-W FrameSize */
+	dev_cfg->rw_dfs = dfs;
+
+	dev_data->trans_conf.frame_size = OSPI_DFS_BITS_16;
+	dev_data->trans_conf.frame_format = OSPI_FRF_OCTAL;
+	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_0_BITS;
+	dev_data->trans_conf.wait_cycles = 0;
+	dev_data->trans_conf.ddr_enable = OSPI_DDR_ENABLE;
+
+	/* Update configuration */
+	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+	if (ret != 0) {
+		ret = err_map_alif_hal_to_zephyr(ret);
+		return ret;
+	}
+
+	ret = set_write_enable(dev, OSPI_DFS_BITS_16);
+	if (ret != 0) {
+		return ret;
+	}
+
+	/* Re-configure */
+	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+	dev_data->trans_conf.ddr_enable = OSPI_DDR_ENABLE;
+
+	/* Update Interface configuration */
+	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+	if (ret != 0) {
+		ret = err_map_alif_hal_to_zephyr(ret);
+		return ret;
+	}
+
+	/* Select Chip */
+	ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+	if (ret != 0) {
+		return ret;
+	}
+
+	k_event_clear(&dev_data->event_f, OSPI_EVENT_TRANSFER_COMPLETE | OSPI_EVENT_DATA_LOST);
+
+	/* Send Command */
+	ret = alif_hal_ospi_send(dev_data->ospi_handle, dev_data->cmd_buf, 4);
+	if (ret != 0) {
+		ret = err_map_alif_hal_to_zephyr(ret);
+		return ret;
+	}
+
+	event = flash_ospi_wait_event(dev,
+			     OSPI_EVENT_TRANSFER_COMPLETE | OSPI_EVENT_DATA_LOST);
+
+	if (!(event & OSPI_EVENT_TRANSFER_COMPLETE)) {
+		/* De-Select slave */
+		set_cs_pin(dev_data->ospi_handle, SLAVE_DE_ACTIVATE);
+		return -EIO;
+	}
+
+	/* De-Select slave */
+	ret = set_cs_pin(dev_data->ospi_handle, SLAVE_DE_ACTIVATE);
+	if (ret != 0) {
+		return ret;
+	}
+
+	dev_data->ISSI_Flags |= FLASH_POWER;
+
+	if (IS_ENABLED(CONFIG_ALIF_OSPI_FLASH_XIP)) {
+		alif_hal_ospi_xip_enable(dev_data->ospi_handle);
+	}
+
+	return ret;
+}
+
+
+#if defined CONFIG_PM_DEVICE
+static int flash_is25wx_ospi_suspend(const struct device *dev)
+{
+	int ret;
+	const struct alif_flash_ospi_config *dev_cfg = dev->config;
+	struct alif_flash_ospi_dev_data *dev_data = dev->data;
+
+	if (IS_ENABLED(CONFIG_ALIF_OSPI_FLASH_XIP)) {
+		alif_hal_ospi_xip_disable(dev_data->ospi_handle);
+	}
+
+	ret = alif_hal_ospi_deinit(dev_data->ospi_handle);
+	if (ret != 0) {
+		return err_map_alif_hal_to_zephyr(ret);
+	}
+
+	if (dev_cfg->pcfg != NULL) {
+		ret = pinctrl_apply_state(dev_cfg->pcfg, PINCTRL_STATE_SLEEP);
+		if (ret < 0 && ret != -ENOENT) {
+			return ret;
+		}
+	}
+
+	dev_data->ISSI_Flags &= ~FLASH_POWER;
+
+	return 0;
+}
+
+static int flash_is25wx_ospi_resume(const struct device *dev)
+{
+
+=== 4. OSPI BUS CLOCK DIVIDER IMPLEMENTATION ===
+
+=== 5. FINAL GENERATED OSPI NODE ===
+
+=== 6. LINKED OSPI INITIALIZATION SYMBOLS ===
+8001ce44 T alif_hal_ospi_cs_enable
+8001cda4 T alif_hal_ospi_deinit
+8001cc50 T alif_hal_ospi_initialize
+8001cf40 T alif_hal_ospi_irq_handler
+8001cdf4 T alif_hal_ospi_prepare_transfer
+8001ce80 T alif_hal_ospi_send
+8001ced4 T alif_hal_ospi_transfer
+8001cfe4 T alif_hal_ospi_xip_disable
+8001cfa4 T alif_hal_ospi_xip_enable
+8000d2b4 T arm_core_mpu_configure_static_mpu_regions
+00000001 A CONFIG_CPU_HAS_CUSTOM_FIXED_SOC_MPU_REGIONS
+00000001 A CONFIG_OSPI_FLASH_IS25WX
+00000001 A CONFIG_USE_ALIF_HAL_OSPI
+8000ec00 t flash_is25wx_ospi_erase
+80027f98 t flash_is25wx_ospi_get_parameters
+8000e9f0 t flash_is25wx_ospi_init
+80027fb4 t flash_is25wx_ospi_isr
+8002819e t flash_is25wx_ospi_pm_action
+8000ee0c t flash_is25wx_ospi_read
+8000f0f0 t flash_is25wx_ospi_write
+8005923c r mpu_regions
+8001cba8 T ospi_xip_enable
+8000d064 T z_arm_configure_static_mpu_regions
+
+=== 7. LINKED MEMORY REGION AND MODEL SECTION ===
+ 24 k_fifo_area   00000028  2000b0d4  80064950  00064a4c  2**2
+                  CONTENTS, ALLOC, LOAD, DATA
+ 25 ospi0         00a83f20  b0000000  b0000000  00064a80  2**4
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+ 26 .comment      00000020  00000000  00000000  00ae89a0  2**0
+
+=== 8. MODEL LOAD ADDRESS AND CONFIGURATION ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/prj.conf:77:CONFIG_MODEL_IN_EXT_FLASH=y
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/BufAttributes.hpp:28:#if CONFIG_MODEL_IN_EXT_FLASH
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/BufAttributes.hpp:29:#define MODEL_SECTION               section(".alif_extflash_" DT_PROP(DT_NODELABEL(ext_flash_xip), zephyr_memory_region))
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/BufAttributes.hpp:31:#define MODEL_SECTION               section(CONFIG_MODEL_SECTION)
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/BufAttributes.hpp:36:#define MODEL_SECTION_ATTRIBUTE     MAKE_ATTRIBUTE(MODEL_SECTION)
+
+============================================================
+OSPI MPU / ACTIVE DRIVER AUDIT COMPLETE
+============================================================
