@@ -1,0 +1,1028 @@
+=== STATIC MODEL ARCHITECTURE / CHECKPOINT LOADER ===
+#!/usr/bin/env python3
+"""
+Prepare the Heat Stress Reg_Model + Cla_Model for fixed-shape export.
+
+Requirements:
+  - Keep this file beside the original run.py.
+  - run.py must define Reg_Model and Cla_Model.
+  - Checkpoints:
+      models/trained_by_data_split_byid/reg_model.pth
+      models/trained_by_data_split_byid/rpe_psi_cla_model.pth
+
+Inputs to the prepared model:
+  x_values:       float32 [1, 900, 6], missing positions replaced by 0
+  missing_mask:   float32/bool [1, 900, 6], 1/True means missing
+  x_mark:         float32 [1, 900, 3]
+  worker_features:float32 [1, 30]
+
+Outputs:
+  rpe_logits: [1, 4]
+  psi_logits: [1, 4]
+
+The fixed-size masked compaction below reproduces the original operation:
+  select observed values in chronological order, then adaptive_avg_pool1d
+  from the observed count to 1800 samples.
+It uses fixed tensor dimensions, sorting/gathering, and prefix sums instead
+of boolean indexing and variable-length tensors.
+
+Note:
+  ONNX exportability does not guarantee that every operator is supported by
+  TFLite Micro or mapped to Ethos-U55. In particular, SORT/TopK and LSTM
+  support must be checked in the actual ONNX->TFLite->Vela toolchain.
+"""
+
+import argparse
+from pathlib import Path
+
+import torch
+import torch.nn as nn
+
+# Import the exact trained architectures from the supplied original run.py.
+from run import Reg_Model, Cla_Model
+
+
+SEQ_LEN = 900
+SEQ_FEATURES = 6
+TIME_FEATURES = 3
+REG_WORKER_FEATURES = 18
+CLA_WORKER_FEATURES = 30
+COMPACT_SEQ_LEN = SEQ_LEN * 2
+
+
+def load_state_dict_compat(path: Path):
+    """Load either a raw state_dict or a common wrapped checkpoint."""
+    try:
+        obj = torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        obj = torch.load(path, map_location="cpu")
+
+    if isinstance(obj, dict):
+        if "model_state_dict" in obj:
+            obj = obj["model_state_dict"]
+        elif "state_dict" in obj:
+            obj = obj["state_dict"]
+
+    if not isinstance(obj, dict):
+        raise TypeError(f"{path} does not contain a state_dict")
+    return obj
+
+
+class StaticRegModel(Reg_Model):
+    """
+    Same layers/parameter names as Reg_Model, but with a static-shape forward.
+
+    The constructor is inherited from Reg_Model, so trained state_dict keys
+    remain compatible. missing_mask=True means that a sensor value is missing.
+    """
+
+    @staticmethod
+    def masked_compact_adaptive_pool(x, valid, output_size=COMPACT_SEQ_LEN):
+        """
+        x, valid: [B, L, N]
+        returns:  [B, output_size, N]
+
+        For each channel, valid samples are compacted in chronological order.
+        The output is mathematically equivalent to adaptive_avg_pool1d over
+        that compacted variable-length sequence, including the all-missing
+        case (which returns zeros).
+
+        All intermediate tensor dimensions are fixed by B, L, N, output_size.
+        """
+        batch, length, channels = x.shape
+
+        # Unique sort keys preserve chronological order:
+        # valid positions get keys [0, L-1], missing positions [L, 2L-1].
+        positions = torch.arange(
+            length, device=x.device, dtype=torch.int64
+        ).view(1, length, 1).expand(batch, length, channels)
+
+        sort_keys = positions + (~valid).to(torch.int64) * length
+        order = torch.argsort(sort_keys, dim=1)
+        compacted = torch.gather(x, dim=1, index=order)
+
+        count = valid.to(torch.int32).sum(dim=1)       # [B, N]
+        safe_count = torch.clamp(count, min=1)         # avoid divide by zero
+
+        # Prefix sums allow each adaptive-pooling bin to be calculated using
+        # two gathers. PyTorch adaptive pooling uses:
+        # start = floor(i * input_len / output_len)
+        # end   = ceil((i+1) * input_len / output_len)
+        prefix = torch.cat(
+            (
+                torch.zeros(
+                    (batch, 1, channels),
+                    dtype=x.dtype,
+                    device=x.device,
+                ),
+                torch.cumsum(compacted, dim=1),
+            ),
+            dim=1,
+        )                                               # [B, L+1, N]
+
+        out_index = torch.arange(
+            output_size, device=x.device, dtype=torch.int32
+        ).view(1, output_size, 1)
+
+        start = (out_index * safe_count.unsqueeze(1)) // output_size
+        end_numerator = (out_index + 1) * safe_count.unsqueeze(1)
+        end = (end_numerator + output_size - 1) // output_size
+
+        start_sum = torch.gather(
+            prefix, 1, start.to(torch.int64).expand(batch, output_size, channels)
+        )
+        end_sum = torch.gather(
+            prefix, 1, end.to(torch.int64).expand(batch, output_size, channels)
+        )
+
+        bin_size = torch.clamp(end - start, min=1).to(x.dtype)
+        pooled = (end_sum - start_sum) / bin_size
+
+        # The original implementation returns zeros for an all-missing channel.
+        pooled = torch.where(
+            (count > 0).unsqueeze(1),
+            pooled,
+            torch.zeros_like(pooled),
+        )
+        return pooled
+
+    def forward(self, x, missing_mask, x_mark, worker_features):
+        """
+        Fixed deployment signature:
+          x:               [1, 900, 6], missing positions set to zero
+          missing_mask:    [1, 900, 6], True/1 means missing
+          x_mark:          [1, 900, 3]
+          worker_features: [1, 18]
+        """
+        missing_mask = missing_mask > 0.5
+        valid = ~missing_mask
+        batch = x.shape[0]
+
+        # Non-sequential worker features: [B,18] -> [B,900,1].
+        non_seq_enc_out = self.non_seq_enc(worker_features)
+        time_and_worker = torch.cat(
+            (x_mark, non_seq_enc_out.reshape(batch, SEQ_LEN, 1)),
+            dim=2,
+        )
+
+        # Single-variate feature branch. This reproduces the original
+        # valid-value compaction + adaptive_avg_pool1d(..., 1800) operation.
+        compacted_pool = self.masked_compact_adaptive_pool(
+            x, valid, COMPACT_SEQ_LEN
+        )
+
+        svf_out = []
+        for feature_index, linear in enumerate(self.svf):
+            svf_out.append(linear(compacted_pool[:, :, feature_index]))
+
+        svf_enc = torch.stack(svf_out, dim=2)            # [B,900,6]
+        svf_enc = torch.where(
+            missing_mask, svf_enc, torch.zeros_like(svf_enc)
+        )
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=Path("./models/trained_by_data_split_byid"),
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("./export"),
+    )
+    parser.add_argument("--skip-onnx", action="store_true")
+    parser.add_argument("--skip-validation", action="store_true")
+    args = parser.parse_args()
+
+    torch.set_grad_enabled(False)
+
+    reg_path = args.model_dir / "reg_model.pth"
+    cla_path = args.model_dir / "rpe_psi_cla_model.pth"
+    if not reg_path.is_file():
+        raise FileNotFoundError(reg_path)
+    if not cla_path.is_file():
+        raise FileNotFoundError(cla_path)
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Instantiate exact original architectures and load trained parameters.
+    original_reg = Reg_Model().cpu().eval()
+    cla_model = Cla_Model().cpu().eval()
+    original_reg.load_state_dict(load_state_dict_compat(reg_path), strict=True)
+    cla_model.load_state_dict(load_state_dict_compat(cla_path), strict=True)
+
+    # Same Reg_Model parameters and names, but with static-shape forward.
+    static_reg = StaticRegModel().cpu().eval()
+    static_reg.load_state_dict(original_reg.state_dict(), strict=True)
+
+    combined = StaticCombinedModel(static_reg, cla_model).cpu().eval()
+
+    if not args.skip_validation:
+        validate_against_original(original_reg, cla_model, combined)
+
+    checkpoint_path = args.output_dir / "combined_static_model.pth"
+    torch.save(
+        {
+            "format": "heat_stress_static_combined_v1",
+            "model_state_dict": combined.state_dict(),
+            "input_shapes": {
+                "x_values": [1, 900, 6],
+                "missing_mask": [1, 900, 6],
+                "x_mark": [1, 900, 3],
+                "worker_features": [1, 30],
+            },
+            "output_shapes": {
+                "rpe_logits": [1, 4],
+                "psi_logits": [1, 4],
+            },
+            "missing_mask_semantics": "1/True means missing; x_values must be zero at missing positions",
+            "notes": (
+                "Static masked compaction uses argsort/gather/cumsum. "
+                "Check downstream TFLite/TFLM/Vela operator support."
+            ),
+        },
+        checkpoint_path,
+    )
+    print(f"Static combined checkpoint saved: {checkpoint_path.resolve()}")
+
+    if not args.skip_onnx:
+        onnx_path = args.output_dir / "combined_static_model.onnx"
+        export_onnx(combined, onnx_path)
+
+
+=== DATASET CONSTRUCTOR AND SAMPLE RETURN CONTRACT ===
+    """Hour of day encoded as value between [-0.5, 0.5]"""
+
+    def __call__(self, index: pd.DatetimeIndex) -> np.ndarray:
+        return index.hour / 23.0 - 0.5
+
+
+def time_features(dates):
+    second_of_minute = SecondOfMinute()
+    minute_of_hour = MinuteOfHour()
+    hour_of_day = HourOfDay()
+    return np.vstack([second_of_minute(dates), minute_of_hour(dates), hour_of_day(dates)])
+
+
+class Heat_Stress_Dataset(Dataset):
+    def __init__(self, data_root_path, flag='test', seq_input_len=900, seq_pred_len=900, target='psi', seq_random_missing=True):
+        self.data_root_path = data_root_path
+        assert flag in ['test', 'val']
+        self.flag = flag
+        self.seq_input_len = seq_input_len
+        self.seq_pred_len = seq_pred_len
+        self.target = target
+        self.seq_random_missing = seq_random_missing
+        self.mr_last_5 = 0.1
+        self.mr_thr = 0.3
+
+        self.seq_cols = [
+            'cb_cbt',
+            'wbgt_hum', 'wbgt_outdoor',
+            'helmet_acc_x_mean', 'helmet_acc_y_mean', 'helmet_acc_z_mean',
+        ]
+        self.non_seq_cols = [
+            'session', 'worker_type1', 'age', 'gender', 'height', 'diseases', 'smoke', 'alcohol',   # 18
+            'prev_rpe_0', 'prev_rpe_1', 'prev_rpe_2',                                               # 30
+        ]
+        self.one_hot_cols = [
+            'prev_rpe_0', 'prev_rpe_1', 'prev_rpe_2',
+            'worker_type1', 'diseases', 'smoke', 'alcohol',
+        ]
+        self.__read_data__()
+
+    def __read_data__(self):
+        df_seq = pd.read_feather(self.data_root_path + f'{self.flag}_seq.feather')
+        df_non_seq = pd.read_csv(self.data_root_path + f'{self.flag}_non_seq.csv')
+        df_non_seq['time'] = pd.to_datetime(df_non_seq['time'])
+
+        # convert rpe/psi(0-10) to new categories: [0, 1, 2, 3]
+        if 'psi' in self.target:
+            # df_non_seq = df_non_seq[~df_non_seq['psi'].isna()]
+            df_non_seq['psi'] = df_non_seq['psi'].fillna(-1)
+            df_non_seq['psi'] = df_non_seq['psi'].map(PSI_MAP)
+        if 'rpe' in self.target:
+            df_non_seq['rpe'] = df_non_seq['rpe'].map(RPE_MAP)
+
+        self.sample_indices = list(df_non_seq['sample_index'])
+        self.df_non_seq = df_non_seq.copy()
+        self.df_seq = df_seq.copy()
+
+    def data_post_process(self, df_x, pad_value=-9998, pad_value2=-9997):
+        mr = df_x.isna().mean()
+        df_len = df_x.shape[0]
+        r1 = np.random.random()
+
+        if r1 < self.mr_last_5:
+            # Method 1: Last 5-minute patch missing
+            miss_len = min(int(df_len / 3), 300)
+
+            miss_mask = np.zeros(df_len, dtype=bool)
+            miss_mask[df_len - miss_len:] = True
+
+            for col in df_x.columns:
+                if mr[col] == 0.:
+                    nan_mask = df_x[col].isna().to_numpy()
+                    mask = miss_mask & ~nan_mask
+
+                    # Use .loc to avoid chained assignment
+                    df_x.loc[mask, col] = pad_value
+
+        else:
+            for col in df_x.columns:
+                nan_mask = df_x[col].isna().to_numpy()
+                r2 = np.random.random()
+
+                if r2 < 0.5:
+                    # Method 2: Random missing
+                    random_mask = np.random.choice(
+                        [True, False],
+                        size=df_len,
+                        p=[self.mr_thr, 1 - self.mr_thr]
+                    )
+
+                    mask = random_mask & ~nan_mask
+                    df_x.loc[mask, col] = pad_value
+
+                else:
+                    # Method 3: Random patch missing
+                    miss_len = int(df_len * self.mr_thr)
+
+                    start = np.random.randint(10, df_len - miss_len)
+                    end = min(start + miss_len, df_len)
+
+                    miss_mask = np.zeros(df_len, dtype=bool)
+                    miss_mask[start:end] = True
+
+                    mask = miss_mask & ~nan_mask
+                    df_x.loc[mask, col] = pad_value2
+
+        return df_x
+    def __getitem__(self, index):
+        sample_index = self.sample_indices[index]
+        df_non_seq = self.df_non_seq.query(f'sample_index == {sample_index}')
+        start_time = df_non_seq['time'].values[0] - pd.Timedelta(seconds=self.seq_input_len)
+        end_time = df_non_seq['time'].values[0] - pd.Timedelta(seconds=1)
+        df_seq = self.df_seq.query(f"sample_index == {sample_index} and time >= '{start_time}' and time <= '{end_time}'")
+        df_seq = df_seq.reset_index(drop=True)
+
+        # set unreliable seq_data to nan
+        missing_cols = df_non_seq['missing_col'].values[0]
+        if pd.isna(missing_cols):
+            missing_cols = []
+        else:
+            missing_cols = missing_cols.split(';')
+        for c in missing_cols:
+            df_seq[c] = np.nan
+
+        # time features
+        time_stamp = time_features(pd.to_datetime(df_seq['time'].values))
+        seq_x_mark = time_stamp.transpose(1, 0)[:self.seq_input_len, :]
+        seq_y_mark = seq_x_mark
+
+        # apply manual missing for seq_data
+        df_seq_x = df_seq[self.seq_cols]
+        df_seq_x_1 = df_seq_x.copy()
+        if self.seq_random_missing:
+            df_seq_x_2 = self.data_post_process(df_seq_x_1.copy(), pad_value=-9998)
+        else:
+            df_seq_x_2 = df_seq_x_1.copy()
+        df_seq_x_1 = df_seq_x_1.fillna(-9999)
+        df_seq_x_2 = df_seq_x_2.fillna(-9999)
+        x1_1 = df_seq_x_1.values[:self.seq_input_len]
+        x1_2 = df_seq_x_2.values[:self.seq_input_len]
+
+        # non_seq input
+        x2 = []
+        df_temp = df_non_seq[self.non_seq_cols]
+        for col in self.non_seq_cols:
+            v = df_temp[col].values[-1]
+            if col in self.one_hot_cols:
+                if 'prev' in col:
+                    col = 'prev_rpe_rpt'
+                x2 += ONE_HOT_MAP[col][v]
+            else:
+                x2.append(v)
+        x2 = np.asarray(x2)
+
+        # targets
+        y = df_non_seq[self.target].values[-1]
+
+        return x1_1, x1_2, x2, y, seq_x_mark, seq_y_mark
+
+    def __len__(self):
+        return len(self.sample_indices)
+
+
+def load_data(configs):
+    data_set = Heat_Stress_Dataset(
+        data_root_path=configs['data_root_path'],
+        flag=configs['data_type'],
+        seq_input_len=configs['seq_input_len'],
+        seq_pred_len=configs['seq_pred_len'],
+        target=configs['target'],
+        seq_random_missing=configs['seq_random_missing']
+    )
+    print(f'\nSamples of the {configs["data_type"]} set: ', len(data_set))
+    data_loader = DataLoader(
+        data_set,
+        batch_size=configs['batch_size'],
+        shuffle=configs['shuffle'],
+        num_workers=configs['num_workers'],
+        drop_last=configs['drop_last'])
+    return data_set, data_loader
+
+
+def load_model(configs):
+    reg_model = Reg_Model()
+    cla_model = Cla_Model()
+    reg_model.load_state_dict(torch.load(configs['model_root_path'] + 'reg_model.pth', map_location='cpu'))
+    if isinstance(configs['target'], list) and 'rpe' in configs['target'] and 'psi' in configs['target']:
+        cla_model.load_state_dict(torch.load(configs['model_root_path'] + 'rpe_psi_cla_model.pth', map_location='cpu'))
+    else:
+        print(f"Please set configs['target'] = ['rpe', 'psi']")
+        exit()
+
+=== EXISTING REAL-DATA VALIDATION SCRIPT ===
+#!/usr/bin/env python3
+import argparse
+import sys
+from pathlib import Path
+
+import torch
+from torch.utils.data import DataLoader
+
+MODEL_ROOT = Path(
+    "/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514"
+)
+sys.path.insert(0, str(MODEL_ROOT))
+
+from run import Reg_Model, Cla_Model, Heat_Stress_Dataset
+from a_prepare_static_model import (
+    StaticRegModel,
+    StaticCombinedModel,
+    load_state_dict_compat,
+)
+
+
+def max_abs(a, b):
+    if a.shape != b.shape:
+        raise ValueError(
+            f"Shape mismatch: {tuple(a.shape)} vs {tuple(b.shape)}"
+        )
+    if a.numel() == 0:
+        return 0.0
+    return (a - b).abs().max().item()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data-root", type=Path, default=MODEL_ROOT / "data"
+    )
+    parser.add_argument("--split-type", default="split_byid")
+    parser.add_argument("--data-type", choices=["val", "test"], default="val")
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=MODEL_ROOT / "models" / "trained_by_data_split_byid",
+    )
+    parser.add_argument(
+        "--static-checkpoint",
+        type=Path,
+        default=MODEL_ROOT / "export" / "combined_static_model.pth",
+    )
+    parser.add_argument("--max-batches", type=int, default=16)
+    parser.add_argument("--atol", type=float, default=1e-3)
+    parser.add_argument("--rtol", type=float, default=1e-3)
+    parser.add_argument("--no-random-missing", action="store_true")
+    args = parser.parse_args()
+
+    torch.set_grad_enabled(False)
+    torch.set_num_threads(1)
+
+    reg_path = args.model_dir / "reg_model.pth"
+    cla_path = args.model_dir / "rpe_psi_cla_model.pth"
+    for path in (reg_path, cla_path, args.static_checkpoint):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+
+    print("=== CHECKPOINTS ===")
+    print("Original regression:", reg_path)
+    print("Original classifier:", cla_path)
+    print("Static checkpoint:", args.static_checkpoint)
+
+    original_reg = Reg_Model().cpu().eval()
+    original_reg.load_state_dict(
+        load_state_dict_compat(reg_path), strict=True
+    )
+
+    original_cla = Cla_Model().cpu().eval()
+    original_cla.load_state_dict(
+        load_state_dict_compat(cla_path), strict=True
+    )
+
+    static_model = StaticCombinedModel(
+        StaticRegModel(), Cla_Model()
+    ).cpu().eval()
+    static_model.load_state_dict(
+        load_state_dict_compat(args.static_checkpoint), strict=True
+    )
+
+    data_dir = args.data_root / args.split_type
+    dataset = Heat_Stress_Dataset(
+        data_root_path=str(data_dir) + "/",
+        flag=args.data_type,
+        seq_input_len=900,
+        seq_pred_len=900,
+        target=["rpe", "psi"],
+        seq_random_missing=not args.no_random_missing,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+        drop_last=False,
+    )
+
+    print("\n=== DATASET ===")
+    print("Directory:", data_dir)
+    print("Split:", args.data_type)
+    print("Samples:", len(dataset))
+    print("Random missing injection:", not args.no_random_missing)
+    print("Maximum batches:", args.max_batches or "all")
+
+    totals = {
+        "samples": 0,
+        "missing": 0,
+        "observed_mismatches": 0,
+        "reg_allclose_failures": 0,
+        "restored_allclose_failures": 0,
+        "rpe_allclose_failures": 0,
+        "psi_allclose_failures": 0,
+        "rpe_class_matches": 0,
+        "psi_class_matches": 0,
+    }
+    maxima = {
+        "regression": 0.0,
+        "regression_missing_positions": 0.0,
+        "restored_sequence": 0.0,
+        "rpe_logits": 0.0,
+        "psi_logits": 0.0,
+        "observed_input_difference": 0.0,
+    }
+    finite_ok = True
+
+    with torch.inference_mode():
+        for batch_index, batch in enumerate(loader):
+            if args.max_batches and batch_index >= args.max_batches:
+                break
+
+            (
+                batch_x1_1,
+                batch_x1_2,
+                batch_x2,
+                _batch_y,
+                batch_x_mark,
+                _additional,
+            ) = batch
+
+            x_original = batch_x1_1.float()
+            x_reg = batch_x1_2.float()
+            worker = batch_x2.float()
+            x_mark = batch_x_mark.float()
+
+            if x_original.shape != (1, 900, 6):
+                raise ValueError(
+                    f"x_original shape unexpected: {tuple(x_original.shape)}"
+                )
+            if x_reg.shape != x_original.shape:
+                raise ValueError("x_reg shape differs from x_original")
+            if x_mark.shape != (1, 900, 3):
+                raise ValueError(f"x_mark shape: {tuple(x_mark.shape)}")
+            if worker.shape != (1, 30):
+                raise ValueError(f"worker shape: {tuple(worker.shape)}")
+
+            mask = (
+                (x_reg == -9997.0)
+                | (x_reg == -9998.0)
+                | (x_reg == -9999.0)
+            )
+            valid = ~mask
+
+            # Exact four-input preprocessing contract.
+            x_values = torch.where(
+                mask, torch.zeros_like(x_original), x_original
+            )
+            mask_float = mask.float()
+
+            observed_diff = (
+                (x_reg[valid] - x_original[valid]).abs().max().item()
+                if valid.any()
+                else 0.0
+            )
+            observed_mismatches = (
+                (x_reg[valid] != x_original[valid]).sum().item()
+            )
+
+            # Original two-model reference: raw sentinel sequence to Reg_Model.
+            old_reg_prediction = original_reg(
+                x_reg,
+                x_mark_enc=x_mark,
+                one_hot_x=worker[:, :18],
+                device="cpu",
+            )
+            old_restored = torch.where(
+                mask, old_reg_prediction, x_original
+            )
+            old_rpe, old_psi = original_cla(
+                old_restored,
+                x_mark_enc=x_mark,
+                one_hot_x=worker[:, :30],
+                device="cpu",
+            )
+
+            # Capture the regression output from the actual static combined
+            # checkpoint while executing its real forward method.
+            captured = []
+
+            def capture_regression(_module, _inputs, output):
+                captured.append(output.detach())
+
+            hook = static_model.reg_model.register_forward_hook(
+                capture_regression
+            )
+            try:
+                static_rpe, static_psi = static_model(
+                    x_values, mask_float, x_mark, worker
+                )
+            finally:
+                hook.remove()
+
+            if len(captured) != 1:
+                raise RuntimeError(
+                    f"Expected one static regression call; got {len(captured)}"
+                )
+
+            static_reg_prediction = captured[0]
+            static_restored = torch.where(
+                mask, static_reg_prediction, x_values
+            )
+
+            diffs = {
+                "regression": max_abs(
+                    old_reg_prediction, static_reg_prediction
+                ),
+                "regression_missing_positions": (
+                    max_abs(
+                        old_reg_prediction[mask],
+                        static_reg_prediction[mask],
+                    )
+                    if mask.any()
+                    else 0.0
+                ),
+                "restored_sequence": max_abs(
+                    old_restored, static_restored
+                ),
+                "rpe_logits": max_abs(old_rpe, static_rpe),
+                "psi_logits": max_abs(old_psi, static_psi),
+                "observed_input_difference": observed_diff,
+            }
+
+            for name, value in diffs.items():
+                maxima[name] = max(maxima[name], value)
+
+            def close(a, b):
+                return torch.allclose(
+                    a, b, atol=args.atol, rtol=args.rtol
+                )
+
+            checks = {
+                "regression": close(
+                    old_reg_prediction, static_reg_prediction
+                ),
+                "restored_sequence": close(
+                    old_restored, static_restored
+                ),
+                "rpe_logits": close(old_rpe, static_rpe),
+                "psi_logits": close(old_psi, static_psi),
+            }
+
+            totals["samples"] += x_original.shape[0]
+            totals["missing"] += int(mask.sum().item())
+            totals["observed_mismatches"] += int(observed_mismatches)
+
+            if not checks["regression"]:
+                totals["reg_allclose_failures"] += 1
+            if not checks["restored_sequence"]:
+                totals["restored_allclose_failures"] += 1
+            if not checks["rpe_logits"]:
+                totals["rpe_allclose_failures"] += 1
+            if not checks["psi_logits"]:
+                totals["psi_allclose_failures"] += 1
+
+            totals["rpe_class_matches"] += int(
+                torch.equal(old_rpe.argmax(1), static_rpe.argmax(1))
+            )
+            totals["psi_class_matches"] += int(
+                torch.equal(old_psi.argmax(1), static_psi.argmax(1))
+            )
+
+            finite_ok = finite_ok and all(
+                torch.isfinite(t).all().item()
+                for t in (
+                    x_values,
+                    mask_float,
+                    x_mark,
+                    worker,
+                    old_reg_prediction,
+                    static_reg_prediction,
+                    old_rpe,
+                    old_psi,
+                    static_rpe,
+                    static_psi,
+                )
+            )
+
+=== EXISTING VECTOR GENERATION / HASH REFERENCES ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_fp32_tflite_full_dataset.py:27:    digest = hashlib.sha256()
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_qdq_onnx_stages_calibration_dataset.py:41:    h = hashlib.sha256()
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_qdq_onnx_stages_one_sample.py:52:    h = hashlib.sha256()
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_prevela_tflite_full_dataset.py:27:    digest = hashlib.sha256()
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_qdq_onnx_to_tflite_calibration.py:33:    h = hashlib.sha256()
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_pre_shape_fix_qdq_tflite_full_dataset.py:27:    digest = hashlib.sha256()
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/validate_static_model_real_dataset.py:52:    parser.add_argument("--no-random-missing", action="store_true")
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:32:#include "heatstroke_smoke_test_vector.hpp"
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:432:            heatstroke_smoke::kInputReferenceSha256);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:508:            heatstroke_smoke::kReferenceRpeBits[i]);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/MainLoop.cc:510:            heatstroke_smoke::kReferencePsiBits[i]);
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_smoke_test_vector.hpp:9:static const char kInputReferenceSha256[] = "5ab222dc10b33314d8ea64e782fcf21b7526b4ab69742c48cac397d809d2f36f";
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_smoke_test_vector.hpp:1716:static const std::uint32_t kReferenceRpeBits[4] = {
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_smoke_test_vector.hpp:1720:static const std::uint32_t kReferencePsiBits[4] = {
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/ob_validate_combined.py:12:    python validate_combined.py --device cpu --no-random-missing
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/ob_validate_combined.py:97:        "--no-random-missing",
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/evaluate_tflite.py:673:        "--no-random-missing",
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/compare_onnx_tflite_dataset.py:78:        "--no-random-missing",
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/compare_gather_inputs.py:53:    h = hashlib.sha256()
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/compare_two_onnx_dataset.py:456:        "--no-random-missing",
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/compare_two_onnx_dataset.py:465:            "This comparison must use --no-random-missing "
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/evaluate_onnx.py:598:        "--no-random-missing",
+
+=== CURRENT SAMPLE-0 VECTOR METADATA ===
+#ifndef HEATSTROKE_SMOKE_TEST_VECTOR_HPP
+#define HEATSTROKE_SMOKE_TEST_VECTOR_HPP
+
+#include <cstdint>
+
+namespace heatstroke_smoke {
+static const std::uint32_t kDatasetSampleIndex = 0U;
+static const std::uint32_t kMissingCount = 2700U;
+static const char kInputReferenceSha256[] = "5ab222dc10b33314d8ea64e782fcf21b7526b4ab69742c48cac397d809d2f36f";
+static const char kStaticCheckpointSha256[] = "2b268a24d6e4f7ebbc3c7b41aba42e8b8c9ab4723181619d565bd47a646bd587";
+
+static const std::uint32_t kXValuesBits[5400] = {
+    0xBE908A4DU, 0x405FD975U, 0xBEAB6B8FU, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405FC260U,
+    0xBEAB65B2U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405FADDCU, 0xBEAB5EDAU, 0x00000000U,
+    0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F9BE9U, 0xBEAB5708U, 0x00000000U, 0x00000000U, 0x00000000U,
+    0xBE908A4DU, 0x405F8C86U, 0xBEAB4E3DU, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F7FB3U,
+    0xBEAB4477U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F7571U, 0xBEAB39B6U, 0x00000000U,
+    0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F6DBFU, 0xBEAB2DFCU, 0x00000000U, 0x00000000U, 0x00000000U,
+    0xBE908A4DU, 0x405F689EU, 0xBEAB2147U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F660EU,
+    0xBEAB1398U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F660EU, 0xBEAB04EFU, 0x00000000U,
+    0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F689EU, 0xBEAAF54CU, 0x00000000U, 0x00000000U, 0x00000000U,
+    0xBE908A4DU, 0x405F6DBFU, 0xBEAAE4AEU, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F7571U,
+    0xBEAAD317U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F7FB3U, 0xBEAAC085U, 0x00000000U,
+    0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405F8C86U, 0xBEAAACF9U, 0x00000000U, 0x00000000U, 0x00000000U,
+    0xBE908A4DU, 0x405F9BE9U, 0xBEAA9872U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405FADDCU,
+    0xBEAA82F2U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405FC260U, 0xBEAA6C77U, 0x00000000U,
+    0x00000000U, 0x00000000U, 0xBE908A4DU, 0x405FD975U, 0xBEAA5502U, 0x00000000U, 0x00000000U, 0x00000000U,
+    0xBE908A4DU, 0x405FF31AU, 0xBEAA3C93U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x40600CBFU,
+    0xBEAA2424U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x40602664U, 0xBEAA0BB5U, 0x00000000U,
+    0x00000000U, 0x00000000U, 0xBE908A4DU, 0x40604009U, 0xBEA9F346U, 0x00000000U, 0x00000000U, 0x00000000U,
+    0xBE908A4DU, 0x406059AEU, 0xBEA9DAD6U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x40607353U,
+    0xBEA9C267U, 0x00000000U, 0x00000000U, 0x00000000U, 0xBE908A4DU, 0x40608CF8U, 0xBEA9A9F8U, 0x00000000U,
+
+=== CURRENT MCU SMOKE FUNCTION ===
+
+static float DecodeSmokeReference(const std::uint32_t bits)
+{
+    float value = 0.0F;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static int SmokeFloatToMicro(const float value)
+{
+    const double scaled = static_cast<double>(value) * 1000000.0;
+    if (scaled > 2147483647.0) {
+        return 2147483647;
+    }
+    if (scaled < -2147483648.0) {
+        return (-2147483647 - 1);
+    }
+    return static_cast<int>(scaled >= 0.0 ? scaled + 0.5 : scaled - 0.5);
+}
+
+static unsigned int SmokeArgMax4(const float* values)
+{
+    unsigned int best = 0U;
+    for (unsigned int i = 1U; i < 4U; ++i) {
+        if (values[i] > values[best]) {
+            best = i;
+        }
+    }
+    return best;
+}
+
+static bool RunHeatstrokeSmokeInference(PolyUModel1& model)
+{
+    using arm::app::fwk::iface::TensorIface;
+
+    static_assert(sizeof(float) == sizeof(std::uint32_t),
+                  "Smoke test requires 32-bit FP32");
+    static_assert(sizeof(heatstroke_smoke::kXValuesBits) == 5400U * sizeof(float),
+                  "x_values payload size mismatch");
+    static_assert(sizeof(heatstroke_smoke::kMissingMaskBits) == 5400U * sizeof(float),
+                  "missing_mask payload size mismatch");
+    static_assert(sizeof(heatstroke_smoke::kXMarkBits) == 2700U * sizeof(float),
+                  "x_mark payload size mismatch");
+    static_assert(sizeof(heatstroke_smoke::kWorkerFeaturesBits) == 30U * sizeof(float),
+                  "worker_features payload size mismatch");
+
+    LOG_INF("=== ONE-SAMPLE HEATSTROKE MCU INFERENCE ===");
+    LOG_INF("Calibration sample index: %u",
+            static_cast<unsigned int>(heatstroke_smoke::kDatasetSampleIndex));
+    LOG_INF("Missing positions: %u",
+            static_cast<unsigned int>(heatstroke_smoke::kMissingCount));
+    LOG_INF("Input-vector SHA256: %s",
+            heatstroke_smoke::kInputReferenceSha256);
+
+    if (!BindSmokeInputTensor(
+            model, 0U, "x_values",
+            heatstroke_smoke::kXValuesBits,
+            sizeof(heatstroke_smoke::kXValuesBits),
+            std::vector<size_t>{1U, 900U, 6U})) {
+        return false;
+    }
+
+    if (!BindSmokeInputTensor(
+            model, 1U, "missing_mask",
+            heatstroke_smoke::kMissingMaskBits,
+            sizeof(heatstroke_smoke::kMissingMaskBits),
+            std::vector<size_t>{1U, 900U, 6U})) {
+        return false;
+    }
+
+    if (!BindSmokeInputTensor(
+            model, 2U, "x_mark",
+            heatstroke_smoke::kXMarkBits,
+            sizeof(heatstroke_smoke::kXMarkBits),
+            std::vector<size_t>{1U, 900U, 3U})) {
+        return false;
+    }
+
+    if (!BindSmokeInputTensor(
+            model, 3U, "worker_features",
+            heatstroke_smoke::kWorkerFeaturesBits,
+            sizeof(heatstroke_smoke::kWorkerFeaturesBits),
+            std::vector<size_t>{1U, 30U})) {
+        return false;
+    }
+
+    arm::app::fwk::tflm::ResetHeatstrokeOperatorTiming();
+    const std::int64_t startMs = k_uptime_get();
+    LOG_INF("HEATSTROKE_DIAG: entering TFLM RunInference()");
+    StartHeatstrokeEthosuMonitor();
+    const bool inferenceOk = model.RunInference();
+    StopHeatstrokeEthosuMonitor();
+    arm::app::fwk::tflm::LogHeatstrokeOperatorTiming();
+    if (!inferenceOk) {
+        LOG_ERR("TFLM RunInference() returned false");
+        return false;
+    }
+    const std::int64_t elapsedMs = k_uptime_get() - startMs;
+
+    auto rpeTensor = model.GetOutputTensor(0U);
+    auto psiTensor = model.GetOutputTensor(1U);
+
+    if (!VerifyOneTensor(
+            "Output rpe_logits", 0U, rpeTensor,
+            std::vector<size_t>{1U, 4U}) ||
+        !VerifyOneTensor(
+            "Output psi_logits", 1U, psiTensor,
+            std::vector<size_t>{1U, 4U})) {
+        return false;
+    }
+
+    const float* rpe = rpeTensor->GetData<float>();
+    const float* psi = psiTensor->GetData<float>();
+
+    if (rpe == nullptr || psi == nullptr) {
+        LOG_ERR("Inference output data pointer is null");
+        return false;
+    }
+
+    float rpeRef[4];
+    float psiRef[4];
+    float rpeMaxError = 0.0F;
+    float psiMaxError = 0.0F;
+    double rpeErrorSum = 0.0;
+    double psiErrorSum = 0.0;
+
+    for (unsigned int i = 0U; i < 4U; ++i) {
+        rpeRef[i] = DecodeSmokeReference(
+            heatstroke_smoke::kReferenceRpeBits[i]);
+        psiRef[i] = DecodeSmokeReference(
+            heatstroke_smoke::kReferencePsiBits[i]);
+
+        if (!std::isfinite(rpe[i]) || !std::isfinite(psi[i]) ||
+            !std::isfinite(rpeRef[i]) || !std::isfinite(psiRef[i])) {
+            LOG_ERR("Non-finite output/reference at class index %u", i);
+            return false;
+        }
+
+        const float rpeError = std::fabs(rpe[i] - rpeRef[i]);
+        const float psiError = std::fabs(psi[i] - psiRef[i]);
+
+        if (rpeError > rpeMaxError) {
+            rpeMaxError = rpeError;
+        }
+        if (psiError > psiMaxError) {
+            psiMaxError = psiError;
+        }
+
+        rpeErrorSum += rpeError;
+        psiErrorSum += psiError;
+    }
+
+    const float rpeMeanError = static_cast<float>(rpeErrorSum / 4.0);
+    const float psiMeanError = static_cast<float>(psiErrorSum / 4.0);
+
+    LOG_INF("TFLM RunInference: SUCCESS; elapsed=%u ms",
+            static_cast<unsigned int>(elapsedMs));
+
+    LOG_INF("RPE reference micro: [%d,%d,%d,%d]",
+            SmokeFloatToMicro(rpeRef[0]), SmokeFloatToMicro(rpeRef[1]),
+            SmokeFloatToMicro(rpeRef[2]), SmokeFloatToMicro(rpeRef[3]));
+    LOG_INF("RPE MCU micro:       [%d,%d,%d,%d]",
+            SmokeFloatToMicro(rpe[0]), SmokeFloatToMicro(rpe[1]),
+            SmokeFloatToMicro(rpe[2]), SmokeFloatToMicro(rpe[3]));
+
+    LOG_INF("PSI reference micro: [%d,%d,%d,%d]",
+            SmokeFloatToMicro(psiRef[0]), SmokeFloatToMicro(psiRef[1]),
+            SmokeFloatToMicro(psiRef[2]), SmokeFloatToMicro(psiRef[3]));
+    LOG_INF("PSI MCU micro:       [%d,%d,%d,%d]",
+            SmokeFloatToMicro(psi[0]), SmokeFloatToMicro(psi[1]),
+            SmokeFloatToMicro(psi[2]), SmokeFloatToMicro(psi[3]));
+
+    LOG_INF("RPE max/mean abs error micro: %d / %d",
+            SmokeFloatToMicro(rpeMaxError),
+            SmokeFloatToMicro(rpeMeanError));
+    LOG_INF("PSI max/mean abs error micro: %d / %d",
+            SmokeFloatToMicro(psiMaxError),
+            SmokeFloatToMicro(psiMeanError));
+
+    const unsigned int rpeRefClass = SmokeArgMax4(rpeRef);
+    const unsigned int psiRefClass = SmokeArgMax4(psiRef);
+    const unsigned int rpeMcuClass = SmokeArgMax4(rpe);
+    const unsigned int psiMcuClass = SmokeArgMax4(psi);
+
+    LOG_INF("RPE class reference=%u MCU=%u match=%s",
+            rpeRefClass, rpeMcuClass,
+            rpeRefClass == rpeMcuClass ? "yes" : "no");
+    LOG_INF("PSI class reference=%u MCU=%u match=%s",
+            psiRefClass, psiMcuClass,
+            psiRefClass == psiMcuClass ? "yes" : "no");
+
+    LOG_INF("Activation arena capacity: %u bytes",
+            static_cast<unsigned int>(model.GetComputeBuffer().size));
+    LOG_INF("Model buffer size: %u bytes",
+            static_cast<unsigned int>(model.GetModelBuffer().size));
+
+    LOG_INF("=== ONE-SAMPLE HEATSTROKE INFERENCE COMPLETE ===");
+    return true;
+}
+
+void MainLoop()
+{
+    por_boot = true;
+    k_sem_init(&button_wait_sem, 0, 1);
+
+    if (configure_lpgpio()) {
+        LOG_ERR("Failed to configure LPGPIO for button input");
+        return;
+    }
+
+    const uint8_t* modelPointer =
+
+=== AVAILABLE PYTHON ENVIRONMENTS ===
+Python 3.14.4
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/venv/bin/python
+
+=== DATASET FILES ===
+-rw-rw-r-- 1 user user 82K May 11  2026 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/data/split_byid/test_non_seq.csv
+-rw-rw-r-- 1 user user 20M May 11  2026 /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/data/split_byid/test_seq.feather
+
+VECTOR_GENERATION_PREFLIGHT_COMPLETE
