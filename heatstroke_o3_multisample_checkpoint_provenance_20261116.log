@@ -1,0 +1,378 @@
+=== ORIGINAL TRAINED CHECKPOINT HASHES ===
+eec593dd952781a68ac950235932e3c0566c999b1ab80029e02cb66ae6ee3dbc  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/models/trained_by_data_split_byid/combined_model.pth
+7f9298b5911b38f944f0109aefe85f9351c13f0eb1add794a3e5d062e52b8408  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/models/trained_by_data_split_byid/reg_model.pth
+59406e0aebee447d7f07d10f725752e3175214f6f0f88c055c6f9513d5a3d265  /home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/models/trained_by_data_split_byid/rpe_psi_cla_model.pth
+
+=== SEARCH FOR EXISTING STATIC CHECKPOINTS ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/derived_models/static_realdata_validation_20261110/combined_static_model.pth (43322571 bytes)
+
+=== STATIC MODEL CLASS AND CHECKPOINT GENERATION ===
+        )
+
+        # Cross-variate branch. Replace missing samples with the mean of
+        # observed samples in that channel. All-missing channels become zero.
+        valid_float = valid.to(x.dtype)
+        channel_count = valid_float.sum(dim=1, keepdim=True)
+        channel_sum = (x * valid_float).sum(dim=1, keepdim=True)
+        channel_mean = channel_sum / torch.clamp(channel_count, min=1.0)
+        filled = torch.where(missing_mask, channel_mean.expand_as(x), x)
+
+        cvf_enc = self.cvf(filled.permute(0, 2, 1)).permute(0, 2, 1)
+        cvf_enc = torch.where(
+            missing_mask, cvf_enc, torch.zeros_like(cvf_enc)
+        )
+
+        # Original observed values are zeroed in this branch; reconstructed
+        # features are used only at missing positions.
+        observed_zeroed = torch.where(missing_mask, torch.zeros_like(x), x)
+        embedding = torch.cat(
+            ((svf_enc + cvf_enc) / 2.0, observed_zeroed),
+            dim=2,
+        )
+        embedding = torch.cat((embedding, time_and_worker), dim=2)
+
+        encoded, _ = self.rnn(embedding)
+
+        projected = []
+        for projector in self.proj:
+            projected.append(projector(encoded).reshape(batch, SEQ_LEN))
+        return torch.stack(projected, dim=2)             # [B,900,6]
+
+
+class StaticCombinedModel(nn.Module):
+    """One end-to-end model: static regression -> restore -> classification."""
+
+    def __init__(self, reg_model, cla_model):
+        super().__init__()
+        self.reg_model = reg_model
+        self.cla_model = cla_model
+
+    def forward(self, x_values, missing_mask, x_mark, worker_features):
+        # The input x_values must contain zero at missing positions. The
+        # separate mask carries missingness, avoiding -999x values in INT8.
+        mask = missing_mask > 0.5
+
+        reg_prediction = self.reg_model(
+            x_values,
+            mask,
+            x_mark,
+            worker_features[:, :REG_WORKER_FEATURES],
+        )
+
+        restored_sequence = torch.where(mask, reg_prediction, x_values)
+
+        rpe_logits, psi_logits = self.cla_model(
+            restored_sequence,
+            x_mark_enc=None,  # Cla_Model's original forward does not use it.
+            one_hot_x=worker_features[:, :CLA_WORKER_FEATURES],
+            device=x_values.device,
+        )
+        return rpe_logits, psi_logits
+
+
+def make_synthetic_test_inputs(device="cpu"):
+    """Shape/functional smoke-test data; not suitable for quantization calibration."""
+    torch.manual_seed(1234)
+    x = torch.randn(1, SEQ_LEN, SEQ_FEATURES, device=device)
+    mask = (torch.rand(1, SEQ_LEN, SEQ_FEATURES, device=device) < 0.30)
+    x = torch.where(mask, torch.zeros_like(x), x)
+    x_mark = torch.randn(1, SEQ_LEN, TIME_FEATURES, device=device)
+    worker = torch.randn(1, CLA_WORKER_FEATURES, device=device)
+    return x, mask.to(torch.float32), x_mark, worker
+
+
+@torch.no_grad()
+def validate_against_original(original_reg, cla_model, combined_model):
+    """
+    Compare the refactored regression + combined outputs with the original
+    sentinel-based run.py behavior on synthetic test inputs.
+
+    For final validation, repeat this using real preprocessed validation samples.
+    """
+    x_values, mask_float, x_mark, worker = make_synthetic_test_inputs()
+    mask = mask_float > 0.5
+
+    # Reconstruct the original run.py input representation.
+    x_sentinel = torch.where(
+        mask,
+        torch.full_like(x_values, -9998.0),
+        x_values,
+    )
+
+    original_reg.eval()
+    cla_model.eval()
+    combined_model.eval()
+
+    old_reg_prediction = original_reg(
+        x_sentinel,
+        x_mark_enc=x_mark,
+        one_hot_x=worker[:, :REG_WORKER_FEATURES],
+        device="cpu",
+    )
+    old_restored = torch.where(mask, old_reg_prediction, x_values)
+    old_rpe, old_psi = cla_model(
+        old_restored,
+        x_mark_enc=x_mark,
+        one_hot_x=worker[:, :CLA_WORKER_FEATURES],
+        device="cpu",
+    )
+
+    new_rpe, new_psi = combined_model(
+        x_values, mask_float, x_mark, worker
+    )
+
+    torch.testing.assert_close(
+        new_rpe, old_rpe, rtol=1e-3, atol=1e-3,
+        msg="RPE logits differ from original pipeline",
+    )
+    torch.testing.assert_close(
+        new_psi, old_psi, rtol=1e-3, atol=1e-3,
+        msg="PSI logits differ from original pipeline",
+    )
+    print("Synthetic equivalence test passed.")
+    print("RPE max abs error:", (new_rpe - old_rpe).abs().max().item())
+    print("PSI max abs error:", (new_psi - old_psi).abs().max().item())
+
+
+def export_onnx(model, output_path: Path):
+    model.eval()
+    example_inputs = make_synthetic_test_inputs()
+
+    torch.onnx.export(
+        model,
+        example_inputs,
+        str(output_path),
+        export_params=True,
+        opset_version=18,
+        do_constant_folding=True,
+        input_names=[
+            "x_values",
+            "missing_mask",
+            "x_mark",
+            "worker_features",
+        ],
+        output_names=["rpe_logits", "psi_logits"],
+        dynamic_axes=None,   # no dynamic axes: fixed [1,900,...] interface
+        verbose=False,
+    )
+
+    try:
+        import onnx
+        onnx_model = onnx.load(str(output_path))
+        onnx.checker.check_model(onnx_model)
+        print("ONNX checker: passed")
+    except ImportError:
+        print("onnx package not installed; skipped ONNX checker.")
+
+    print(f"ONNX exported: {output_path.resolve()}")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=Path("./models/trained_by_data_split_byid"),
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("./export"),
+    )
+    parser.add_argument("--skip-onnx", action="store_true")
+    parser.add_argument("--skip-validation", action="store_true")
+    args = parser.parse_args()
+
+    torch.set_grad_enabled(False)
+
+    reg_path = args.model_dir / "reg_model.pth"
+    cla_path = args.model_dir / "rpe_psi_cla_model.pth"
+    if not reg_path.is_file():
+        raise FileNotFoundError(reg_path)
+    if not cla_path.is_file():
+        raise FileNotFoundError(cla_path)
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Instantiate exact original architectures and load trained parameters.
+    original_reg = Reg_Model().cpu().eval()
+    cla_model = Cla_Model().cpu().eval()
+    original_reg.load_state_dict(load_state_dict_compat(reg_path), strict=True)
+    cla_model.load_state_dict(load_state_dict_compat(cla_path), strict=True)
+
+    # Same Reg_Model parameters and names, but with static-shape forward.
+    static_reg = StaticRegModel().cpu().eval()
+    static_reg.load_state_dict(original_reg.state_dict(), strict=True)
+
+    combined = StaticCombinedModel(static_reg, cla_model).cpu().eval()
+
+    if not args.skip_validation:
+        validate_against_original(original_reg, cla_model, combined)
+
+    checkpoint_path = args.output_dir / "combined_static_model.pth"
+    torch.save(
+        {
+            "format": "heat_stress_static_combined_v1",
+            "model_state_dict": combined.state_dict(),
+            "input_shapes": {
+                "x_values": [1, 900, 6],
+                "missing_mask": [1, 900, 6],
+                "x_mark": [1, 900, 3],
+                "worker_features": [1, 30],
+            },
+            "output_shapes": {
+                "rpe_logits": [1, 4],
+                "psi_logits": [1, 4],
+            },
+            "missing_mask_semantics": "1/True means missing; x_values must be zero at missing positions",
+            "notes": (
+                "Static masked compaction uses argsort/gather/cumsum. "
+                "Check downstream TFLite/TFLM/Vela operator support."
+            ),
+        },
+        checkpoint_path,
+    )
+    print(f"Static combined checkpoint saved: {checkpoint_path.resolve()}")
+
+    if not args.skip_onnx:
+        onnx_path = args.output_dir / "combined_static_model.onnx"
+        export_onnx(combined, onnx_path)
+
+
+if __name__ == "__main__":
+    main()
+
+=== SCRIPT ARGUMENTS AND OUTPUT DEFAULTS ===
+46-TIME_FEATURES = 3
+47-REG_WORKER_FEATURES = 18
+48-CLA_WORKER_FEATURES = 30
+49-COMPACT_SEQ_LEN = SEQ_LEN * 2
+50-
+51-
+52:def load_state_dict_compat(path: Path):
+53-    """Load either a raw state_dict or a common wrapped checkpoint."""
+54-    try:
+55-        obj = torch.load(path, map_location="cpu", weights_only=True)
+56-    except TypeError:
+57-        obj = torch.load(path, map_location="cpu")
+58-
+59-    if isinstance(obj, dict):
+60-        if "model_state_dict" in obj:
+61-            obj = obj["model_state_dict"]
+62-        elif "state_dict" in obj:
+63-            obj = obj["state_dict"]
+64-
+65-    if not isinstance(obj, dict):
+66-        raise TypeError(f"{path} does not contain a state_dict")
+--
+335-        print("onnx package not installed; skipped ONNX checker.")
+336-
+337-    print(f"ONNX exported: {output_path.resolve()}")
+338-
+339-
+340-def main():
+341:    parser = argparse.ArgumentParser()
+342:    parser.add_argument(
+343-        "--model-dir",
+344-        type=Path,
+345-        default=Path("./models/trained_by_data_split_byid"),
+346-    )
+347:    parser.add_argument(
+348-        "--output-dir",
+349-        type=Path,
+350-        default=Path("./export"),
+351-    )
+352:    parser.add_argument("--skip-onnx", action="store_true")
+353:    parser.add_argument("--skip-validation", action="store_true")
+354-    args = parser.parse_args()
+355-
+356-    torch.set_grad_enabled(False)
+357-
+358-    reg_path = args.model_dir / "reg_model.pth"
+359-    cla_path = args.model_dir / "rpe_psi_cla_model.pth"
+360-    if not reg_path.is_file():
+361-        raise FileNotFoundError(reg_path)
+362-    if not cla_path.is_file():
+363-        raise FileNotFoundError(cla_path)
+364-
+365:    args.output_dir.mkdir(parents=True, exist_ok=True)
+366-
+367-    # Instantiate exact original architectures and load trained parameters.
+368-    original_reg = Reg_Model().cpu().eval()
+369-    cla_model = Cla_Model().cpu().eval()
+370:    original_reg.load_state_dict(load_state_dict_compat(reg_path), strict=True)
+371:    cla_model.load_state_dict(load_state_dict_compat(cla_path), strict=True)
+372-
+373-    # Same Reg_Model parameters and names, but with static-shape forward.
+374-    static_reg = StaticRegModel().cpu().eval()
+375:    static_reg.load_state_dict(original_reg.state_dict(), strict=True)
+376-
+377-    combined = StaticCombinedModel(static_reg, cla_model).cpu().eval()
+378-
+379-    if not args.skip_validation:
+380-        validate_against_original(original_reg, cla_model, combined)
+381-
+382:    checkpoint_path = args.output_dir / "combined_static_model.pth"
+383:    torch.save(
+384-        {
+385-            "format": "heat_stress_static_combined_v1",
+386-            "model_state_dict": combined.state_dict(),
+387-            "input_shapes": {
+388-                "x_values": [1, 900, 6],
+389-                "missing_mask": [1, 900, 6],
+390-                "x_mark": [1, 900, 3],
+391-                "worker_features": [1, 30],
+392-            },
+393-            "output_shapes": {
+394-                "rpe_logits": [1, 4],
+395-                "psi_logits": [1, 4],
+396-            },
+397-            "missing_mask_semantics": "1/True means missing; x_values must be zero at missing positions",
+--
+402-        },
+403-        checkpoint_path,
+404-    )
+405-    print(f"Static combined checkpoint saved: {checkpoint_path.resolve()}")
+406-
+407-    if not args.skip_onnx:
+408:        onnx_path = args.output_dir / "combined_static_model.onnx"
+409-        export_onnx(combined, onnx_path)
+410-
+411-
+412-if __name__ == "__main__":
+413-    main()
+
+=== SAMPLE-0 REFERENCE HASH ===
+10:static const char kStaticCheckpointSha256[] = "2b268a24d6e4f7ebbc3c7b41aba42e8b8c9ab4723181619d565bd47a646bd587";
+
+=== EXISTING SMOKE / REFERENCE GENERATORS ===
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/Uint16Vector.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/Uint8Vector.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/SparseIndexVector.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/__pycache__/Uint8Vector.cpython-312.pyc
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/__pycache__/Uint16Vector.cpython-312.pyc
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/__pycache__/SparseIndexVector.cpython-312.pyc
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/__pycache__/Int32Vector.cpython-312.pyc
+/home/user/sdk-alif/beeinventor/test_heatstroke/tflite_schema_py_generated/tflite/Int32Vector.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/source_backups/MainLoop.cc.before_mcu_smoke_20261110_132150
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_vela_tflite_smoke.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_fp32_tflite_smoke.py
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_o3_multisample_reference_source_preflight_20261116.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/lstm_eval_O3_vectorization_report.txt
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_bilstm_shadow_o3_vectorization_test_v2_20261112.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/portable_tensor_utils_strict_o3_vectorization.txt
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_ethosu_numpy_vector_alignment_prototype_20261111.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_static_fp32_vs_vela_tflite_one_sample_smoke_20261110.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_ethosu_flatbuffer_vector_alignment_trace_20261111.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_ethosu_irq_vector_and_init_disassembly_20261111.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_reference_input_disagreement_audit_20261110.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_bilstm_corrected_m55_vectorization_audit_20261112.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/heatstroke_bilstm_shadow_o3_vectorization_test_20261112.log
+/home/user/sdk-alif/beeinventor/test_heatstroke/log/portable_tensor_utils_relaxed_o3_vectorization.txt
+/home/user/sdk-alif/beeinventor/test_heatstroke/src/use_case/alif_asr/src/heatstroke_smoke_test_vector.hpp
+
+=== DATASET IMPLEMENTATION LOCATIONS ===
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/run.py:343:class Heat_Stress_Dataset(Dataset):
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/convert.py:341:class Heat_Stress_Dataset(Dataset):
+
+CHECKPOINT_PROVENANCE_PREFLIGHT_COMPLETE
