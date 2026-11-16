@@ -1,0 +1,1117 @@
+=== POLYU MODEL OPERATOR REGISTRATION ===
+870-    tflite::ErrorReporter* error_reporter,
+871-    tflite::BuiltinDataAllocator* allocator,
+872-    void** builtin_data)
+873-{
+874-    return tflite::ParseOpData(
+875-        op,
+876-        tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+877-        error_reporter,
+878-        allocator,
+879-        builtin_data);
+880-}
+881-
+882:bool arm::app::fwk::tflm::PolyUModel1::EnlistOperations()
+883-{
+884-#define HS_ADD_REQUIRED(method)                                      \
+885-    do {                                                              \
+886-        const TfLiteStatus status = this->m_opResolver.method();      \
+887-        if (status != kTfLiteOk) {                                    \
+888-            printf_err(                                               \
+889-                "Failed to register heat-stress operator: %s\n",     \
+890-                #method);                                             \
+891-            return false;                                             \
+892-        }                                                             \
+893-    } while (0)
+894-
+895-    /*
+896-     * 28 stock ordinary built-in operators; GATHER is registered separately below.
+897-     * These CPU registrations must remain available with Ethos-U enabled.
+898-     */
+899-#if defined(HEATSTROKE_INT64_ADD_EXPERIMENT)
+900-    {
+901-        const TFLMRegistration registration =
+902-            tflite::RegisterHeatstrokeInt64AddKernel();
+903-        if (this->m_opResolver.AddAdd(registration) != kTfLiteOk) {
+904-            printf_err("Failed to register heat-stress INT64 ADD.\\n");
+905-            return false;
+906-        }
+907-    }
+908-#else
+909-    HS_ADD_REQUIRED(AddAdd);
+910-#endif
+911-    HS_ADD_REQUIRED(AddBroadcastArgs);
+912-    HS_ADD_REQUIRED(AddBroadcastTo);
+913-#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+914-    {
+915-        const TFLMRegistration registration =
+916-            tflite::RegisterHeatstrokeCastKernel();
+917-
+918:        if (this->m_opResolver.AddBuiltin(
+919-                tflite::BuiltinOperator_CAST,
+920-                registration,
+921-                tflite::ParseCast) != kTfLiteOk) {
+922-            printf_err("Failed to register heat-stress INT64 CAST.\n");
+923-            return false;
+924-        }
+925-    }
+926-#else
+927-    HS_ADD_REQUIRED(AddCast);
+928-#endif
+929-    HS_ADD_REQUIRED(AddConcatenation);
+930-    HS_ADD_REQUIRED(AddCumSum);
+931-    HS_ADD_REQUIRED(AddDequantize);
+932-    HS_ADD_REQUIRED(AddDiv);
+933-    HS_ADD_REQUIRED(AddEqual);
+934-#if defined(HEATSTROKE_INT64_FLOOR_MOD_EXPERIMENT)
+935-    {
+936-        const TFLMRegistration registration =
+937-            tflite::RegisterHeatstrokeInt64FloorModKernel();
+938:        if (this->m_opResolver.AddBuiltin(
+939-                tflite::BuiltinOperator_FLOOR_MOD,
+940-                registration,
+941-                tflite::ParseFloorMod) != kTfLiteOk) {
+942-            printf_err(
+943-                "Failed to register heat-stress INT64 FLOOR_MOD.\\n");
+944-            return false;
+945-        }
+946-    }
+947-#else
+948-    HS_ADD_REQUIRED(AddFloorMod);
+949-#endif
+950-    /*
+951-     * Application-local GATHER replacement supporting INT32 and INT64
+952-     * indices. It reuses the existing output tensor and allocates no
+953-     * index-conversion or scratch buffer.
+954-     */
+955-    {
+956-        const TFLMRegistration registration =
+957-            tflite::RegisterHeatstrokeGatherKernel();
+958-
+959:        if (this->m_opResolver.AddBuiltin(
+960-                tflite::BuiltinOperator_GATHER,
+961-                registration,
+962-                tflite::ParseGather) != kTfLiteOk) {
+963-            printf_err(
+964-                "Failed to register heat-stress INT64 GATHER.\n");
+965-            return false;
+966-        }
+967-    }
+968-    HS_ADD_REQUIRED(AddGreater);
+969-    HS_ADD_REQUIRED(AddLogicalAnd);
+970-    HS_ADD_REQUIRED(AddLogicalNot);
+971-    HS_ADD_REQUIRED(AddMaximum);
+972-    HS_ADD_REQUIRED(AddMean);
+973-#if defined(HEATSTROKE_INT64_MUL_EXPERIMENT)
+974-    {
+975-        const TFLMRegistration registration =
+976-            tflite::RegisterHeatstrokeInt64MulKernel();
+977-        if (this->m_opResolver.AddMul(registration) != kTfLiteOk) {
+978-            printf_err("Failed to register heat-stress INT64 MUL.\\n");
+979-            return false;
+980-        }
+981-    }
+982-#else
+983-    HS_ADD_REQUIRED(AddMul);
+984-#endif
+985-    HS_ADD_REQUIRED(AddNeg);
+986-    HS_ADD_REQUIRED(AddQuantize);
+987-    HS_ADD_REQUIRED(AddReshape);
+988-    HS_ADD_REQUIRED(AddRsqrt);
+989-    HS_ADD_REQUIRED(AddSelectV2);
+990-    HS_ADD_REQUIRED(AddSoftmax);
+991-#if defined(HEATSTROKE_INT64_SPLIT_V_EXPERIMENT)
+992-    {
+993-        const TFLMRegistration registration =
+994-            tflite::RegisterHeatstrokeInt64SplitVKernel();
+995:        if (this->m_opResolver.AddBuiltin(
+996-                tflite::BuiltinOperator_SPLIT_V,
+997-                registration,
+998-                tflite::ParseSplitV) != kTfLiteOk) {
+999-            printf_err("Failed to register heat-stress INT64 SPLIT_V.\\n");
+1000-            return false;
+1001-        }
+1002-    }
+1003-#else
+1004-    HS_ADD_REQUIRED(AddSplitV);
+1005-#endif
+1006-    HS_ADD_REQUIRED(AddSqrt);
+1007-    HS_ADD_REQUIRED(AddSquare);
+1008-#if defined(HEATSTROKE_INT64_SUB_EXPERIMENT)
+1009-    {
+1010-        const TFLMRegistration registration =
+1011-            tflite::RegisterHeatstrokeInt64SubKernel();
+1012:        if (this->m_opResolver.AddBuiltin(
+1013-                tflite::BuiltinOperator_SUB,
+1014-                registration,
+1015-                tflite::ParseSub) != kTfLiteOk) {
+1016-            printf_err("Failed to register heat-stress INT64 SUB.\\n");
+1017-            return false;
+1018-        }
+1019-    }
+1020-#else
+1021-    HS_ADD_REQUIRED(AddSub);
+1022-#endif
+1023-#if defined(HEATSTROKE_INT64_CAST_SUM_EXPERIMENT)
+1024-    {
+1025-        const TFLMRegistration registration =
+1026-            tflite::RegisterHeatstrokeSumKernel();
+1027-
+1028:        if (this->m_opResolver.AddBuiltin(
+1029-                tflite::BuiltinOperator_SUM,
+1030-                registration,
+1031-                tflite::ParseReducer) != kTfLiteOk) {
+1032-            printf_err("Failed to register heat-stress INT64 SUM.\n");
+1033-            return false;
+1034-        }
+1035-    }
+1036-#else
+1037-    HS_ADD_REQUIRED(AddSum);
+1038-#endif
+1039-    HS_ADD_REQUIRED(AddTopKV2);
+1040-
+1041-#undef HS_ADD_REQUIRED
+1042-
+1043-    /*
+1044-     * Custom SIGN registration under the built-in SIGN opcode.
+1045-     */
+1046-    {
+1047-        const TFLMRegistration registration =
+1048-            RegisterHeatstrokeSignKernel();
+1049-
+1050:        if (this->m_opResolver.AddBuiltin(
+1051-                tflite::BuiltinOperator_SIGN,
+1052-                registration,
+1053-                ParseHeatstrokeSign) != kTfLiteOk) {
+1054-            printf_err("Failed to register heat-stress SIGN.\n");
+1055-            return false;
+1056-        }
+1057-    }
+1058-
+1059-    /*
+1060-     * Select the application-local BiLSTM implementation.
+1061-     * Experimental mode is opt-in and paired with the repaired model.
+1062-     */
+1063-    {
+1064-#if defined(HEATSTROKE_SINGLE_STEP_EXPERIMENT)
+1065-        const TFLMRegistration registration =
+1066-            tflite::RegisterHeatstrokeBidirectionalSequenceLstmSingleStepExperimental();
+1067-#else
+1068-        const TFLMRegistration registration =
+1069-            tflite::RegisterHeatstrokeBidirectionalSequenceLstm();
+1070-#endif
+1071-
+1072:        if (this->m_opResolver.AddBuiltin(
+1073-                tflite::BuiltinOperator_BIDIRECTIONAL_SEQUENCE_LSTM,
+1074-                registration,
+1075-                ParseHeatstrokeBidirectionalSequenceLstm) != kTfLiteOk) {
+1076-            printf_err(
+1077-                "Failed to register heat-stress bidirectional LSTM.\n");
+1078-            return false;
+1079-        }
+1080-    }
+1081-
+1082-    /*
+1083-     * Ethos-U registration.
+1084-     *
+1085-     * AddEthosU() in this SDK can report success even when the hardware
+1086-     * registration is null. Therefore, explicitly verify FindOp().
+1087-     */
+1088-    if (this->m_opResolver.AddEthosU() != kTfLiteOk) {
+1089-        printf_err("Failed to add Ethos-U to the resolver.\n");
+1090-        return false;
+1091-    }
+1092-
+1093-    const char* ethos_name = tflite::GetString_ETHOSU();
+1094-
+1095-    if (ethos_name == nullptr ||
+1096-        this->m_opResolver.FindOp(ethos_name) == nullptr) {
+1097-        printf_err(
+1098-            "Ethos-U registration is missing from the resolver.\n");
+1099-        return false;
+1100-    }
+1101-
+1102-#if defined(HEATSTROKE_LAYER_NORM_FUSION_EXPERIMENT)
+1103-    {
+1104-        const TFLMRegistration registration =
+1105-            tflite::RegisterHeatstrokeLayerNormQuantize();
+1106-
+1107:        if (this->m_opResolver.AddCustom(
+1108-                "HeatstrokeLayerNormQuantize",
+1109-                &registration) != kTfLiteOk) {
+1110-            printf_err(
+1111-                "Failed to register fused heat-stress LayerNorm operator.\n");
+1112-            return false;
+1113-        }
+1114-
+1115-        if (this->m_opResolver.FindOp(
+1116-                "HeatstrokeLayerNormQuantize") == nullptr) {
+1117-            printf_err(
+1118-                "Fused heat-stress LayerNorm registration is missing.\n");
+1119-            return false;
+1120-        }
+1121-    }
+1122-#endif
+1123-
+1124-
+1125-    /*
+1126-     * Verify all built-in registrations and parser callbacks.
+1127-     */
+1128-    const tflite::BuiltinOperator required_ops[] = {
+1129-        tflite::BuiltinOperator_ADD,
+1130-        tflite::BuiltinOperator_BROADCAST_ARGS,
+1131-        tflite::BuiltinOperator_BROADCAST_TO,
+1132-        tflite::BuiltinOperator_CAST,
+1133-        tflite::BuiltinOperator_CONCATENATION,
+1134-        tflite::BuiltinOperator_CUMSUM,
+1135-        tflite::BuiltinOperator_DEQUANTIZE,
+1136-        tflite::BuiltinOperator_DIV,
+1137-        tflite::BuiltinOperator_EQUAL,
+
+=== CUSTOM BIDIRECTIONAL LSTM: INITIALIZATION AND PREPARE ===
+#include "heatstroke_bidirectional_lstm.h"
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/kernels/lstm_eval.h"
+#include "tensorflow/lite/micro/kernels/lstm_shared.h"
+#include "tensorflow/lite/micro/micro_log.h"
+
+namespace tflite {
+namespace {
+
+struct HeatstrokeBidirectionalLstmOpData {
+  OpDataLSTM forward;
+  OpDataLSTM backward;
+  TfLiteIntArray* staged_output_dims;
+  int reverse_input_buffer;
+  int stage_output_buffer;
+};
+
+TfLiteEvalTensor* GetInputEvalTensor(TfLiteContext* context,
+                                     TfLiteNode* node,
+                                     int input_position) {
+  if (input_position < 0 || input_position >= node->inputs->size) {
+    return nullptr;
+  }
+
+  const int tensor_index = node->inputs->data[input_position];
+  if (tensor_index < 0) {
+    return nullptr;
+  }
+
+  return context->GetEvalTensor(context, tensor_index);
+}
+
+size_t TensorElementCount(const TfLiteEvalTensor* tensor) {
+  if (tensor == nullptr || tensor->dims == nullptr) {
+    return 0;
+  }
+
+  size_t count = 1;
+  for (int i = 0; i < tensor->dims->size; ++i) {
+    if (tensor->dims->data[i] < 0) {
+      return 0;
+    }
+    count *= static_cast<size_t>(tensor->dims->data[i]);
+  }
+  return count;
+}
+
+bool IsFloatTensorType(const TfLiteEvalTensor* tensor) {
+  return tensor != nullptr && tensor->type == kTfLiteFloat32;
+}
+
+bool IsFloatTensor(const TfLiteEvalTensor* tensor) {
+  return IsFloatTensorType(tensor) && tensor->data.f != nullptr;
+}
+
+bool IsMatrix(const TfLiteEvalTensor* tensor, int rows, int columns) {
+  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+         tensor->dims->size == 2 &&
+         tensor->dims->data[0] == rows &&
+         tensor->dims->data[1] == columns;
+}
+
+bool IsVector(const TfLiteEvalTensor* tensor, int length) {
+  return IsFloatTensor(tensor) && tensor->dims != nullptr &&
+         tensor->dims->size == 1 &&
+         tensor->dims->data[0] == length;
+}
+
+bool ValidateDirection(TfLiteContext* context,
+                       TfLiteNode* node,
+                       int input_weight_base,
+                       int recurrent_weight_base,
+                       int bias_base,
+                       int hidden_state_position,
+                       int cell_state_position,
+                       int input_dimension,
+                       int batch_size,
+                       int* hidden_dimension) {
+  TfLiteEvalTensor* first_weight =
+      GetInputEvalTensor(context, node, input_weight_base);
+
+  if (first_weight == nullptr || first_weight->dims == nullptr ||
+      first_weight->dims->size != 2) {
+    return false;
+  }
+
+  const int hidden = first_weight->dims->data[0];
+
+  if (hidden <= 0 || first_weight->dims->data[1] != input_dimension) {
+    return false;
+  }
+
+  for (int gate = 0; gate < 4; ++gate) {
+    TfLiteEvalTensor* input_weight =
+        GetInputEvalTensor(context, node, input_weight_base + gate);
+
+    TfLiteEvalTensor* recurrent_weight =
+        GetInputEvalTensor(context, node, recurrent_weight_base + gate);
+
+    TfLiteEvalTensor* bias =
+        GetInputEvalTensor(context, node, bias_base + gate);
+
+    if (!IsMatrix(input_weight, hidden, input_dimension) ||
+        !IsMatrix(recurrent_weight, hidden, hidden) ||
+        !IsVector(bias, hidden)) {
+      return false;
+    }
+  }
+
+  TfLiteEvalTensor* hidden_state =
+      GetInputEvalTensor(context, node, hidden_state_position);
+
+  TfLiteEvalTensor* cell_state =
+      GetInputEvalTensor(context, node, cell_state_position);
+
+  if (!IsFloatTensorType(hidden_state) || !IsFloatTensorType(cell_state) ||
+      TensorElementCount(hidden_state) !=
+          static_cast<size_t>(batch_size * hidden) ||
+      TensorElementCount(cell_state) !=
+          static_cast<size_t>(batch_size * hidden)) {
+    return false;
+  }
+
+  *hidden_dimension = hidden;
+  return true;
+}
+
+void InitializeFloatLstmParameters(
+    OpDataLSTM* op_data,
+    bool time_major,
+    int batch_size,
+    int time_steps,
+    int input_dimension,
+    int hidden_dimension,
+    TfLiteFusedActivation activation,
+    float cell_clip) {
+  op_data->size_info.time_major = time_major;
+  op_data->size_info.batch_size = batch_size;
+  op_data->size_info.time_steps = time_steps;
+  op_data->size_info.input_dimension = input_dimension;
+  op_data->size_info.state_dimension = hidden_dimension;
+
+  op_data->cell_gate_nonlinear_type = activation;
+  op_data->cell_state_info = CreateLstmCellStateInfoFloat(cell_clip);
+
+  op_data->forget_gate_parameters = CreateGateParamsFloat();
+  op_data->input_gate_parameters = CreateGateParamsFloat();
+  op_data->cell_gate_parameters = CreateGateParamsFloat();
+  op_data->output_gate_parameters = CreateGateParamsFloat();
+
+  op_data->inter_gate_parameters.forget_cell_mul_params =
+      CreateInterGateMulParamsFloat();
+  op_data->inter_gate_parameters.input_mul_params =
+      CreateInterGateMulParamsFloat();
+  op_data->inter_gate_parameters.output_mul_params =
+      CreateInterGateMulParamsFloat();
+}
+
+void* HeatstrokeBidirectionalLstmInit(TfLiteContext* context,
+                                      const char* buffer,
+                                      size_t length) {
+  (void)buffer;
+  (void)length;
+
+  auto* data = static_cast<HeatstrokeBidirectionalLstmOpData*>(
+      context->AllocatePersistentBuffer(
+          context, sizeof(HeatstrokeBidirectionalLstmOpData)));
+
+  if (data != nullptr) {
+    std::memset(data, 0, sizeof(*data));
+  }
+  return data;
+}
+
+TfLiteStatus HeatstrokeBidirectionalLstmPrepare(TfLiteContext* context,
+                                                TfLiteNode* node) {
+  if (node == nullptr || node->builtin_data == nullptr ||
+      node->inputs == nullptr || node->outputs == nullptr ||
+      node->inputs->size != 29 || node->outputs->size != 1 ||
+      node->user_data == nullptr) {
+    MicroPrintf("Heatstroke BiLSTM: invalid node configuration");
+    return kTfLiteError;
+  }
+
+  auto* op_data =
+      static_cast<HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+
+  const auto* params =
+      static_cast<const TfLiteBidirectionalSequenceLSTMParams*>(
+          node->builtin_data);
+
+  if (!params->time_major || !params->merge_outputs ||
+      params->activation != kTfLiteActTanh) {
+    MicroPrintf("Heatstroke BiLSTM: unsupported LSTM options");
+    return kTfLiteError;
+  }
+
+  TfLiteEvalTensor* input = GetInputEvalTensor(context, node, 0);
+  TfLiteEvalTensor* output =
+      context->GetEvalTensor(context, node->outputs->data[0]);
+
+  if (!IsFloatTensorType(input) || !IsFloatTensorType(output) ||
+      input->dims == nullptr || output->dims == nullptr ||
+      input->dims->size != 3 || output->dims->size != 3) {
+    MicroPrintf("Heatstroke BiLSTM: expected rank-3 FP32 tensors");
+    return kTfLiteError;
+  }
+
+  const int time_steps = input->dims->data[0];
+  const int batch_size = input->dims->data[1];
+  const int input_dimension = input->dims->data[2];
+
+  // The supplied heat-stress model uses time-major, single-batch sequences.
+  if (time_steps <= 0 || batch_size != 1 || input_dimension <= 0) {
+    MicroPrintf("Heatstroke BiLSTM: unsupported input dimensions");
+    return kTfLiteError;
+  }
+
+  int forward_hidden = 0;
+  int backward_hidden = 0;
+
+  if (!ValidateDirection(context, node, 1, 5, 9, 25, 26, input_dimension, batch_size, &forward_hidden) ||
+      !ValidateDirection(context, node, 13, 17, 21, 27, 28, input_dimension, batch_size, &backward_hidden) ||
+
+=== CUSTOM BIDIRECTIONAL LSTM: EVALUATION AND REGISTRATION ===
+      !ValidateDirection(context, node, 13, 17, 21, 27, 28, input_dimension, batch_size, &backward_hidden) ||
+      forward_hidden != backward_hidden) {
+    MicroPrintf("Heatstroke BiLSTM: unsupported weights or state tensors");
+    return kTfLiteError;
+  }
+
+  const int hidden = forward_hidden;
+
+  if (output->dims->data[0] != time_steps ||
+      output->dims->data[1] != batch_size ||
+      output->dims->data[2] != 2 * hidden) {
+    MicroPrintf("Heatstroke BiLSTM: unexpected output dimensions");
+    return kTfLiteError;
+  }
+
+  // The directional evaluator must see [time_steps, batch_size, hidden],
+  // not the merged output shape [time_steps, batch_size, 2 * hidden].
+  const size_t staged_dims_bytes =
+      sizeof(TfLiteIntArray) + 2 * sizeof(int);
+  op_data->staged_output_dims =
+      static_cast<TfLiteIntArray*>(
+          context->AllocatePersistentBuffer(context, staged_dims_bytes));
+
+  if (op_data->staged_output_dims == nullptr) {
+    MicroPrintf("Heatstroke BiLSTM: output dimensions allocation failed");
+    return kTfLiteError;
+  }
+
+  op_data->staged_output_dims->size = 3;
+  op_data->staged_output_dims->data[0] = time_steps;
+  op_data->staged_output_dims->data[1] = batch_size;
+  op_data->staged_output_dims->data[2] = hidden;
+
+  // Compact 29-slot model: no separate auxiliary input slots exist.
+
+  InitializeFloatLstmParameters(
+      &op_data->forward, true, batch_size, time_steps,
+      input_dimension, hidden, params->activation, params->cell_clip);
+
+  InitializeFloatLstmParameters(
+      &op_data->backward, true, batch_size, time_steps,
+      input_dimension, hidden, params->activation, params->cell_clip);
+
+  const size_t reverse_bytes =
+      static_cast<size_t>(time_steps) * batch_size *
+      input_dimension * sizeof(float);
+
+  const size_t stage_bytes =
+      static_cast<size_t>(time_steps) * batch_size *
+      hidden * sizeof(float);
+
+  const size_t internal_bytes =
+      static_cast<size_t>(batch_size) * hidden * sizeof(float);
+
+  if (context->RequestScratchBufferInArena(
+          context, reverse_bytes, &op_data->reverse_input_buffer) !=
+          kTfLiteOk ||
+      context->RequestScratchBufferInArena(
+          context, stage_bytes, &op_data->stage_output_buffer) !=
+          kTfLiteOk) {
+    MicroPrintf("Heatstroke BiLSTM: scratch allocation failed");
+    return kTfLiteError;
+  }
+
+  // Match the four scratch buffers requested by TFLM's existing
+  // unidirectional FP32 LSTM implementation.
+  for (int i = 0; i < 4; ++i) {
+    if (context->RequestScratchBufferInArena(
+            context, internal_bytes,
+            &op_data->forward.buffer_indices[i]) != kTfLiteOk) {
+      MicroPrintf("Heatstroke BiLSTM: LSTM scratch allocation failed");
+      return kTfLiteError;
+    }
+
+    // Forward and backward passes execute sequentially, so they can
+    // safely reuse the same four evaluator scratch buffers.
+    op_data->backward.buffer_indices[i] =
+        op_data->forward.buffer_indices[i];
+  }
+
+  return kTfLiteOk;
+}
+
+void PopulateDirectionContents(TfLiteContext* context,
+                               TfLiteNode* node,
+                               int input_weight_base,
+                               int recurrent_weight_base,
+                               int bias_base,
+                               int hidden_state_position,
+                               int cell_state_position,
+                               const TfLiteEvalTensor* input,
+                               TfLiteEvalTensor* staged_output,
+                               LSTMKernelContents* contents) {
+  for (int i = 0; i < 24; ++i) {
+    contents->internal_tensors[i] = nullptr;
+  }
+
+  contents->internal_tensors[0] =
+      const_cast<TfLiteEvalTensor*>(input);
+
+  for (int gate = 0; gate < 4; ++gate) {
+    contents->internal_tensors[1 + gate] =
+        GetInputEvalTensor(context, node, input_weight_base + gate);
+
+    contents->internal_tensors[5 + gate] =
+        GetInputEvalTensor(context, node, recurrent_weight_base + gate);
+
+    contents->internal_tensors[12 + gate] =
+        GetInputEvalTensor(context, node, bias_base + gate);
+  }
+
+  // Optional peephole, projection, and layer-normalization tensors
+  // are not present in this model and remain nullptr.
+
+  contents->internal_tensors[18] =
+      GetInputEvalTensor(context, node, hidden_state_position);
+
+  contents->internal_tensors[19] =
+      GetInputEvalTensor(context, node, cell_state_position);
+
+  contents->output_tensor = staged_output;
+}
+
+TfLiteStatus HeatstrokeBidirectionalLstmEval(TfLiteContext* context,
+                                             TfLiteNode* node) {
+  if (node == nullptr || node->user_data == nullptr) {
+    return kTfLiteError;
+  }
+
+  const auto* op_data =
+      static_cast<const HeatstrokeBidirectionalLstmOpData*>(node->user_data);
+
+  const TfLiteEvalTensor* input =
+      GetInputEvalTensor(context, node, 0);
+
+  TfLiteEvalTensor* output =
+      context->GetEvalTensor(context, node->outputs->data[0]);
+
+  if (!IsFloatTensor(input) || !IsFloatTensor(output)) {
+    return kTfLiteError;
+  }
+
+  const int time_steps = op_data->forward.size_info.time_steps;
+  const int input_dimension = op_data->forward.size_info.input_dimension;
+  const int hidden = op_data->forward.size_info.state_dimension;
+
+  auto* reversed_input = static_cast<float*>(
+      context->GetScratchBuffer(
+          context, op_data->reverse_input_buffer));
+
+  auto* staged_output = static_cast<float*>(
+      context->GetScratchBuffer(
+          context, op_data->stage_output_buffer));
+
+  if (reversed_input == nullptr || staged_output == nullptr) {
+    MicroPrintf("Heatstroke BiLSTM: scratch buffer unavailable");
+    return kTfLiteError;
+  }
+
+  const float* input_data = input->data.f;
+  float* output_data = output->data.f;
+
+  // Reverse the time dimension for the backward direction.
+  for (int t = 0; t < time_steps; ++t) {
+    std::memcpy(
+        reversed_input + t * input_dimension,
+        input_data + (time_steps - 1 - t) * input_dimension,
+        input_dimension * sizeof(float));
+  }
+
+  TfLiteEvalTensor reversed_input_tensor = *input;
+  reversed_input_tensor.data.f = reversed_input;
+
+  TfLiteEvalTensor staged_output_tensor = *output;
+  staged_output_tensor.data.f = staged_output;
+  staged_output_tensor.dims = op_data->staged_output_dims;
+
+  LSTMKernelContents forward_contents{};
+  PopulateDirectionContents(context, node, 1, 5, 9, 25, 26, input, &staged_output_tensor, &forward_contents);
+
+  LSTMBuffers<float> buffers =
+      CreateLSTMBuffers<float>(context, op_data->forward.buffer_indices);
+
+  TfLiteStatus forward_status =
+      EvalLstm<float, float, float, float>(
+          op_data->forward, forward_contents, buffers);
+  if (forward_status != kTfLiteOk) {
+    return forward_status;
+  }
+
+  // Copy forward outputs into the first half of the merged output.
+  for (int t = 0; t < time_steps; ++t) {
+    std::memcpy(
+        output_data + t * (2 * hidden),
+        staged_output + t * hidden,
+        hidden * sizeof(float));
+  }
+
+  LSTMKernelContents backward_contents{};
+  PopulateDirectionContents(context, node, 13, 17, 21, 27, 28, &reversed_input_tensor, &staged_output_tensor, &backward_contents);
+
+  TfLiteStatus backward_status =
+      EvalLstm<float, float, float, float>(
+          op_data->backward, backward_contents, buffers);
+  if (backward_status != kTfLiteOk) {
+    return backward_status;
+  }
+
+  // Restore backward outputs to original time order and copy them
+  // into the second half of the merged output.
+  for (int t = 0; t < time_steps; ++t) {
+    std::memcpy(
+        output_data + t * (2 * hidden) + hidden,
+        staged_output + (time_steps - 1 - t) * hidden,
+        hidden * sizeof(float));
+  }
+
+  return kTfLiteOk;
+}
+
+}  // namespace
+
+TFLMRegistration RegisterHeatstrokeBidirectionalSequenceLstm() {
+  return micro::RegisterOp(
+      HeatstrokeBidirectionalLstmInit,
+      HeatstrokeBidirectionalLstmPrepare,
+      HeatstrokeBidirectionalLstmEval);
+}
+
+}  // namespace tflite
+
+=== ALL CUSTOM OPERATOR RESET CALLBACK ASSIGNMENTS ===
+
+=== CORRECTED TFLITE OPERATOR AND VARIABLE TENSOR INVENTORY ===
+Schema version: 3
+Subgraphs: 1
+Operator code count: 32
+OPCODE[0] BUILTIN_114
+OPCODE[1] BUILTIN_6
+OPCODE[2] BUILTIN_61
+OPCODE[3] BUILTIN_53
+OPCODE[4] BUILTIN_87
+OPCODE[5] BUILTIN_74
+OPCODE[6] BUILTIN_55
+OPCODE[7] BUILTIN_18
+OPCODE[8] BUILTIN_42
+OPCODE[9] BUILTIN_130
+OPCODE[10] BUILTIN_123
+OPCODE[11] BUILTIN_22
+OPCODE[12] BUILTIN_95
+OPCODE[13] BUILTIN_158
+OPCODE[14] BUILTIN_71
+OPCODE[15] BUILTIN_86
+OPCODE[16] BUILTIN_41
+OPCODE[17] BUILTIN_0
+OPCODE[18] BUILTIN_102
+OPCODE[19] BUILTIN_59
+OPCODE[20] ethos-u
+OPCODE[21] BUILTIN_75
+OPCODE[22] BUILTIN_48
+OPCODE[23] BUILTIN_36
+OPCODE[24] BUILTIN_128
+OPCODE[25] BUILTIN_2
+OPCODE[26] BUILTIN_52
+OPCODE[27] BUILTIN_40
+OPCODE[28] BUILTIN_92
+OPCODE[29] BUILTIN_76
+OPCODE[30] BUILTIN_25
+OPCODE[31] HeatstrokeLayerNormQuantize
+
+Operator count: 303
+Tensor count: 523
+VARIABLE: tensor=301 name=fw_output_state shape=[128] type=0 variable=True buffer=0
+VARIABLE: tensor=302 name=fw_cell_state shape=[128] type=0 variable=True buffer=0
+VARIABLE: tensor=303 name=fw_output_state0 shape=[128] type=0 variable=True buffer=0
+VARIABLE: tensor=304 name=fw_cell_state0 shape=[128] type=0 variable=True buffer=0
+VARIABLE: tensor=456 name=fw_output_state1 shape=[64] type=0 variable=True buffer=0
+VARIABLE: tensor=457 name=fw_cell_state1 shape=[64] type=0 variable=True buffer=0
+VARIABLE: tensor=458 name=fw_output_state2 shape=[64] type=0 variable=True buffer=0
+VARIABLE: tensor=459 name=fw_cell_state2 shape=[64] type=0 variable=True buffer=0
+VARIABLE_TENSOR_COUNT: 8
+
+FULL OPERATOR ORDER:
+OP[0] BUILTIN_114 inputs=[0] outputs=[1]
+OP[1] BUILTIN_6 inputs=[2] outputs=[3]
+OP[2] BUILTIN_6 inputs=[4] outputs=[5]
+OP[3] BUILTIN_114 inputs=[6] outputs=[7]
+OP[4] BUILTIN_61 inputs=[7, 8] outputs=[9]
+OP[5] BUILTIN_53 inputs=[9] outputs=[10]
+OP[6] BUILTIN_114 inputs=[10] outputs=[11]
+OP[7] BUILTIN_61 inputs=[11, 12] outputs=[13]
+OP[8] BUILTIN_87 inputs=[13] outputs=[14]
+OP[9] BUILTIN_53 inputs=[14] outputs=[15]
+OP[10] BUILTIN_114 inputs=[15] outputs=[16]
+OP[11] BUILTIN_6 inputs=[16] outputs=[17]
+OP[12] BUILTIN_74 inputs=[17, 18] outputs=[19]
+OP[13] BUILTIN_55 inputs=[19, 20] outputs=[21]
+OP[14] BUILTIN_6 inputs=[16] outputs=[22]
+OP[15] BUILTIN_18 inputs=[0, 22] outputs=[23]
+OP[16] BUILTIN_74 inputs=[23, 24] outputs=[25]
+OP[17] BUILTIN_42 inputs=[25, 21] outputs=[26]
+OP[18] BUILTIN_130 inputs=[26, 27] outputs=[28]
+OP[19] BUILTIN_123 inputs=[13, 28, 0] outputs=[29]
+OP[20] BUILTIN_114 inputs=[29] outputs=[30]
+OP[21] BUILTIN_53 inputs=[14] outputs=[31]
+OP[22] BUILTIN_74 inputs=[31, 32] outputs=[33]
+OP[23] BUILTIN_55 inputs=[33, 34] outputs=[35]
+OP[24] BUILTIN_22 inputs=[35, 36] outputs=[37]
+OP[25] BUILTIN_18 inputs=[38, 37] outputs=[39]
+OP[26] BUILTIN_95 inputs=[39, 40] outputs=[41]
+OP[27] BUILTIN_53 inputs=[41] outputs=[42]
+OP[28] BUILTIN_53 inputs=[39] outputs=[43]
+OP[29] BUILTIN_158 inputs=[43] outputs=[44]
+OP[30] BUILTIN_53 inputs=[44] outputs=[45]
+OP[31] BUILTIN_71 inputs=[45, 34] outputs=[46]
+OP[32] BUILTIN_87 inputs=[46] outputs=[47]
+OP[33] BUILTIN_86 inputs=[47, 42] outputs=[48]
+OP[34] BUILTIN_53 inputs=[48] outputs=[49]
+OP[35] BUILTIN_42 inputs=[43, 50] outputs=[51]
+OP[36] BUILTIN_53 inputs=[51] outputs=[52]
+OP[37] BUILTIN_41 inputs=[52, 49] outputs=[53]
+OP[38] BUILTIN_18 inputs=[54, 37] outputs=[55]
+OP[39] BUILTIN_0 inputs=[55, 40] outputs=[56]
+OP[40] BUILTIN_41 inputs=[56, 34] outputs=[57]
+OP[41] BUILTIN_95 inputs=[57, 40] outputs=[58]
+OP[42] BUILTIN_53 inputs=[58] outputs=[59]
+OP[43] BUILTIN_53 inputs=[57] outputs=[60]
+OP[44] BUILTIN_158 inputs=[60] outputs=[61]
+OP[45] BUILTIN_53 inputs=[61] outputs=[62]
+OP[46] BUILTIN_71 inputs=[62, 34] outputs=[63]
+OP[47] BUILTIN_87 inputs=[63] outputs=[64]
+OP[48] BUILTIN_86 inputs=[64, 59] outputs=[65]
+OP[49] BUILTIN_53 inputs=[65] outputs=[66]
+OP[50] BUILTIN_42 inputs=[60, 50] outputs=[67]
+OP[51] BUILTIN_53 inputs=[67] outputs=[68]
+OP[52] BUILTIN_41 inputs=[68, 66] outputs=[69]
+OP[53] BUILTIN_41 inputs=[69, 53] outputs=[70]
+OP[54] BUILTIN_55 inputs=[70, 34] outputs=[71]
+OP[55] BUILTIN_53 inputs=[71] outputs=[72]
+OP[56] BUILTIN_102 inputs=[53, 73, 74] outputs=[75, 76, 77, 78, 79, 80]
+OP[57] BUILTIN_22 inputs=[75, 81] outputs=[82]
+OP[58] BUILTIN_87 inputs=[14] outputs=[83]
+OP[59] BUILTIN_53 inputs=[83] outputs=[84]
+OP[60] BUILTIN_18 inputs=[84, 85] outputs=[86]
+OP[61] BUILTIN_0 inputs=[87, 86] outputs=[88]
+OP[62] BUILTIN_53 inputs=[88] outputs=[89]
+OP[63] BUILTIN_59 inputs=[89] outputs=[90]
+OP[64] BUILTIN_114 inputs=[90] outputs=[91]
+OP[65] BUILTIN_22 inputs=[76, 92] outputs=[93]
+OP[66] BUILTIN_22 inputs=[77, 94] outputs=[95]
+OP[67] BUILTIN_22 inputs=[78, 96] outputs=[97]
+OP[68] BUILTIN_22 inputs=[79, 98] outputs=[99]
+OP[69] BUILTIN_22 inputs=[80, 100] outputs=[101]
+OP[70] BUILTIN_102 inputs=[69, 102, 103] outputs=[104, 105, 106, 107, 108, 109]
+OP[71] BUILTIN_22 inputs=[104, 110] outputs=[111]
+OP[72] BUILTIN_22 inputs=[105, 112] outputs=[113]
+OP[73] BUILTIN_22 inputs=[106, 114] outputs=[115]
+OP[74] BUILTIN_22 inputs=[107, 116] outputs=[117]
+OP[75] BUILTIN_22 inputs=[108, 118] outputs=[119]
+OP[76] BUILTIN_22 inputs=[109, 120] outputs=[121]
+OP[77] BUILTIN_61 inputs=[33, 122] outputs=[123]
+OP[78] BUILTIN_22 inputs=[123, 124] outputs=[125]
+OP[79] BUILTIN_123 inputs=[13, 126, 1] outputs=[127]
+OP[80] BUILTIN_114 inputs=[128] outputs=[129]
+OP[81] BUILTIN_114 inputs=[130] outputs=[131]
+OP[82] ethos-u inputs=[132, 133, 134, 134, 30] outputs=[135, 136]
+OP[83] BUILTIN_6 inputs=[136] outputs=[137]
+OP[84] BUILTIN_6 inputs=[135] outputs=[138]
+OP[85] BUILTIN_41 inputs=[138, 137] outputs=[139]
+OP[86] BUILTIN_114 inputs=[139] outputs=[140]
+OP[87] ethos-u inputs=[141, 133, 134, 134, 140] outputs=[142]
+OP[88] BUILTIN_6 inputs=[142] outputs=[143]
+OP[89] BUILTIN_0 inputs=[143, 5] outputs=[144]
+OP[90] BUILTIN_75 inputs=[144] outputs=[145]
+OP[91] BUILTIN_42 inputs=[139, 145] outputs=[146]
+OP[92] BUILTIN_114 inputs=[146] outputs=[147]
+OP[93] ethos-u inputs=[148, 133, 134, 134, 147] outputs=[149, 150]
+OP[94] BUILTIN_6 inputs=[150] outputs=[151]
+OP[95] BUILTIN_6 inputs=[149] outputs=[152]
+OP[96] HeatstrokeLayerNormQuantize inputs=[152, 151] outputs=[154]
+OP[97] ethos-u inputs=[155, 133, 134, 134, 154] outputs=[156]
+OP[98] BUILTIN_6 inputs=[156] outputs=[157]
+OP[99] BUILTIN_0 inputs=[157, 3] outputs=[158]
+OP[100] BUILTIN_75 inputs=[158] outputs=[159]
+OP[101] HeatstrokeLayerNormQuantize inputs=[152, 151, 159] outputs=[161]
+OP[102] ethos-u inputs=[162, 133, 134, 134, 161, 91] outputs=[163, 164]
+OP[103] BUILTIN_123 inputs=[13, 163, 165] outputs=[166]
+OP[104] BUILTIN_48 inputs=[164, 167] outputs=[168, 169]
+OP[105] ethos-u inputs=[170, 133, 134, 134, 169] outputs=[171]
+OP[106] BUILTIN_102 inputs=[171, 172, 173] outputs=[174, 175, 176, 177, 178, 179]
+OP[107] ethos-u inputs=[180, 133, 134, 134, 174, 1] outputs=[181, 182]
+OP[108] BUILTIN_36 inputs=[182, 181] outputs=[183]
+OP[109] ethos-u inputs=[184, 133, 134, 134, 183, 175, 1] outputs=[185, 186, 187]
+OP[110] BUILTIN_36 inputs=[187, 186] outputs=[188]
+OP[111] ethos-u inputs=[189, 133, 134, 134, 188, 176, 1] outputs=[185, 190, 191]
+OP[112] BUILTIN_36 inputs=[191, 190] outputs=[192]
+OP[113] ethos-u inputs=[193, 133, 134, 134, 192, 177, 1] outputs=[185, 194, 195]
+OP[114] BUILTIN_36 inputs=[195, 194] outputs=[196]
+OP[115] ethos-u inputs=[197, 133, 134, 134, 196, 178, 1] outputs=[185, 198, 199]
+OP[116] BUILTIN_36 inputs=[199, 198] outputs=[200]
+OP[117] ethos-u inputs=[201, 133, 134, 134, 200, 179, 1] outputs=[185, 202, 203]
+OP[118] BUILTIN_36 inputs=[203, 202] outputs=[204]
+OP[119] ethos-u inputs=[205, 133, 134, 134, 204] outputs=[185]
+OP[120] BUILTIN_6 inputs=[185] outputs=[206]
+OP[121] BUILTIN_128 inputs=[206, 207] outputs=[208]
+OP[122] BUILTIN_2 inputs=[209, 208] outputs=[210]
+OP[123] BUILTIN_114 inputs=[210] outputs=[211]
+OP[124] ethos-u inputs=[212, 133, 134, 134, 211] outputs=[213]
+OP[125] BUILTIN_36 inputs=[213, 82] outputs=[214]
+OP[126] ethos-u inputs=[215, 133, 134, 134, 214, 211] outputs=[216]
+OP[127] BUILTIN_36 inputs=[216, 93] outputs=[217]
+OP[128] ethos-u inputs=[218, 133, 134, 134, 217, 211] outputs=[219]
+OP[129] BUILTIN_36 inputs=[219, 95] outputs=[220]
+OP[130] ethos-u inputs=[221, 133, 134, 134, 220, 211] outputs=[222]
+OP[131] BUILTIN_36 inputs=[222, 97] outputs=[223]
+OP[132] ethos-u inputs=[224, 133, 134, 134, 223, 211] outputs=[225]
+OP[133] BUILTIN_36 inputs=[225, 99] outputs=[226]
+OP[134] ethos-u inputs=[227, 133, 134, 134, 226, 211] outputs=[228]
+OP[135] BUILTIN_36 inputs=[228, 101] outputs=[229]
+OP[136] ethos-u inputs=[230, 133, 134, 134, 229, 211] outputs=[231]
+OP[137] BUILTIN_36 inputs=[231, 111] outputs=[232]
+OP[138] ethos-u inputs=[233, 133, 134, 134, 232, 211] outputs=[234]
+OP[139] BUILTIN_36 inputs=[234, 113] outputs=[235]
+OP[140] ethos-u inputs=[236, 133, 134, 134, 235, 211] outputs=[237]
+OP[141] BUILTIN_36 inputs=[237, 115] outputs=[238]
+OP[142] ethos-u inputs=[239, 133, 134, 134, 238, 211] outputs=[240]
+OP[143] BUILTIN_36 inputs=[240, 117] outputs=[241]
+OP[144] ethos-u inputs=[242, 133, 134, 134, 241, 211] outputs=[243]
+OP[145] BUILTIN_36 inputs=[243, 119] outputs=[244]
+OP[146] ethos-u inputs=[245, 133, 134, 134, 244, 211] outputs=[246]
+OP[147] BUILTIN_36 inputs=[246, 121] outputs=[247]
+OP[148] ethos-u inputs=[248, 133, 134, 134, 247] outputs=[249]
+OP[149] BUILTIN_6 inputs=[249] outputs=[250]
+OP[150] BUILTIN_42 inputs=[250, 72] outputs=[251]
+OP[151] BUILTIN_114 inputs=[251] outputs=[252]
+OP[152] BUILTIN_123 inputs=[125, 252, 253] outputs=[254]
+OP[153] BUILTIN_36 inputs=[254, 122] outputs=[255]
+OP[154] ethos-u inputs=[256, 133, 134, 134, 255] outputs=[]
+OP[155] BUILTIN_36 inputs=[254, 34] outputs=[257]
+OP[156] ethos-u inputs=[258, 133, 134, 134, 257] outputs=[]
+OP[157] BUILTIN_36 inputs=[254, 259] outputs=[260]
+OP[158] ethos-u inputs=[261, 133, 134, 134, 260] outputs=[]
+OP[159] BUILTIN_36 inputs=[254, 262] outputs=[263]
+OP[160] ethos-u inputs=[264, 133, 134, 134, 263] outputs=[]
+OP[161] BUILTIN_36 inputs=[254, 265] outputs=[266]
+OP[162] ethos-u inputs=[267, 133, 134, 134, 266] outputs=[]
+OP[163] BUILTIN_36 inputs=[254, 268] outputs=[269]
+OP[164] ethos-u inputs=[270, 133, 134, 134, 269] outputs=[271]
+OP[165] BUILTIN_123 inputs=[13, 271, 272] outputs=[273]
+OP[166] ethos-u inputs=[274, 133, 134, 134, 273, 166, 127, 129, 131] outputs=[275]
+OP[167] BUILTIN_6 inputs=[275] outputs=[276]
+OP[168] BUILTIN_52 inputs=[276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304] outputs=[305]
+OP[169] BUILTIN_114 inputs=[305] outputs=[306]
+OP[170] ethos-u inputs=[307, 133, 134, 134, 306] outputs=[308]
+OP[171] BUILTIN_6 inputs=[308] outputs=[309]
+OP[172] BUILTIN_40 inputs=[309, 310] outputs=[311]
+OP[173] BUILTIN_41 inputs=[309, 311] outputs=[312]
+OP[174] BUILTIN_92 inputs=[312] outputs=[313]
+OP[175] BUILTIN_40 inputs=[313, 310] outputs=[314]
+OP[176] BUILTIN_0 inputs=[314, 315] outputs=[316]
+OP[177] BUILTIN_76 inputs=[316] outputs=[317]
+OP[178] BUILTIN_18 inputs=[312, 317] outputs=[318]
+OP[179] BUILTIN_18 inputs=[318, 319] outputs=[320]
+OP[180] BUILTIN_0 inputs=[320, 321] outputs=[322]
+OP[181] BUILTIN_114 inputs=[322] outputs=[323]
+OP[182] ethos-u inputs=[324, 133, 134, 134, 323] outputs=[325]
+OP[183] BUILTIN_6 inputs=[325] outputs=[326]
+OP[184] BUILTIN_40 inputs=[326, 327] outputs=[328]
+OP[185] BUILTIN_41 inputs=[326, 328] outputs=[329]
+OP[186] BUILTIN_92 inputs=[329] outputs=[330]
+OP[187] BUILTIN_40 inputs=[330, 327] outputs=[331]
+OP[188] BUILTIN_0 inputs=[331, 332] outputs=[333]
+OP[189] BUILTIN_76 inputs=[333] outputs=[334]
+OP[190] BUILTIN_18 inputs=[329, 334] outputs=[335]
+OP[191] BUILTIN_18 inputs=[335, 336] outputs=[337]
+OP[192] BUILTIN_0 inputs=[337, 338] outputs=[339]
+OP[193] BUILTIN_114 inputs=[339] outputs=[340]
+OP[194] ethos-u inputs=[341, 133, 134, 134, 340] outputs=[342]
+OP[195] BUILTIN_6 inputs=[342] outputs=[343]
+OP[196] BUILTIN_40 inputs=[343, 344] outputs=[345]
+OP[197] BUILTIN_41 inputs=[343, 345] outputs=[346]
+OP[198] BUILTIN_92 inputs=[346] outputs=[347]
+OP[199] BUILTIN_40 inputs=[347, 344] outputs=[348]
+OP[200] BUILTIN_0 inputs=[348, 349] outputs=[350]
+OP[201] BUILTIN_76 inputs=[350] outputs=[351]
+OP[202] BUILTIN_18 inputs=[346, 351] outputs=[352]
+OP[203] BUILTIN_18 inputs=[352, 353] outputs=[354]
+OP[204] BUILTIN_0 inputs=[354, 355] outputs=[356]
+OP[205] BUILTIN_114 inputs=[356] outputs=[357]
+OP[206] ethos-u inputs=[358, 133, 134, 134, 357] outputs=[359]
+OP[207] BUILTIN_6 inputs=[359] outputs=[360]
+OP[208] BUILTIN_40 inputs=[360, 361] outputs=[362]
+OP[209] BUILTIN_41 inputs=[360, 362] outputs=[363]
+OP[210] BUILTIN_92 inputs=[363] outputs=[364]
+OP[211] BUILTIN_40 inputs=[364, 361] outputs=[365]
+OP[212] BUILTIN_0 inputs=[365, 366] outputs=[367]
+OP[213] BUILTIN_76 inputs=[367] outputs=[368]
+OP[214] BUILTIN_18 inputs=[363, 368] outputs=[369]
+OP[215] BUILTIN_18 inputs=[369, 370] outputs=[371]
+OP[216] BUILTIN_0 inputs=[371, 372] outputs=[373]
+OP[217] BUILTIN_114 inputs=[373] outputs=[374]
+OP[218] ethos-u inputs=[375, 133, 134, 134, 374] outputs=[376]
+OP[219] BUILTIN_6 inputs=[376] outputs=[377]
+OP[220] BUILTIN_40 inputs=[377, 378] outputs=[379]
+OP[221] BUILTIN_41 inputs=[377, 379] outputs=[380]
+OP[222] BUILTIN_92 inputs=[380] outputs=[381]
+OP[223] BUILTIN_40 inputs=[381, 378] outputs=[382]
+OP[224] BUILTIN_0 inputs=[382, 383] outputs=[384]
+OP[225] BUILTIN_76 inputs=[384] outputs=[385]
+OP[226] BUILTIN_18 inputs=[380, 385] outputs=[386]
+OP[227] BUILTIN_18 inputs=[386, 387] outputs=[388]
+OP[228] BUILTIN_0 inputs=[388, 389] outputs=[390]
+OP[229] BUILTIN_114 inputs=[390] outputs=[391]
+OP[230] ethos-u inputs=[392, 133, 134, 134, 391] outputs=[393]
+OP[231] BUILTIN_6 inputs=[393] outputs=[394]
+OP[232] BUILTIN_40 inputs=[394, 395] outputs=[396]
+OP[233] BUILTIN_41 inputs=[394, 396] outputs=[397]
+OP[234] BUILTIN_92 inputs=[397] outputs=[398]
+OP[235] BUILTIN_40 inputs=[398, 395] outputs=[399]
+OP[236] BUILTIN_0 inputs=[399, 400] outputs=[401]
+OP[237] BUILTIN_76 inputs=[401] outputs=[402]
+OP[238] BUILTIN_18 inputs=[397, 402] outputs=[403]
+OP[239] BUILTIN_18 inputs=[403, 404] outputs=[405]
+OP[240] BUILTIN_0 inputs=[405, 406] outputs=[407]
+OP[241] BUILTIN_114 inputs=[407] outputs=[408]
+OP[242] ethos-u inputs=[409, 133, 134, 134, 408] outputs=[410]
+OP[243] BUILTIN_123 inputs=[9, 410, 1] outputs=[411]
+OP[244] ethos-u inputs=[412, 133, 134, 134, 411] outputs=[413]
+OP[245] BUILTIN_6 inputs=[413] outputs=[414]
+OP[246] BUILTIN_40 inputs=[414, 415] outputs=[416]
+OP[247] BUILTIN_41 inputs=[414, 416] outputs=[417]
+OP[248] BUILTIN_92 inputs=[417] outputs=[418]
+OP[249] BUILTIN_40 inputs=[418, 415] outputs=[419]
+OP[250] BUILTIN_0 inputs=[419, 420] outputs=[421]
+OP[251] BUILTIN_76 inputs=[421] outputs=[422]
+OP[252] BUILTIN_18 inputs=[417, 422] outputs=[423]
+OP[253] BUILTIN_18 inputs=[423, 424] outputs=[425]
+OP[254] BUILTIN_0 inputs=[425, 426] outputs=[427]
+OP[255] BUILTIN_114 inputs=[427] outputs=[428]
+OP[256] ethos-u inputs=[429, 133, 134, 134, 428] outputs=[430]
+OP[257] BUILTIN_6 inputs=[430] outputs=[431]
+OP[258] BUILTIN_52 inputs=[431, 432, 433, 434, 435, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456, 457, 458, 459] outputs=[460]
+OP[259] BUILTIN_22 inputs=[460, 461] outputs=[462]
+OP[260] BUILTIN_114 inputs=[462] outputs=[463]
+OP[261] ethos-u inputs=[464, 133, 134, 134, 463] outputs=[465]
+OP[262] BUILTIN_6 inputs=[465] outputs=[466]
+OP[263] BUILTIN_40 inputs=[466, 467] outputs=[468]
+OP[264] BUILTIN_41 inputs=[466, 468] outputs=[469]
+OP[265] BUILTIN_92 inputs=[469] outputs=[470]
+OP[266] BUILTIN_40 inputs=[470, 467] outputs=[471]
+OP[267] BUILTIN_0 inputs=[471, 472] outputs=[473]
+OP[268] BUILTIN_76 inputs=[473] outputs=[474]
+OP[269] BUILTIN_18 inputs=[469, 474] outputs=[475]
+OP[270] BUILTIN_18 inputs=[475, 476] outputs=[477]
+OP[271] BUILTIN_0 inputs=[477, 478] outputs=[479]
+OP[272] BUILTIN_114 inputs=[479] outputs=[480]
+OP[273] ethos-u inputs=[481, 133, 134, 134, 480, 131] outputs=[482]
+OP[274] BUILTIN_6 inputs=[482] outputs=[483]
+OP[275] BUILTIN_40 inputs=[483, 484] outputs=[485]
+OP[276] BUILTIN_41 inputs=[483, 485] outputs=[486]
+OP[277] BUILTIN_92 inputs=[486] outputs=[487]
+OP[278] BUILTIN_40 inputs=[487, 484] outputs=[488]
+OP[279] BUILTIN_0 inputs=[488, 489] outputs=[490]
+OP[280] BUILTIN_76 inputs=[490] outputs=[491]
+OP[281] BUILTIN_18 inputs=[486, 491] outputs=[492]
+OP[282] BUILTIN_18 inputs=[492, 493] outputs=[494]
+OP[283] BUILTIN_0 inputs=[494, 495] outputs=[496]
+OP[284] BUILTIN_114 inputs=[496] outputs=[497]
+OP[285] ethos-u inputs=[498, 133, 134, 134, 497] outputs=[499]
+OP[286] BUILTIN_6 inputs=[499] outputs=[500]
+OP[287] BUILTIN_25 inputs=[500] outputs=[501]
+OP[288] BUILTIN_114 inputs=[501] outputs=[502]
+OP[289] ethos-u inputs=[503, 133, 134, 134, 502] outputs=[504]
+OP[290] BUILTIN_6 inputs=[504] outputs=[505]
+OP[291] BUILTIN_40 inputs=[505, 506] outputs=[507]
+OP[292] BUILTIN_41 inputs=[505, 507] outputs=[508]
+OP[293] BUILTIN_92 inputs=[508] outputs=[509]
+OP[294] BUILTIN_40 inputs=[509, 506] outputs=[510]
+OP[295] BUILTIN_0 inputs=[510, 511] outputs=[512]
+OP[296] BUILTIN_76 inputs=[512] outputs=[513]
+OP[297] BUILTIN_18 inputs=[508, 513] outputs=[514]
+OP[298] BUILTIN_18 inputs=[514, 515] outputs=[516]
+OP[299] BUILTIN_0 inputs=[516, 517] outputs=[518]
+OP[300] BUILTIN_114 inputs=[518] outputs=[519]
+OP[301] ethos-u inputs=[520, 133, 134, 134, 519] outputs=[521]
+OP[302] BUILTIN_6 inputs=[521] outputs=[522]
+
+STATE-RELATED TENSORS REFERENCED BY OPERATORS:
+OP[168] BUILTIN_52
+  INPUT tensor=279 name=fw_input_to_cell shape=[128, 16] type=0 variable=False buffer=85
+  INPUT tensor=283 name=fw_recurrent_to_cell shape=[128, 128] type=0 variable=False buffer=89
+  INPUT tensor=287 name=fw_cell_bias shape=[128] type=0 variable=False buffer=93
+  INPUT tensor=291 name=bw_input_to_cell shape=[128, 16] type=0 variable=False buffer=97
+  INPUT tensor=295 name=bw_recurrent_to_cell shape=[128, 128] type=0 variable=False buffer=101
+  INPUT tensor=299 name=bw_cell_bias shape=[128] type=0 variable=False buffer=105
+  INPUT tensor=301 name=fw_output_state shape=[128] type=0 variable=True buffer=0
+  INPUT tensor=302 name=fw_cell_state shape=[128] type=0 variable=True buffer=0
+  INPUT tensor=303 name=fw_output_state0 shape=[128] type=0 variable=True buffer=0
+  INPUT tensor=304 name=fw_cell_state0 shape=[128] type=0 variable=True buffer=0
+OP[258] BUILTIN_52
+  INPUT tensor=434 name=fw_input_to_cell0 shape=[64, 6] type=0 variable=False buffer=146
+  INPUT tensor=438 name=fw_recurrent_to_cell0 shape=[64, 64] type=0 variable=False buffer=150
+  INPUT tensor=442 name=fw_cell_bias0 shape=[64] type=0 variable=False buffer=154
+  INPUT tensor=446 name=bw_input_to_cell0 shape=[64, 6] type=0 variable=False buffer=158
+  INPUT tensor=450 name=bw_recurrent_to_cell0 shape=[64, 64] type=0 variable=False buffer=162
+  INPUT tensor=454 name=bw_cell_bias0 shape=[64] type=0 variable=False buffer=166
+  INPUT tensor=456 name=fw_output_state1 shape=[64] type=0 variable=True buffer=0
+  INPUT tensor=457 name=fw_cell_state1 shape=[64] type=0 variable=True buffer=0
+  INPUT tensor=458 name=fw_output_state2 shape=[64] type=0 variable=True buffer=0
+  INPUT tensor=459 name=fw_cell_state2 shape=[64] type=0 variable=True buffer=0
+
+MODEL_TENSOR_INVENTORY_COMPLETE
+
+=== CUSTOM LSTM REGISTRATION AND STATE INVENTORY COMPLETE ===
