@@ -1,0 +1,1949 @@
+============================================================
+OSPI DRIVER / PROTOCOL / CACHE AUDIT
+============================================================
+2026-11-16T12:57:02+08:00
+
+=== 1. APPLICATION OSPI OVERLAY ===
+
+===== FILE: /home/user/sdk-alif/beeinventor/test_heatstroke/boards/alif_b1_dk_ab1c1f4m51820ph0_rtss_he.overlay =====
+/* Copyright (C) Alif Semiconductor - All Rights Reserved.
+ * Use, distribution and modification of this code is permitted under the
+ * terms stated in the Alif Semiconductor Software License Agreement
+ *
+ * You should have received a copy of the Alif Semiconductor Software
+ * License Agreement with this file. If not, please write to:
+ * contact@alifsemi.com, or visit: https: //alifsemi.com/license
+ *
+ */
+
+/ {
+	aliases {
+		pdm-audio = &lppdm;
+		spi-flash0 = &ospi_flash;
+		i2s-output = &i2s0;
+		audio-codec = &wm8904;
+	};
+};
+
+&lppdm {
+	status = "okay";
+};
+
+&i2s0 {
+	status = "okay";
+};
+
+/ {
+	ext_flash_xip: memory@b0000000 {
+		compatible = "zephyr,memory-region";
+		reg = <0xb0000000 DT_SIZE_M(64)>;
+		zephyr,memory-region = "OSPI0";
+	};
+};
+
+
+&ospi0 {
+	bus-speed = <80000000>;
+	status = "okay";
+};
+
+&ospi_flash {
+	status = "okay";
+};
+
+&pinctrl_lpgpio {
+	group0 {
+		pinmux = <PIN_P15_0__LPGPIO>,
+			 <PIN_P15_1__LPGPIO>;
+		read-enable = <1>;
+		driver-state-control = <1>;
+		drive-strength = <8>;
+	};
+};
+
+&lpgpio {
+	pinctrl-0 = < &pinctrl_lpgpio >;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/ {
+	wakeup_pins: wakeup_pins {
+		compatible = "lpgpio-wakeup-pin";
+		lpgpios = <&lpgpio 0 GPIO_ACTIVE_LOW>,
+			  <&lpgpio 1 GPIO_ACTIVE_LOW>;
+	};
+};
+
+&pinctrl_uart2 {
+	group0 {
+		pinmux = <PIN_P5_2__UART2_RX_B>,
+				 <PIN_P5_3__UART2_TX_B>;
+		read-enable = <0x1>;
+		driver-state-control = <1>; /* pull-up: initialize RX active-high */
+	};
+};
+
+&pinctrl_i2s0 {
+	group0 {
+		pinmux = <PIN_P2_4__I2S0_SDI_B>,
+			 <PIN_P2_5__I2S0_SDO_B>,
+			 <PIN_P1_6__I2S0_SCLK_A>,
+			 <PIN_P1_7__I2S0_WS_A>;
+	};
+};
+
+&i2c1 {
+	status = "okay";
+	wm8904: wm8904@1a {
+		compatible = "cirrus,wm8904";
+		reg = <0x1a>;
+		status = "okay";
+	};
+};
+
+&uart_ahi {
+	status = "disabled";
+};
+
+&uart_hci {
+	status = "disabled";
+};
+
+=== 2. SDK B1 OSPI SNIPPET ===
+
+===== FILE: /home/user/sdk-alif/alif/snippets/ospi-flash/b1_ospi0.overlay =====
+/* Copyright (C) 2026 Alif Semiconductor - All Rights Reserved.
+ * Use, distribution and modification of this code is permitted under the
+ * terms stated in the Alif Semiconductor Software License Agreement
+ *
+ * You should have received a copy of the Alif Semiconductor Software
+ * License Agreement with this file. If not, please write to:
+ * contact@alifsemi.com, or visit: https://alifsemi.com/license
+ */
+
+/{
+	aliases {
+		spi-flash0 = &ospi_flash;
+	};
+};
+
+&pinctrl {
+	//Flash connected with "P2_1_OSPI0_SS1_B" CS line
+	pinctrl_flash:pinctrl_flash {
+		group0 {
+			pinmux = <PIN_P4_2__OSPI0_SCLK_A>,
+				 <PIN_P2_1__OSPI0_SS1_B>;
+			read-enable = <0x0>;
+			drive-strength = <12>;
+			slew-rate = <0x1>;
+		};
+		group1 {
+			pinmux = <PIN_P4_1__OSPI0_RXDS_A>,
+				 <PIN_P3_0__OSPI0_D0_A>,
+				 <PIN_P3_1__OSPI0_D1_A>,
+				 <PIN_P3_2__OSPI0_D2_A>,
+				 <PIN_P3_3__OSPI0_D3_A>,
+				 <PIN_P3_4__OSPI0_D4_A>,
+				 <PIN_P3_5__OSPI0_D5_A>,
+				 <PIN_P3_6__OSPI0_D6_A>,
+				 <PIN_P3_7__OSPI0_D7_A>;
+			read-enable = <0x1>;
+			drive-strength = <12>;
+			slew-rate = <0x1>;
+		};
+	};
+
+	//Default AHI Trace pins affects OSPI-Flash pins.
+	pinctrl_ahi_trace: pinctrl_ahi_trace {
+		group0 {
+			pinmux = <PIN_P8_7__EXT_TX_B>,
+				 <PIN_P8_3__EXT_RTS_B>,
+				 <PIN_P8_5__EXT_TRACE_B>;
+			read-enable = < 0x0 >;
+		};
+	};
+};
+
+&ospi0 {
+	pinctrl-0 = <&pinctrl_flash>;
+	status = "okay";
+};
+
+&ospi_flash {
+	status = "okay";
+};
+
+=== 3. ACTIVE IS25WX ZEPHYR FLASH DRIVER ===
+
+===== MATCHES: /home/user/sdk-alif/zephyr/drivers/flash/flash_ospi_is25wx.c =====
+118-
+119-static int32_t read_status_reg(const struct device *dev, uint8_t command, uint8_t *stat)
+120-{
+121-	int32_t ret;
+122-	uint32_t event, cmd_buf[2] = {0};
+123-
+124-	struct alif_flash_ospi_dev_data *dev_data = dev->data;
+125-
+126:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_0_BITS;
+127:	dev_data->trans_conf.ddr_enable = OSPI_DDR_ENABLE;
+128:	dev_data->trans_conf.wait_cycles = 8;
+129-
+130-	cmd_buf[0] = command;
+131-	*stat = OSPI_FLASH_CMD_READ_STATUS_ERR;
+132-
+133:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+134-	if (ret != 0) {
+135-		ret = err_map_alif_hal_to_zephyr(ret);
+136-		return ret;
+137-	}
+138-
+139-	ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+140-	if (ret != 0) {
+141-		return ret;
+--
+172-{
+173-	uint32_t cmd_buf, event;
+174-	uint8_t val = 0;
+175-
+176-	struct alif_flash_ospi_dev_data *dev_data = dev->data;
+177-	int ret;
+178-
+179-	/*Prepare for Tx*/
+180:	dev_data->trans_conf.frame_size = dfs;
+181-
+182-	/*Prepare Interface for Initialize Flash*/
+183:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+184-	if (ret != 0) {
+185-		ret = err_map_alif_hal_to_zephyr(ret);
+186-		return ret;
+187-	}
+188-
+189-	k_event_clear(&dev_data->event_f, OSPI_EVENT_TRANSFER_COMPLETE | OSPI_EVENT_DATA_LOST);
+190-
+191-	/*Select Slave*/
+--
+288-		size_t prefix = f_param->write_block_size - addr_offset;
+289-
+290-		if (prefix > length) {
+291-			prefix = length;
+292-		}
+293-
+294-		uint32_t aligned_addr = address & ~(f_param->write_block_size - 1);
+295-
+296:		dev_data->trans_conf.wait_cycles = 16;
+297:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+298:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+299-
+300-		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle,
+301:						     &dev_data->trans_conf);
+302-		if (ret != 0) {
+303-			ret = err_map_alif_hal_to_zephyr(ret);
+304-			goto out;
+305-		}
+306-
+307-		ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+308-		if (ret != 0) {
+309-			goto out;
+--
+345-		data_ptr += prefix;
+346-		length -= prefix;
+347-	}
+348-
+349-	/* number of block count */
+350-	size_t aligned_len = length & ~(f_param->write_block_size - 1);
+351-	size_t remaining = length - aligned_len;
+352-
+353:	dev_data->trans_conf.wait_cycles = 16;
+354:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+355:	dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+356-
+357-	/* Prepare Interface and update Configuration */
+358:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+359-	if (ret != 0) {
+360-		ret = err_map_alif_hal_to_zephyr(ret);
+361-		goto out;
+362-	}
+363-
+364-	size_t blocks = aligned_len / f_param->write_block_size;
+365-
+366-	while (blocks) {
+--
+413-
+414-	/* Handle remaining odd bytes if any:
+415-	 * read one full block into a temp buffer,then copy only the needed bytes.
+416-	 * write_block_size is 1, 2, or 4 so temp_buf[4] is always large enough.
+417-	 */
+418-	if (ret == 0 && remaining > 0) {
+419-		uint8_t temp_buf[4] = {0};
+420-
+421:		dev_data->trans_conf.wait_cycles = 16;
+422:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+423:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+424-
+425-		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle,
+426:						     &dev_data->trans_conf);
+427-		if (ret != 0) {
+428-			ret = err_map_alif_hal_to_zephyr(ret);
+429-			goto out;
+430-		}
+431-
+432-		ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+433-		if (ret != 0) {
+434-			goto out;
+--
+515-			prefix = length;
+516-		}
+517-
+518-		memset(temp_buf, f_param->erase_value, sizeof(temp_buf));
+519-		memcpy(temp_buf + addr_offset, data_ptr, prefix);
+520-
+521-		uint32_t aligned_addr = address & ~(f_param->write_block_size - 1);
+522-
+523:		dev_data->trans_conf.wait_cycles = 0;
+524:		dev_data->trans_conf.addr_len = 0;
+525-
+526-		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle,
+527:						     &dev_data->trans_conf);
+528-		if (ret != 0) {
+529-			ret = err_map_alif_hal_to_zephyr(ret);
+530-			goto out;
+531-		}
+532-
+533-		ret = set_write_enable(dev, OSPI_DFS_BITS_16);
+534-		if (ret != 0) {
+535-			goto out;
+--
+553-			uint32_t v;
+554-
+555-			memcpy(&v, temp_buf, sizeof(v));
+556-			dev_data->cmd_buf[2] = v;
+557-			break;
+558-		}
+559-		}
+560-
+561:		dev_data->trans_conf.wait_cycles = 0;
+562:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+563:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+564-
+565-		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle,
+566:						     &dev_data->trans_conf);
+567-		if (ret != 0) {
+568-			ret = err_map_alif_hal_to_zephyr(ret);
+569-			goto out;
+570-		}
+571-
+572-		ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+573-		if (ret != 0) {
+574-			goto out;
+--
+625-
+626-	/* number of block count for the now-aligned middle portion */
+627-	size_t aligned_len = length & ~(f_param->write_block_size - 1);
+628-	size_t remaining = length - aligned_len;
+629-
+630-	cnt = aligned_len / f_param->write_block_size;
+631-
+632-	while (ret == 0 && cnt) {
+633:		dev_data->trans_conf.wait_cycles = 0;
+634:		dev_data->trans_conf.addr_len = 0;
+635-
+636:		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+637-		if (ret != 0) {
+638-			ret = err_map_alif_hal_to_zephyr(ret);
+639-			break;
+640-		}
+641-
+642-		ret = set_write_enable(dev, OSPI_DFS_BITS_16);
+643-		if (ret != 0) {
+644-			break;
+--
+674-				memcpy(&v, data_ptr + (data_i * sizeof(uint32_t)), sizeof(v));
+675-				dev_data->cmd_buf[index++] = v;
+676-				break;
+677-			}
+678-			}
+679-			data_i++;
+680-		}
+681-
+682:		dev_data->trans_conf.wait_cycles = 0;
+683:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+684:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+685-
+686:		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+687-		if (ret != 0) {
+688-			ret = err_map_alif_hal_to_zephyr(ret);
+689-			break;
+690-		}
+691-
+692-		ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+693-		if (ret != 0) {
+694-			break;
+--
+750-	 * flash programming can only turn bits 1->0.
+751-	 */
+752-	if (ret == 0 && remaining > 0) {
+753-		uint8_t temp_buf[4];
+754-
+755-		memset(temp_buf, f_param->erase_value, sizeof(temp_buf));
+756-		memcpy(temp_buf, data_ptr + (aligned_len), remaining);
+757-
+758:		dev_data->trans_conf.wait_cycles = 0;
+759:		dev_data->trans_conf.addr_len = 0;
+760-
+761-		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle,
+762:						     &dev_data->trans_conf);
+763-		if (ret != 0) {
+764-			ret = err_map_alif_hal_to_zephyr(ret);
+765-			goto out;
+766-		}
+767-
+768-		ret = set_write_enable(dev, OSPI_DFS_BITS_16);
+769-		if (ret != 0) {
+770-			goto out;
+--
+789-			uint32_t v;
+790-
+791-			memcpy(&v, temp_buf, sizeof(v));
+792-			dev_data->cmd_buf[2] = v;
+793-			break;
+794-		}
+795-		}
+796-
+797:		dev_data->trans_conf.wait_cycles = 0;
+798:		dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+799:		dev_data->trans_conf.frame_size = dev_cfg->rw_dfs;
+800-
+801-		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle,
+802:						     &dev_data->trans_conf);
+803-		if (ret != 0) {
+804-			ret = err_map_alif_hal_to_zephyr(ret);
+805-			goto out;
+806-		}
+807-
+808-		ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+809-		if (ret != 0) {
+810-			goto out;
+--
+862-}
+863-
+864-static int erase_chip(const struct device *dev)
+865-{
+866-	int ret;
+867-	struct alif_flash_ospi_dev_data *dev_data = dev->data;
+868-	uint32_t cmd[2];
+869-
+870:	dev_data->trans_conf.wait_cycles = 0;
+871:	dev_data->trans_conf.addr_len = 0;
+872-
+873:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+874-	if (ret != 0) {
+875-		ret = err_map_alif_hal_to_zephyr(ret);
+876-		return ret;
+877-	}
+878-
+879-	ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+880-	if (ret != 0) {
+881-		return ret;
+--
+898-}
+899-
+900-static int erase_sector(const struct device *dev, uint32_t addr)
+901-{
+902-	int ret;
+903-	struct alif_flash_ospi_dev_data *dev_data = dev->data;
+904-	uint32_t cmd[2];
+905-
+906:	dev_data->trans_conf.wait_cycles = 0;
+907:	dev_data->trans_conf.addr_len = OSPI_ADDR_LENGTH_32_BITS;
+908-
+909:	ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+910-	if (ret != 0) {
+911-		ret = err_map_alif_hal_to_zephyr(ret);
+912-		return ret;
+913-	}
+914-
+915-	ret = set_cs_pin(dev_data->ospi_handle, SLAVE_ACTIVATE);
+916-	if (ret != 0) {
+917-		return ret;
+--
+963-	ret = k_sem_take(&dev_data->sem, K_NO_WAIT);
+964-	if (ret != 0) {
+965-		return ret;
+966-	}
+967-
+968-	LOG_DBG("write address %u length for erase %d", (uint32_t) addr, len);
+969-
+970-	while (len) {
+971:		dev_data->trans_conf.wait_cycles = 0;
+972:		dev_data->trans_conf.addr_len = 0;
+973-
+974:		ret = alif_hal_ospi_prepare_transfer(dev_data->ospi_handle, &dev_data->trans_conf);
+975-		if (ret != 0) {
+976-			ret = err_map_alif_hal_to_zephyr(ret);
+977-			break;
+978-		}
+979-
+980-		ret = set_write_enable(dev, OSPI_DFS_BITS_16);
+981-		if (ret != 0) {
+982-			break;
+--
+1039-	/* Force De-Select */
+1040-	set_cs_pin(dev_data->ospi_handle, SLAVE_DE_ACTIVATE);
+1041-
+1042-	k_sem_give(&dev_data->sem);
+1043-
+1044-	return ret;
+1045-}
+1046-
+1047:static int flash_is25wx_ospi_init(const struct device *dev)
+
+=== 4. IS25WX DRIVER HEADER: COMMAND DEFINITIONS ===
+
+===== FILE: /home/user/sdk-alif/zephyr/drivers/flash/flash_ospi_is25wx.h =====
+/*
+ * Copyright (C) 2024 Alif Semiconductor.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef __FLASH_OSPI_IS25WX_H__
+#define __FLASH_OSPI_IS25WX_H__
+
+#include <zephyr/device.h>
+#include <ospi_hal.h>
+
+#define MAX_SEM_TIMEOUT   100
+
+#define OSPI_MAX_RX_COUNT 256
+
+#define OSPI_MAX_TX_COUNT 128
+
+#define OSPI_FLASH_CMD_BUF 261 /* 256 + CMD (1) + ADDRESS (4) */
+
+#define OSPI_FLASH_CMD_READ_STATUS_ERR (0x02)
+
+/* SPI Data Flash Commands */
+#define CMD_WRITE_VOL_CONFIG (0x81U)
+#define CMD_READ_DATA        (0x7CU)
+#define CMD_READ_STATUS      (0x05U)
+#define CMD_WRITE_ENABLE     (0x06U)
+#define CMD_PAGE_PROGRAM     (0x84U)
+#define CMD_READ_FLAG_STATUS (0x70U)
+#define CMD_SECTOR_ERASE     (0x21U)
+#define CMD_BULK_ERASE       (0xC7U)
+#define CMD_READ_DEV_ID      (0x9EU)
+
+#define IO_MODE_ADDRESS    0x00000000U
+#define WAIT_CYCLE_ADDRESS 0x00000001U
+
+#define OCTAL_DDR_WO_DQS    (0xC7U)
+#define OCTAL_DDR           (0xE7U)
+#define DEFAULT_WAIT_CYCLES (0x10U)
+
+/* Flash Driver Status */
+#define FLAG_STATUS_BUSY  0x80U
+#define FLAG_STATUS_ERROR 0x30U
+
+/* Flash Driver ISSI_Flags */
+#define FLASH_INIT  (0x01U)
+#define FLASH_POWER (0x02U)
+
+/** Connected chip activate */
+#define SLAVE_ACTIVATE    (1)
+#define SLAVE_DE_ACTIVATE (0)
+
+/* ISSI XiP WRAP Op-code**/
+#define ISSI_XIP_WRAP_CMD	0xFD
+
+/* ISSI XiP INCR Op-code**/
+#define ISSI_XIP_INCR_CMD	0xFD
+
+/**IRQ declaration */
+typedef void (*irq_config_func_t)(const struct device *dev);
+
+/**Device Configruation */
+struct alif_flash_ospi_config {
+	irq_config_func_t irq_config;
+	uint32_t *regs;                        /* OSPI Reg */
+	uint32_t *aes_regs;                    /* AES Reg* */
+	struct flash_parameters flash_param;   /* Flash Parameter */
+	struct flash_pages_layout       flash_layout;
+	const struct pinctrl_dev_config *pcfg; /* PINCTRL */
+	uint32_t rw_dfs;                       /* Retrieved from write block size*/
+};
+
+/**Device Data */
+struct alif_flash_ospi_dev_data {
+	HAL_OSPI_Handle_T ospi_handle; /* HAL Handler*/
+	uint8_t ISSI_Flags;            /* Flash Init Status*/
+	bool poll_mode;                /* Drive transfers by polling (IRQs locked) */
+	struct k_sem sem;              /* Semaphore */
+	struct k_event event_f;        /* Event */
+	struct ospi_trans_config trans_conf;  /* Transfer Configs */
+	uint32_t cmd_buf[OSPI_FLASH_CMD_BUF]; /* CMD + DATA Buffer */
+};
+
+#endif /* __FLASH_ALIF_OSPI_H__ */
+
+=== 5. ALIF OSPI HAL INITIALIZATION ===
+
+===== MATCHES: /home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi_hal.c =====
+4- */
+5-
+6-#include <string.h>
+7-
+8-#include "ospi_hal.h"
+9-
+10-#define HAL_OSPI_MAX_INST                   2
+11-#define HAL_OSPI_INVALID_INST               -1
+12:#define HAL_OSPI_AES_RX_DS_DELAY_REG_OFFSET 0x20
+13-
+14-/** OSPI_Instance */
+15-struct hal_ospi_inst {
+16-	int8_t   is_avail;
+17-	int8_t   cs_pin;
+18-	uint32_t *regs;
+19:	uint32_t  bus_speed;
+20-	uint32_t  tx_fifo_threshold;
+21-	uint32_t  rx_fifo_threshold;
+22-	uint32_t  rx_sample_delay;
+23:	uint32_t  ddr_drive_edge;
+24:	uint32_t  core_clk;
+25-	uint32_t  *aes_regs;
+26-
+27-	/* Data Transfer */
+28-	struct ospi_transfer transfer;
+29-
+30:	/* XiP Config*/
+31:	struct ospi_xip_config   xip_config;
+32-
+33-	/* Event Notifier */
+34-	hal_event_notify_cb *event_cb;
+35-	void  *user_data;
+36-};
+37-
+38-/* Fixed Instances */
+39-struct hal_ospi_inst
+--
+47-{
+48-	if (handle >= HAL_OSPI_MAX_INST)
+49-		return NULL;
+50-
+51-	return &(g_ospi_instance[handle]);
+52-}
+53-
+54-/**
+55: * \fn          alif_hal_ospi_initialize
+56- * \brief       Get Instance and Initialized with given parameter
+57- * \param[out]  handle  Instance handler
+58- * \param[in]   init_d  Instance's initial values
+59- * \return      0 on Success, else error code
+60- */
+61:int32_t alif_hal_ospi_initialize(HAL_OSPI_Handle_T *handle,
+62-				struct ospi_init *init_d)
+63-{
+64-	struct ospi_regs       *ospi_regs;
+65-	struct ospi_aes_regs   *aes_regs;
+66-	int32_t         i  = 0;
+67-
+68-	struct hal_ospi_inst *ospi_inst;
+69-
+--
+91-		return OSPI_ERR_INVALID_HANDLE;
+92-
+93-	/* Re-initialize */
+94-	ospi_inst = &g_ospi_instance[i];
+95-
+96-	ospi_inst->is_avail = 0;
+97-	ospi_inst->cs_pin = init_d->cs_pin;
+98-	ospi_inst->regs = init_d->base_regs;
+99:	ospi_inst->bus_speed = init_d->bus_speed;
+100:	ospi_inst->core_clk  = init_d->core_clk;
+101:	ospi_inst->ddr_drive_edge = init_d->ddr_drive_edge;
+102-	ospi_inst->rx_fifo_threshold = init_d->rx_fifo_threshold;
+103-	ospi_inst->tx_fifo_threshold = init_d->tx_fifo_threshold;
+104-	ospi_inst->event_cb = init_d->event_cb;
+105-	ospi_inst->user_data = init_d->user_data;
+106-	ospi_inst->aes_regs = init_d->aes_regs;
+107-
+108-	/* Clear Transfer Object */
+109-	memset(&ospi_inst->transfer, 0, sizeof(struct ospi_transfer));
+110-
+111:	/* Clear XiP Configuration Object */
+112:	memset(&ospi_inst->xip_config, 0, sizeof(struct ospi_xip_config));
+113-
+114:	/* XiP Configs */
+115:	ospi_inst->xip_config.wrap_cmd = init_d->xip_wrap_cmd;
+116:	ospi_inst->xip_config.incr_cmd = init_d->xip_incr_cmd;
+117:	ospi_inst->xip_config.xip_cs_pin = init_d->cs_pin;
+118:	ospi_inst->xip_config.xip_cnt_time_out = init_d->xip_cnt_time_out;
+119:	ospi_inst->xip_config.aes_rx_ds_dlay = init_d->rx_ds_delay;
+120:	ospi_inst->xip_config.xip_rxds_vl_en = init_d->xip_rxds_vl_en;
+121:	ospi_inst->xip_config.xip_wait_cycles = init_d->xip_wait_cycles;
+122:	ospi_inst->xip_config.xip_inst_len = init_d->xip_inst_len;
+123:	ospi_inst->xip_config.xip_inst_ddr_en = init_d->xip_inst_ddr_en;
+124-
+125-	ospi_regs = (struct ospi_regs *) init_d->base_regs;
+126-
+127-	ospi_set_tx_threshold(ospi_regs, init_d->tx_fifo_threshold);
+128-
+129-	ospi_set_rx_threshold(ospi_regs, init_d->rx_fifo_threshold);
+130-
+131-	ospi_set_rx_sample_delay(ospi_regs, init_d->rx_sample_delay);
+132-
+133:	ospi_set_ddr_drive_edge(ospi_regs, init_d->ddr_drive_edge);
+134-
+135-	ospi_mask_interrupts(ospi_regs);
+136-
+137-	ospi_mode_master(ospi_regs);
+138-
+139:	ospi_set_bus_speed(ospi_regs, init_d->bus_speed, init_d->core_clk);
+140-
+141-	aes_regs = (struct ospi_aes_regs *) init_d->aes_regs;
+142-
+143:	aes_regs->AES_RXDS_DLY = init_d->rx_ds_delay;
+144-
+145:	switch (init_d->baud2_delay) {
+146:	case OSPI_BAUD2_DELAY_DISABLE:
+147:		ospi_aes_set_baud2_delay(aes_regs, false);
+148-		break;
+149:	case OSPI_BAUD2_DELAY_ENABLE:
+150:		ospi_aes_set_baud2_delay(aes_regs, true);
+151-		break;
+152-
+153:	case OSPI_BAUD2_DELAY_AUTO:
+154-	    /* 'automatic' setting based on divisor */
+155:		ospi_aes_set_baud2_delay(aes_regs, ospi_regs->OSPI_BAUDR == 2);
+156-		break;
+157-	default:
+158-		return OSPI_ERR_INVALID_PARAM;
+159-	}
+160-
+161-	return OSPI_ERR_NONE;
+162-}
+163-
+--
+176-	if (ospi_inst == NULL)
+177-		return OSPI_ERR_INVALID_HANDLE;
+178-
+179-	ospi_inst->is_avail = 1;
+180-
+181-	/* Clear rest. */
+182-	ospi_inst->cs_pin = -1;
+183-	ospi_inst->regs = 0;
+184:	ospi_inst->bus_speed = 0;
+185:	ospi_inst->core_clk  = 0;
+186:	ospi_inst->ddr_drive_edge = 0;
+187-	ospi_inst->rx_fifo_threshold = 0;
+188-	ospi_inst->tx_fifo_threshold = 0;
+189-
+190-	/* Clear Transfer Object */
+191-	memset(&ospi_inst->transfer, 0, sizeof(struct ospi_transfer));
+192-
+193:	/* Clear XiP Configuration Object */
+194:	memset(&ospi_inst->xip_config, 0, sizeof(struct ospi_xip_config));
+195-
+196-	return  OSPI_ERR_NONE;
+197-}
+198-
+199-/**
+200- * \fn          alif_hal_ospi_prepare_transfer
+201- * \brief       Configure the OSPI instance before any transreceive
+202- * \param[in]   handle  Instance handler
+--
+216-
+217-	if (ospi_inst == NULL)
+218-		return OSPI_ERR_INVALID_HANDLE;
+219-
+220-	ospi_regs = (struct ospi_regs *) ospi_inst->regs;
+221-
+222-	ospi_set_dfs(ospi_regs, trans_conf->frame_size);
+223-
+224:	ospi_inst->transfer.addr_len = trans_conf->addr_len;
+225-	ospi_inst->transfer.inst_len = trans_conf->inst_len;
+226:	ospi_inst->transfer.dummy_cycle = trans_conf->wait_cycles;
+227-	ospi_inst->transfer.spi_frf = trans_conf->frame_format;
+228:	ospi_inst->transfer.ddr = trans_conf->ddr_enable;
+229:	ospi_inst->transfer.ddr_inst_en = trans_conf->ddr_ins_enable;
+230-
+231-	return  OSPI_ERR_NONE;
+232-}
+233-
+234-/**
+235- * \fn          alif_hal_ospi_cs_enable
+236- * \brief       Activate or De-active connected Slave device.
+237- * \param[in]   handle  Instance handler
+--
+309-		return OSPI_ERR_INVALID_HANDLE;
+310-
+311-	if (ospi_busy((struct ospi_regs *) ospi_inst->regs))
+312-		return OSPI_ERR_CTRL_BUSY;
+313-
+314-	ospi_inst->transfer.rx_total_cnt   = num;
+315-	ospi_inst->transfer.mode           = SPI_TMOD_TX_AND_RX;
+316-
+317:	/* Tx total count based on address length */
+318:	if (ospi_inst->transfer.addr_len == OSPI_ADDR_LENGTH_0_BITS)
+319-		ospi_inst->transfer.tx_total_cnt = 1;
+320:	else if (ospi_inst->transfer.addr_len == OSPI_ADDR_LENGTH_24_BITS)
+321-		ospi_inst->transfer.tx_total_cnt = 4;
+322:	else if (ospi_inst->transfer.addr_len == OSPI_ADDR_LENGTH_32_BITS)
+323-		ospi_inst->transfer.tx_total_cnt = 2;
+324-
+325-	ospi_inst->transfer.tx_buff        = data_out;
+326-	ospi_inst->transfer.rx_buff        = data_in;
+327-	ospi_inst->transfer.tx_current_cnt = 0;
+328-	ospi_inst->transfer.rx_current_cnt = 0;
+329-	ospi_inst->transfer.status         = SPI_TRANSFER_STATUS_NONE;
+330-
+--
+386-				void *data_out, int num)
+387-{
+388-	/*TODO*/
+389-	return OSPI_ERR_NONE;
+390-}
+391-
+392-
+393-/**
+394: * \fn          alif_hal_ospi_xip_enable
+395: * \brief       Enable XiP.
+396- * \param[in]   handle  Instance handlerd
+397- * \return      0 on Success, else error code.
+398- */
+399:int32_t alif_hal_ospi_xip_enable(HAL_OSPI_Handle_T handle)
+400-{
+401-	struct hal_ospi_inst *ospi_inst;
+402-
+403-	ospi_inst = get_inst_by_handle(handle);
+404-	if (ospi_inst == NULL)
+405-		return OSPI_ERR_INVALID_HANDLE;
+406-
+407-	ospi_control_ss((struct ospi_regs *) ospi_inst->regs,
+408-			ospi_inst->cs_pin, SPI_SS_STATE_DISABLE);
+409-
+410:	ospi_xip_enable((struct ospi_regs *) ospi_inst->regs,
+411-			(struct ospi_aes_regs *) ospi_inst->aes_regs,
+412:			&ospi_inst->xip_config);
+413-
+414-	ospi_control_ss((struct ospi_regs *) ospi_inst->regs,
+415-			ospi_inst->cs_pin, SPI_SS_STATE_ENABLE);
+416-
+417-	return OSPI_ERR_NONE;
+418-}
+419-
+420-/**
+421: * \fn          alif_hal_ospi_xip_disable
+422: * \brief       Disable XiP.
+423- * \param[in]   handle  Instance handlerd
+424- * \return      0 on Success, else error code.
+425- */
+426:int32_t alif_hal_ospi_xip_disable(HAL_OSPI_Handle_T handle)
+427-{
+428-	struct hal_ospi_inst *ospi_inst;
+429-
+430-	ospi_inst = get_inst_by_handle(handle);
+431-	if (ospi_inst == NULL)
+432-		return OSPI_ERR_INVALID_HANDLE;
+433-
+434-	ospi_control_ss((struct ospi_regs *) ospi_inst->regs,
+435-			ospi_inst->cs_pin, SPI_SS_STATE_DISABLE);
+436-
+437-
+438:	ospi_xip_disable((struct ospi_regs *) ospi_inst->regs,
+439-			(struct ospi_aes_regs *) ospi_inst->aes_regs,
+440:			&ospi_inst->transfer, &ospi_inst->xip_config);
+441-
+442-	ospi_control_ss((struct ospi_regs *) ospi_inst->regs,
+443-			ospi_inst->cs_pin, SPI_SS_STATE_ENABLE);
+444-
+445-	return OSPI_ERR_NONE;
+446-}
+
+=== 6. ALIF OSPI CONTROLLER IMPLEMENTATION ===
+
+===== MATCHES: /home/user/sdk-alif/modules/hal/alif/drivers/ospi/src/ospi.c =====
+29-/* Helper : value to set spi_ctrl0 */
+30-static uint32_t set_spi_ctrlr0_reg(struct ospi_transfer *transfer,
+31-				uint8_t inst_len)
+32-{
+33-	uint32_t val;
+34-
+35-	val = SPI_TRANS_TYPE_FRF_DEFINED
+36-		| (SPI_CTRLR0_SPI_RXDS_ENABLE << SPI_CTRLR0_SPI_RXDS_EN_OFFSET)
+37:		| (transfer->ddr << SPI_CTRLR0_SPI_DDR_EN_OFFSET)
+38-		| (inst_len << SPI_CTRLR0_INST_L_OFFSET)
+39:		| (transfer->ddr_inst_en << SPI_CTRLR0_INST_DDR_EN_OFFSET)
+40:		| (transfer->addr_len << SPI_CTRLR0_ADDR_L_OFFSET)
+41:		| (transfer->dummy_cycle << SPI_CTRLR0_WAIT_CYCLES_OFFSET);
+42-
+43-	return val;
+44-}
+45-
+46:/* Helper : value to ospi_ctrl0 for XiP */
+47:static uint32_t set_ospi_ctrl0_in_xip(uint8_t frf,
+48-			uint8_t t_mode, uint8_t dfs)
+49-{
+50-	uint32_t val;
+51-
+52-	/* Set OSPI CTRL0 */
+53-	val = OSPI_CTRLR0_IS_MST
+54-		|(frf << OSPI_CTRLR0_SPI_FRF_OFFSET)
+55-		|(0 << OSPI_CTRLR0_SCPOL_OFFSET)
+56-		|(0 << OSPI_CTRLR0_SCPH_OFFSET)
+57-		|(0 << OSPI_CTRLR0_SSTE_OFFSET)
+58-		|(t_mode << OSPI_CTRLR0_TMOD_OFFSET)
+59-		|(dfs << OSPI_CTRLR0_DFS_OFFSET);
+60-
+61-	return val;
+62-}
+63-
+64:/* Helper : value to ospi_xip_ctrl0 for XiP */
+65:static uint32_t set_xip_ctrl(struct ospi_xip_config *xip_cfg)
+66-{
+67-	uint32_t val;
+68-
+69:	val = (OCTAL << XIP_CTRL_FRF_OFFSET)
+70:	| (0x2 << XIP_CTRL_TRANS_TYPE_OFFSET)
+71:	| (XIP_CTRL_ADDR_LEN_36_BIT << XIP_CTRL_ADDR_L_OFFSET)
+72:	| (xip_cfg->xip_inst_len << XIP_CTRL_INST_L_OFFSET)
+73:	| (0x0 << XIP_CTRL_MD_BITS_EN_OFFSET)
+74:	| (xip_cfg->xip_wait_cycles << XIP_CTRL_WAIT_CYCLES_OFFSET)
+75:	| (0x1 << XIP_CTRL_DFS_HC_OFFSET)
+76:	| (0x1 << XIP_CTRL_DDR_EN_OFFSET)
+77:	| (xip_cfg->xip_inst_ddr_en << XIP_CTRL_INST_DDR_EN_OFFSET)
+78:	| (0x1 << XIP_CTRL_RXDS_EN_OFFSET)
+79:	| (0x1 << XIP_CTRL_INST_EN_OFFSET)
+80:	| (0x0 << XIP_CTRL_CONT_XFER_EN_OFFSET)
+81:	| (0x0 << XIP_CTRL_XIP_HYPERBUS_EN_OFFSET)
+82:	| (0x0 << XIP_CTRL_RXDS_SIG_EN_OFFSET)
+83:	| (0x0 << XIP_CTRL_XIP_MBL_OFFSET)
+84:	| (0x0 << XIP_CTRL_XIP_PREFETCH_EN_OFFSET)
+85:	| (xip_cfg->xip_rxds_vl_en << XIP_CTRL_RXDS_VL_EN_OFFSET);
+86-
+87-	return val;
+88-}
+89-
+90-/**
+91: * \fn          void ospi_set_mode(struct ospi_regs *ospi, enum spi_mode mode)
+92- * \brief       Set the OSPI mode for the OSPI instance.
+93- * \param[in]   ospi     Pointer to the OSPI register map
+94- * \param[in]   mode    The mode to be set.
+95- * \return      none
+96- */
+97:void ospi_set_mode(struct ospi_regs *ospi, enum spi_mode mode)
+98-{
+99-	uint32_t val;
+100-
+101-	ospi_disable(ospi);
+102-
+103-	val = ospi->OSPI_CTRLR0;
+104-	val &= ~(SPI_CTRLR0_SCPOL_HIGH | SPI_CTRLR0_SCPH_HIGH);
+105-
+106-	switch (mode) {
+107:	/* Clock Polarity 0, Clock Phase 0 */
+108-	case SPI_MODE_0:
+109-		break;
+110-
+111:	/* Clock Polarity 0, Clock Phase 1 */
+112-	case SPI_MODE_1:
+113-		val |= (SPI_CTRLR0_SCPOL_LOW | SPI_CTRLR0_SCPH_HIGH);
+114-		break;
+115-
+116:	/* Clock Polarity 1, Clock Phase 0 */
+117-	case SPI_MODE_2:
+118-		val |= (SPI_CTRLR0_SCPOL_HIGH | SPI_CTRLR0_SCPH_LOW);
+119-		break;
+120-
+121:	/* Clock Polarity 1, Clock Phase 1 */
+122-	case SPI_MODE_3:
+123-		val |= (SPI_CTRLR0_SCPOL_HIGH | SPI_CTRLR0_SCPH_HIGH);
+124-		break;
+125-	}
+126-
+127-	ospi->OSPI_CTRLR0 = val;
+128-	ospi_enable(ospi);
+129-}
+--
+145-	val &= ~SPI_CTRLR0_DFS_MASK;
+146-	val |= (dfs - 1);
+147-	ospi->OSPI_CTRLR0 = val;
+148-
+149-	ospi_enable(ospi);
+150-}
+151-
+152-/**
+153: * \fn          void ospi_set_tmod(struct ospi_regs *spi, enum spi_tmode tmod)
+154- * \brief       Set the transfer mode for the OSPI instance.
+155- * \param[in]   ospi    Pointer to the OSPI register map
+156- * \param[in]   tmod    Transfer mode
+157- * \return      none
+158- */
+159:void ospi_set_tmod(struct ospi_regs *ospi, enum spi_tmode tmod)
+160-{
+161-	uint32_t val = 0;
+162-
+163-	ospi_disable(ospi);
+164-
+165-	val = ospi->OSPI_CTRLR0;
+166-	val &= ~(SPI_CTRLR0_TMOD_MASK);
+167-
+--
+214-void ospi_set_rx_sample_delay(struct ospi_regs *ospi, uint8_t rx_sample_delay)
+215-{
+216-	ospi_disable(ospi);
+217-	ospi->OSPI_RX_SAMPLE_DELAY = rx_sample_delay;
+218-	ospi_enable(ospi);
+219-}
+220-
+221-/**
+222: * \fn          void ospi_set_ddr_drive_edge(struct ospi_regs *ospi,
+223: *                                           uint8_t ddr_drive_edge)
+224: * \brief       Set DDR drive edge for the OSPI instance
+225- * \param[in]   ospi       Pointer to the OSPI register map
+226- * \param[in]   threshold  Receive FIFO threshold
+227- * \return      none
+228- */
+229:void ospi_set_ddr_drive_edge(struct ospi_regs *ospi, uint8_t ddr_drive_edge)
+230-{
+231-	ospi_disable(ospi);
+232:	ospi->OSPI_DDR_DRIVE_EDGE = ddr_drive_edge;
+233-	ospi_enable(ospi);
+234-}
+235-
+236-/**
+237- * \fn          void ospi_control_ss(struct ospi_regs *ospi,
+238- *                     uint8_t slave, enum spi_ss_state state)
+239- * \brief       Control the slave select line
+240- * \param[in]   spi    Pointer to the OSPI register map
+--
+251-		ospi->OSPI_SER |= 1 << slave;
+252-	} else {
+253-		ospi->OSPI_SER &= ~(1 << slave);
+254-	}
+255-	ospi_enable(ospi);
+256-}
+257-
+258-/**
+259: * \fn          void ospi_control_xip_ss(struct ospi_regs *ospi,
+260- *                                      uint8_t slave, enum spi_ss_state state)
+261: * \brief       Control the XIP slave select line
+262- * \param[in]   ospi   Pointer to the OSPI register map
+263- * \param[in]   slave  The slave to be selected
+264- * \param[in]   state  The state of the slave select line
+265- * \return      none
+266- */
+267:void ospi_control_xip_ss(struct ospi_regs *ospi,
+268-			uint8_t slave, enum spi_ss_state state)
+269-{
+270-	ospi_disable(ospi);
+271-
+272-	if (state == SPI_SS_STATE_ENABLE) {
+273:		ospi->OSPI_XIP_SER |= 1 << slave;
+274-	} else {
+275:		ospi->OSPI_XIP_SER &= ~(1 << slave);
+276-	}
+277-	ospi_enable(ospi);
+278-}
+279-
+280-/**
+281- * \fn          void ospi_send(struct ospi_regs *spi,
+282- *                             struct ospi_transfer *transfer)
+283- * \brief       Prepare the OSPI instance for transmission
+--
+421-	ospi_enable_tx_dma(ospi);
+422-
+423-	ospi_enable_rx_dma(ospi);
+424-
+425-	ospi_enable(ospi);
+426-}
+427-
+428-/**
+429:  \fn          void ospi_hyperbus_xip_init(struct ospi_regs *ospi,
+430:			struct ospi_xip_config *xip_cfg, bool is_dual_octal)
+431:  \brief       Initialize hyperbus XIP configuration for the OSPI instance
+432-  \param[in]   ospi        Pointer to the OSPI register map
+433:  \param[in]   xip_cfg     Pointer to the XIP configuration
+434-  \param[in]   is_dual_octal OSPI transfer type is Dual Octal
+435-  \return      none
+436-*/
+437:void ospi_hyperbus_xip_init(struct ospi_regs *ospi,
+438:		struct ospi_xip_config *xip_cfg, bool is_dual_octal)
+439-{
+440-	uint8_t trans_type;
+441-
+442-	if (is_dual_octal) {
+443-		trans_type = SPI_TRANS_TYPE_FRF_DUAL_OCTAL;
+444-	} else {
+445-		trans_type = SPI_TRANS_TYPE_STANDARD;
+446-	}
+447-
+448-	ospi_disable(ospi);
+449-
+450-	ospi->OSPI_SPI_CTRLR0 = 1 << SPI_CTRLR0_SPI_DM_EN_OFFSET;
+451-
+452:	ospi->OSPI_XIP_CTRL = (1 << XIP_CTRL_XIP_HYPERBUS_EN_OFFSET)
+453:		| (1 << XIP_CTRL_RXDS_SIG_EN_OFFSET)
+454:		| (xip_cfg->xip_wait_cycles << XIP_CTRL_WAIT_CYCLES_OFFSET)
+455:		| (1 << XIP_CTRL_DFS_HC_OFFSET)
+456:		| (trans_type << XIP_CTRL_TRANS_TYPE_OFFSET);
+457-
+458:	ospi->OSPI_XIP_WRITE_CTRL = (1 << XIP_WRITE_CTRL_XIPWR_HYPERBUS_EN_OFFSET)
+459:		| (1 << XIP_WRITE_CTRL_XIPWR_DM_EN_OFFSET)
+460:		| (1 << XIP_WRITE_CTRL_XIPWR_RXDS_SIG_EN_OFFSET)
+461-#if (defined(CONFIG_SOC_SERIES_E1C) || defined(CONFIG_SOC_SERIES_B1) \
+462-		|| defined(CONFIG_ENSEMBLE_GEN2))
+463:			| (1 << XIP_WRITE_CTRL_XIPWR_DFS_HC_OFFSET)
+464-#endif
+465:	| (trans_type << XIP_WRITE_CTRL_WR_TRANS_TYPE_OFFSET)
+466:	| (xip_cfg->xip_wait_cycles << XIP_WRITE_CTRL_XIPWR_WAIT_CYCLES);
+467-
+468-#if (defined(CONFIG_SOC_SERIES_E7) || defined(CONFIG_SOC_SERIES_E5) \
+469-	|| defined(CONFIG_SOC_SERIES_E3) || defined(CONFIG_SOC_SERIES_E1))
+470:	ospi_control_xip_ss(ospi, xip_cfg->xip_cs_pin, SPI_SS_STATE_ENABLE);
+471-#endif
+472-
+473-	ospi_enable(ospi);
+474-}
+475-
+476-/**
+477: * \fn          void ospi_psram_xip_init(struct ospi_regs *ospi,
+478: *                    struct ospi_xip_config *xip_cfg, bool is_dual_octal)
+479: * \brief       Initialize XIP configuration for the OSPI instance
+480- * \param[in]   ospi     Pointer to the OSPI register map
+481: * \param[in]   xip_cfg  Pointer to the xip config structure
+482- * \param[in]   is_dual_octal OSPI transfer type is Dual Octal
+483- * \return      none
+484- */
+485:void ospi_psram_xip_init(struct ospi_regs *ospi,
+486:		struct ospi_xip_config *xip_cfg, bool is_dual_octal)
+487-{
+488-	uint8_t trans_type;
+489-	uint32_t val;
+490-
+491-	if (is_dual_octal) {
+492-		trans_type = SPI_TRANS_TYPE_FRF_DUAL_OCTAL;
+493-	} else {
+494-		trans_type = SPI_TRANS_TYPE_FRF_DEFINED;
+--
+501-			| SPI_CTRLR0_SCPOL_LOW
+502-			| SPI_CTRLR0_SCPH_LOW
+503-			| (0 << SPI_CTRLR0_SSTE)
+504-			| (SPI_TMOD_RX << SPI_CTRLR0_TMOD)
+505-			| (SPI_CTRLR0_DFS_32bit << SPI_CTRLR0_DFS);
+506-
+507-	ospi->OSPI_CTRLR0 = val;
+508-
+509:	val = (SPI_FRAME_FORMAT_OCTAL << XIP_CTRL_FRF_OFFSET)
+510:			| (trans_type << XIP_CTRL_TRANS_TYPE_OFFSET)
+511:			| (0x8 << XIP_CTRL_ADDR_L_OFFSET)
+512:			| (0x3 << XIP_CTRL_INST_L_OFFSET)
+513:			| (0x0 << XIP_CTRL_MD_BITS_EN_OFFSET)
+514:			| (xip_cfg->xip_wait_cycles << XIP_CTRL_WAIT_CYCLES_OFFSET)
+515:			| (0x1 << XIP_CTRL_DFS_HC_OFFSET)
+516:			| (0x1 << XIP_CTRL_DDR_EN_OFFSET)
+517:			| (0x1 << XIP_CTRL_INST_DDR_EN_OFFSET)
+518:			| (0x1 << XIP_CTRL_RXDS_EN_OFFSET)
+519:			| (0x1 << XIP_CTRL_INST_EN_OFFSET)
+520:			| (0x0 << XIP_CTRL_CONT_XFER_EN_OFFSET)
+521:			| (0x0 << XIP_CTRL_XIP_HYPERBUS_EN_OFFSET)
+522:			| (0x0 << XIP_CTRL_RXDS_SIG_EN_OFFSET)
+523:			| (0x0 << XIP_CTRL_XIP_MBL_OFFSET)
+524:			| (0x0 << XIP_CTRL_XIP_PREFETCH_EN_OFFSET)
+525:			| (0x1 << XIP_CTRL_RXDS_VL_EN_OFFSET);
+526-
+527:	ospi->OSPI_XIP_CTRL = val;
+528-
+529:	val = (SPI_FRAME_FORMAT_OCTAL << XIP_WRITE_CTRL_WR_FRF_OFFSET)
+530:			| (trans_type << XIP_WRITE_CTRL_WR_TRANS_TYPE_OFFSET)
+531:			| (0x8 << XIP_WRITE_CTRL_WR_ADDR_L_OFFSET)
+532:			| (0x3 << XIP_WRITE_CTRL_WR_INST_L_OFFSET)
+533:			| (0x1 << XIP_WRITE_CTRL_WR_SPI_DDR_EN_OFFSET)
+534:			| (0x1 << XIP_WRITE_CTRL_WR_INST_DDR_EN_OFFSET)
+535:			| (0x0 << XIP_WRITE_CTRL_XIPWR_HYPERBUS_EN_OFFSET)
+536:			| (0x0 << XIP_WRITE_CTRL_XIPWR_RXDS_SIG_EN_OFFSET)
+537:			| (0x1 << XIP_WRITE_CTRL_XIPWR_DM_EN_OFFSET)
+538:			| (xip_cfg->xip_wait_cycles << XIP_WRITE_CTRL_XIPWR_WAIT_CYCLES)
+539:			| (0x1 << XIP_WRITE_CTRL_XIPWR_DFS_HC_OFFSET);
+540-
+541:	ospi->OSPI_XIP_WRITE_CTRL = val;
+542-
+543-	ospi->OSPI_RX_SAMPLE_DELAY = 0;
+544-
+545:	ospi->OSPI_XIP_MODE_BITS = xip_cfg->xip_mod_bits;
+546:	ospi->OSPI_XIP_INCR_INST = xip_cfg->incr_cmd;
+547:	ospi->OSPI_XIP_WRAP_INST = xip_cfg->wrap_cmd;
+548:	ospi->OSPI_XIP_WRITE_INCR_INST = xip_cfg->write_incr_cmd;
+549:	ospi->OSPI_XIP_WRITE_WRAP_INST = xip_cfg->write_wrap_cmd;
+550:	ospi->OSPI_XIP_CNT_TIME_OUT = xip_cfg->xip_cnt_time_out;
+551-
+552-	ospi_enable(ospi);
+553-}
+554-
+555-/**
+556-  \fn          void ospi_hyperbus_send(struct ospi_regs *spi, struct ospi_transfer *transfer)
+557-  \brief       Prepare the OSPI Hyperbus for transmission
+
+=== 7. IS25WX XIP DRIVER IMPLEMENTATION ===
+
+===== MATCHES: /home/user/sdk-alif/modules/alif-mlek/source/hal/source/platform/alif/source/ospi_flash_is25wx.c =====
+3- * terms stated in the Alif Semiconductor Software License Agreement
+4- *
+5- * You should have received a copy of the Alif Semiconductor Software
+6- * License Agreement with this file. If not, please write to:
+7- * contact@alifsemi.com, or visit: https://alifsemi.com/license
+8- *
+9- */
+10-/**************************************************************************//**
+11: * @brief Methods for initializing OSPI flash in XIP mode for executing ML model
+12- *        from flash device.
+13- ******************************************************************************/
+14-
+15-#include <string.h>
+16-#include <RTE_Device.h>
+17-#include <RTE_Components.h>
+18-#include CMSIS_device_header
+19-
+--
+25-#include "ospi.h"
+26-#include "ospi_private.h"
+27-
+28-#include "ospi_flash.h"
+29-#include "hal_log.h"
+30-
+31-#ifdef BOARD_HAS_IS25WX_FLASH
+32-
+33:#define IMMEDIATE_XIP
+34-//#define SEMIHOSTING_WRITE "ER_OSPI_FLASH"
+35-//#define DO_FLASH_WRITE
+36-
+37-#ifndef BOARD_OSPI_FLASH_RESET_GPIO_PORT
+38-#error X
+39-#endif
+40-
+41-#define OSPI_RESET_PORT     BOARD_OSPI_FLASH_RESET_GPIO_PORT
+42-#define OSPI_RESET_PIN      BOARD_OSPI_FLASH_RESET_GPIO_PIN
+43-
+44:/* NOTE: According to IS25WX256 flash device datasheet fast read wait cycles
+45:         can be set to 9 at 100MHz bus clock.
+46-         For IS25WX512 minimum wait cycles is 10 (@100MHz)
+47-         See RTE_Device.h */
+48:#define FLASH_DEVICE_FAST_READ_WAIT_CYCLES (RTE_ISSI_FLASH_WAIT_CYCLES)
+49-
+50-extern ARM_DRIVER_FLASH ARM_Driver_Flash_(BOARD_OSPI_FLASH_INSTANCE);
+51-static ARM_DRIVER_FLASH* const ptrDrvFlash = &ARM_Driver_Flash_(BOARD_OSPI_FLASH_INSTANCE);
+52-
+53-extern ARM_DRIVER_GPIO ARM_Driver_GPIO_(OSPI_RESET_PORT);
+54-static ARM_DRIVER_GPIO* const GPIODrv = &ARM_Driver_GPIO_(OSPI_RESET_PORT);
+55-
+56-int32_t ospi_flash_set_linear(void)
+--
+59-}
+60-
+61-int32_t ospi_flash_set_wrap32(void)
+62-{
+63-    // TO DO - flash device does support this
+64-    return ARM_DRIVER_ERROR_UNSUPPORTED;
+65-}
+66-
+67:static void ospi_flash_enable_xip()
+68-{
+69-#if RTE_ISSI_FLASH_OSPI_DRV_NUM == 0
+70-    OSPI_Type *ospi = (OSPI_Type *) OSPI0_BASE;
+71-    AES_Type *aes = (AES_Type *)AES0_BASE;
+72-#else
+73-    OSPI_Type *ospi = (OSPI_Type *) OSPI1_BASE;
+74-    AES_Type *aes = (AES_Type *)AES1_BASE;
+75-#endif
+--
+80-        | SPI_CTRLR0_SCPOL_LOW
+81-        | SPI_CTRLR0_SCPH_LOW
+82-        |(0 << SPI_CTRLR0_SSTE)
+83-        |(SPI_TMOD_RX << SPI_CTRLR0_TMOD)
+84-        |(SPI_CTRLR0_DFS_16bit << SPI_CTRLR0_DFS);
+85-
+86-    ospi->OSPI_CTRLR0 = val;
+87-
+88:    val = (SPI_FRAME_FORMAT_OCTAL << XIP_CTRL_FRF_OFFSET)
+89:            | (0x2 << XIP_CTRL_TRANS_TYPE_OFFSET)
+90:            | (0x8 << XIP_CTRL_ADDR_L_OFFSET)
+91:            | (0x3 << XIP_CTRL_INST_L_OFFSET)
+92:            | (0x0 << XIP_CTRL_MD_BITS_EN_OFFSET)
+93:            | (FLASH_DEVICE_FAST_READ_WAIT_CYCLES << XIP_CTRL_WAIT_CYCLES_OFFSET)
+94:            | (0x1 << XIP_CTRL_DFS_HC_OFFSET)
+95:            | (0x1 << XIP_CTRL_DDR_EN_OFFSET)
+96:            | (0x1 << XIP_CTRL_INST_DDR_EN_OFFSET)
+97:            | (0x1 << XIP_CTRL_RXDS_EN_OFFSET)
+98:            | (0x1 << XIP_CTRL_INST_EN_OFFSET)
+99:            | (0x0 << XIP_CTRL_CONT_XFER_EN_OFFSET)
+100:            | (0x0 << XIP_CTRL_XIP_HYPERBUS_EN_OFFSET)
+101:            | (0x0 << XIP_CTRL_RXDS_SIG_EN_OFFSET)
+102:            | (0x0 << XIP_CTRL_XIP_MBL_OFFSET)
+103:            | (0x0 << XIP_CTRL_XIP_PREFETCH_EN_OFFSET)
+104:            | (0x0 << XIP_CTRL_RXDS_VL_EN_OFFSET);
+105-
+106:    ospi->OSPI_XIP_CTRL = val;
+107-
+108-    ospi->OSPI_RX_SAMPLE_DELAY = 0;
+109-
+110:    ospi->OSPI_XIP_MODE_BITS = 0x00;
+111:    ospi->OSPI_XIP_INCR_INST = 0x0B0B;
+112:    ospi->OSPI_XIP_WRAP_INST = 0x0B0B;
+113:#if SOC_FEAT_OSPI_HAS_XIP_SER // OSPI_XIP_SER not available on Spark and Eagle
+114:    ospi->OSPI_XIP_SER = 1 << BOARD_FLASH_OSPI_SS;
+115-#endif
+116:    ospi->OSPI_XIP_CNT_TIME_OUT = 255;
+117-
+118-    ospi_enable(ospi);
+119-
+120:    aes->AES_CONTROL |= AES_CONTROL_XIP_EN;
+121-}
+122-
+123-
+124-static int32_t ospi_flash_toggle_reset(void)
+125-{
+126-    int32_t ret = GPIODrv->Initialize(OSPI_RESET_PIN, NULL);
+127-    if (ret != ARM_DRIVER_OK) { return ret; }
+128-
+--
+158-    }
+159-
+160-    ret = ptrDrvFlash->PowerControl(ARM_POWER_FULL);
+161-    if (ret != ARM_DRIVER_OK) {
+162-        printf_err("Ext flash device init failed\n");
+163-        return ret;
+164-    }
+165-
+166:#ifdef IMMEDIATE_XIP
+167:    ospi_flash_enable_xip();
+168-#endif
+169-    return ret;
+170-}
+171-
+172-const uint8_t *do_flash_write(const uint8_t *ptr, size_t len)
+173-{
+174-#ifdef DO_FLASH_WRITE
+175-    ARM_FLASH_INFO *info = ptrDrvFlash->GetInfo();
+176-    int32_t ret;
+177-
+178:    SCB_InvalidateDCache_by_Addr((volatile void *) BOARD_OSPI_FLASH_BASE, len);
+179-    for (uint32_t offset = 0x00000000; offset < 0x00000000 + len; offset += info->sector_size) {
+180-        printf("\rErasing %" PRIX32, BOARD_OSPI_FLASH_BASE + offset);
+181-        fflush(stdout); // GCC/newlib seems to be fully buffered...
+182-        ret = ptrDrvFlash->EraseSector(offset);
+183-        if (ret != ARM_DRIVER_OK) {
+184-            printf_err("Ext flash erase failed\n");
+185-            return ptr;
+186-        }
+--
+191-        printf_err("Flash error status\n");
+192-        return ptr;
+193-    }
+194-
+195-    printf("Programming\n");
+196-    ret = ptrDrvFlash->ProgramData(0, ptr, (len + 1) / 2);
+197-    if (ret != (len + 1) / 2) {
+198-         printf_err("Ext flash program failed\n");
+199:         ospi_flash_enable_xip();
+200-         return ptr;
+201-    }
+202-
+203-    flash_status = ptrDrvFlash->GetStatus();
+204-    if (flash_status.error) {
+205-        printf_err("Flash error status\n");
+206:        ospi_flash_enable_xip();
+207-        return ptr;
+208-    }
+209-#endif
+210-
+211:#ifndef IMMEDIATE_XIP
+212:    printf("Going for XIP\n");
+213:    ospi_flash_enable_xip();
+214-#endif
+215-    printf("Verifying flash\n");
+216:    SCB_InvalidateDCache_by_Addr((volatile void *) BOARD_OSPI_FLASH_BASE, len);
+217-    const uint8_t *flash_ptr = (const uint8_t *) BOARD_OSPI_FLASH_BASE;
+218-//#ifndef DO_FLASH_WRITE
+219-    if (memcmp(flash_ptr, ptr, len)) {
+220-        printf_err("Verify fail\n");
+221-        for (size_t i = 0; i < len; i += 2) {
+222-            if (flash_ptr[i] != ptr[i+1] || flash_ptr[i+1] != ptr[i]) {
+223-                printf("Swap verify fail at %d\n", i);
+224-                return ptr;
+225-            }
+226-        }
+227-        //return ptr;
+228-    } else {
+229:        printf("Flash model verified\n");
+230-    }
+231-//#endif
+232-    return flash_ptr;
+233-   // return ptr;
+234-}
+235-
+236-#endif // BOARD_HAS_IS25WX_FLASH
+
+=== 8. OSPI CONTROLLER DEVICE-TREE BINDING ===
+NOT FOUND: /home/user/sdk-alif/zephyr/dts/bindings/flash_controller/snps,designware-ospi.yaml
+
+=== 9. ISSI FLASH DEVICE-TREE BINDING ===
+
+===== FILE: /home/user/sdk-alif/zephyr/dts/bindings/flash_controller/issi,xspi-flash-controller.yaml =====
+# Copyright (C) 2024 Alif Semiconductor.
+# SPDX-License-Identifier: Apache-2.0
+
+description: ISSI xSPI Flash controller
+
+compatible: "issi,xspi-flash-controller"
+
+include: flash-controller.yaml
+
+#on-bus: ospi
+
+properties:
+  cs-gpios:
+    type: phandle-array
+    required: false
+    description: Chip select GPIO
+
+  erase-value:
+    type: int
+    description: block size to write
+    required: true
+    default: 256
+
+  num-of-sector:
+    type: int
+    description: available sectors in the connected NOR Flash
+    required: true
+
+  page-size:
+    type: int
+    description: Page Size
+    required: true
+
+  sector-size:
+    type: int
+    description: number of bytes in each sector
+    required: true
+
+  write-block-size:
+    type: int
+    description: number of bytes in each sector
+    required: true
+
+=== 10. MODEL SECTION AND PLACEMENT ===
+
+===== FILE: /home/user/sdk-alif/beeinventor/test_heatstroke/src/application/main/include/BufAttributes.hpp =====
+/*
+ * SPDX-FileCopyrightText: Copyright 2021, 2024-2025 Arm Limited and/or its
+ * affiliates <open-source-office@arm.com>
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef BUF_ATTRIBUTES_HPP
+#define BUF_ATTRIBUTES_HPP
+
+#include <zephyr/devicetree.h>
+
+#define BYTE_ALIGNMENT              16
+#define ALIGNMENT_REQ               aligned(BYTE_ALIGNMENT)
+#define ACTIVATION_BUF_SECTION      section(CONFIG_ACTIVATION_BUF_SECTION)
+
+#if CONFIG_MODEL_IN_EXT_FLASH
+#define MODEL_SECTION               section(".alif_extflash_" DT_PROP(DT_NODELABEL(ext_flash_xip), zephyr_memory_region))
+#else
+#define MODEL_SECTION               section(CONFIG_MODEL_SECTION)
+#endif
+
+#define MAKE_ATTRIBUTE(x)           __attribute__((ALIGNMENT_REQ, x))
+#define ACTIVATION_BUF_ATTRIBUTE    MAKE_ATTRIBUTE(ACTIVATION_BUF_SECTION)
+#define MODEL_SECTION_ATTRIBUTE     MAKE_ATTRIBUTE(MODEL_SECTION)
+#define LABELS_ATTRIBUTE
+
+
+#endif /* BUF_ATTRIBUTES_HPP */
+
+===== MATCHES: /home/user/sdk-alif/build_heatstroke_ethosu_aligned16_arena130000_kernelheap64k_20261111_try1/zephyr/zephyr.map =====
+1-Archive member included to satisfy reference by file (symbol)
+2-
+3-app/libapp.a(Main.cc.obj)     (--whole-archive)
+4-app/libapp.a(MainLoop.cc.obj)
+5-                              (--whole-archive)
+6-app/libapp.a(reverse_v2.cc.obj)
+7-                              (--whole-archive)
+8:app/libapp.a(PolyUModel1.cc.obj)
+9-                              (--whole-archive)
+10-app/libapp.a(power_mgr.c.obj)
+11-                              (--whole-archive)
+12-app/libapp.a(vela_rank4_mean_shapes_fixed_layernorm_sub_div_fused_exp_ethosu_aligned16_20261111.tflite.cc.obj)
+13-                              (--whole-archive)
+14-app/libapp.a(heatstroke_bidirectional_lstm_single_step_experiment.cc.obj)
+15-                              (--whole-archive)
+16-app/libapp.a(heatstroke_int64_cast_sum.cc.obj)
+--
+1130-zephyr/kernel/libkernel.a(mempool.c.obj)
+1131-                              zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj) (k_free)
+1132-zephyr/kernel/libkernel.a(banner.c.obj)
+1133-                              zephyr/kernel/libkernel.a(init.c.obj) (boot_banner)
+1134-zephyr/kernel/libkernel.a(kheap.c.obj)
+1135-                              zephyr/kernel/libkernel.a(mempool.c.obj) (k_heap_aligned_alloc)
+1136-zephyr/kernel/libkernel.a(system_work_q.c.obj)
+1137-                              zephyr/kernel/libkernel.a(work.c.obj) (k_sys_work_q)
+1138:modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj)
+1139:                              app/libapp.a(PolyUModel1.cc.obj) (arm::app::fwk::tflm::TflmModel::IsInited() const)
+1140-modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmTensor.cc.obj)
+1141:                              modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj) (arm::app::fwk::tflm::TflmTensor::TflmTensor(TfLiteTensor*))
+1142-modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TensorFlowLiteMicro.cc.obj)
+1143:                              modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj) (arm::app::fwk::tflm::EnableTFLMLog())
+1144-modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj)
+1145-                              zephyr/drivers/misc/ethos_u/libdrivers__misc__ethos_u.a(ethos_u.c.obj) (ethosu_irq_handler)
+1146-modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_device_u55_u65.c.obj)
+1147-                              modules/hal_ethos_u/ethos-u-core-driver/libethosu_core_driver.a(ethosu_driver.c.obj) (ethosu_dev_run_command_stream)
+1148-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(del_ops.o)
+1149-                              app/libapp.a(MainLoop.cc.obj) (operator delete(void*, unsigned int))
+1150-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(eh_terminate.o)
+1151-                              app/libapp.a(Main.cc.obj) (std::terminate())
+--
+1161-                              app/libapp.a(MainLoop.cc.obj) (operator new(unsigned int))
+1162-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(si_class_type_info.o)
+1163-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(guard_error.o) (vtable for __cxxabiv1::__si_class_type_info)
+1164-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(tinfo.o)
+1165-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(si_class_type_info.o) (std::type_info::__is_pointer_p() const)
+1166-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(functexcept.o)
+1167-                              app/libapp.a(MainLoop.cc.obj) (std::__throw_bad_alloc())
+1168-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(shared_ptr.o)
+1169:                              modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj) (std::_Sp_make_shared_tag::_S_eq(std::type_info const&))
+1170-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(string-inst.o)
+1171:                              modules/mlek/mlek/mlek/fwk/tflm/libml_framework_tflm.a(TflmModel.cc.obj) (std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_create(unsigned int&, unsigned int))
+1172-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(bad_alloc.o)
+1173-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(new_op.o) (vtable for std::bad_alloc)
+1174-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(bad_array_new.o)
+1175-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(functexcept.o) (vtable for std::bad_array_new_length)
+1176-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(bad_cast.o)
+1177-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(functexcept.o) (vtable for std::bad_cast)
+1178-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(bad_typeid.o)
+1179-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(functexcept.o) (vtable for std::bad_typeid)
+--
+1303-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libstdc++.a(string-inst.o) (memchr)
+1304-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-memcmp.o)
+1305-                              app/libapp.a(MainLoop.cc.obj) (memcmp)
+1306-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-memcpy.o)
+1307-                              app/libapp.a(MainLoop.cc.obj) (memcpy)
+1308-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-memmove.o)
+1309-                              app/libapp.a(MainLoop.cc.obj) (memmove)
+1310-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-memset.o)
+1311:                              app/libapp.a(PolyUModel1.cc.obj) (memset)
+1312-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-mlock.o)
+1313-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-mallocr.o) (__malloc_lock)
+1314-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-realloc.o)
+1315-                              modules/tflite-micro/libmodules__tflite-micro.a(common.cc.obj) (realloc)
+1316-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-reallocr.o)
+1317-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-fvwrite.o) (_realloc_r)
+1318-/home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-sbrkr.o)
+1319-                              /home/user/zephyr-sdk-0.17.0/arm-zephyr-eabi/arm-zephyr-eabi/lib/thumb/v8-m.main+dp/hard/libc.a(lib_a-mallocr.o) (_sbrk_r)
+--
+1478- .debug_loc     0x0000000000000000     0x275b app/libapp.a(reverse_v2.cc.obj)
+1479- .debug_aranges
+1480-                0x0000000000000000       0x58 app/libapp.a(reverse_v2.cc.obj)
+1481- .debug_ranges  0x0000000000000000      0x990 app/libapp.a(reverse_v2.cc.obj)
+1482- .debug_line    0x0000000000000000     0x1802 app/libapp.a(reverse_v2.cc.obj)
+1483- .debug_str     0x0000000000000000     0x2c7a app/libapp.a(reverse_v2.cc.obj)
+1484- .comment       0x0000000000000000       0x21 app/libapp.a(reverse_v2.cc.obj)
+1485- .debug_frame   0x0000000000000000      0x118 app/libapp.a(reverse_v2.cc.obj)
+1486: .group         0x0000000000000000        0x8 app/libapp.a(PolyUModel1.cc.obj)
+1487: .group         0x0000000000000000        0x8 app/libapp.a(PolyUModel1.cc.obj)
+1488: .group         0x0000000000000000        0xc app/libapp.a(PolyUModel1.cc.obj)
+1489: .group         0x0000000000000000        0xc app/libapp.a(PolyUModel1.cc.obj)
+1490: .group         0x0000000000000000        0xc app/libapp.a(PolyUModel1.cc.obj)
+1491: .group         0x0000000000000000        0xc app/libapp.a(PolyUModel1.cc.obj)
+1492: .group         0x0000000000000000       0x14 app/libapp.a(PolyUModel1.cc.obj)
+1493: .group         0x0000000000000000       0x14 app/libapp.a(PolyUModel1.cc.obj)
+1494: .text          0x0000000000000000        0x0 app/libapp.a(PolyUModel1.cc.obj)
+1495: .data          0x0000000000000000        0x0 app/libapp.a(PolyUModel1.cc.obj)
+1496: .bss           0x0000000000000000        0x0 app/libapp.a(PolyUModel1.cc.obj)
+1497- .text._ZNK6tflite22MicroMutableOpResolverILj33EE6FindOpEPKc
+1498:                0x0000000000000000       0x3a app/libapp.a(PolyUModel1.cc.obj)
+1499- .text._ZNSt6vectorISt10shared_ptrIN3arm3app3fwk5iface11TensorIfaceEESaIS6_EED2Ev
+1500:                0x0000000000000000       0x44 app/libapp.a(PolyUModel1.cc.obj)
+1501: .text._ZN3arm3app3fwk4tflm9TflmModelD2Ev
+1502:                0x0000000000000000       0x30 app/libapp.a(PolyUModel1.cc.obj)
+1503: .text._ZN3arm3app3fwk4tflm9TflmModelD0Ev
+1504:                0x0000000000000000       0x14 app/libapp.a(PolyUModel1.cc.obj)
+1505- .text          0x0000000000000000        0x0 app/libapp.a(power_mgr.c.obj)
+1506- .data          0x0000000000000000        0x0 app/libapp.a(power_mgr.c.obj)
+1507- .bss           0x0000000000000000        0x0 app/libapp.a(power_mgr.c.obj)
+1508- .text.power_mgr_allow_sleep
+1509-                0x0000000000000000       0x16 app/libapp.a(power_mgr.c.obj)
+1510- .text.power_mgr_log_flush
+1511-                0x0000000000000000       0x14 app/libapp.a(power_mgr.c.obj)
+1512- .text.print_se_err
+--
+3230- .text._ZN6tflite7testing12_GLOBAL__N_114StackAllocatorD0Ev
+3231-                0x0000000000000000       0x10 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3232- .text._ZN6tflite7testing4NoOp6InvokeEP13TfLiteContextP10TfLiteNode
+3233-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3234- .text._ZN6tflite7testing12_GLOBAL__N_115BuilderInstanceEv
+3235-                0x0000000000000000      0x148 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3236- .text._ZN11flatbuffers15vector_downwardIjE12ensure_spaceEj.isra.0
+3237-                0x0000000000000000       0x60 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3238: .text._ZN6tflite7testing12_GLOBAL__N_112ModelBuilderC2EPN11flatbuffers21FlatBufferBuilderImplILb0EEE.isra.0
+3239-                0x0000000000000000       0x52 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3240- .text._ZN11flatbuffers9Allocator19reallocate_downwardEPhjjjj
+3241-                0x0000000000000000       0x48 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3242- .text._ZN6tflite7testing14MultipleInputs7PrepareEP13TfLiteContextP10TfLiteNode
+3243-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3244- .text._ZN6tflite7testing4NoOp7PrepareEP13TfLiteContextP10TfLiteNode
+3245-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3246- .rodata._ZN6tflite7testing16SimpleStatefulOp6InvokeEP13TfLiteContextP10TfLiteNode.str1.1
+--
+3264- .text._ZN6tflite7testing4NoOp15getRegistrationEv
+3265-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3266- .text._ZN6tflite7testing10TestStrcmpEPKcS2_
+3267-                0x0000000000000000       0x20 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3268- .text._ZN6tflite7testing16IntArrayFromIntsEPKi
+3269-                0x0000000000000000        0x2 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3270- .text._ZN6tflite7testing20FloatArrayFromFloatsEPKf
+3271-                0x0000000000000000        0xe modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3272: .text._ZN6tflite7testing19GetModelTensorCountEPKNS_5ModelE
+3273-                0x0000000000000000       0x3a modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3274- .text._ZN6tflite7testing28PackInt4ValuesDenselyInPlaceEPhi
+3275-                0x0000000000000000       0x4a modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3276- .text._ZN6tflite7testing40CreateSymmetricPerChannelQuantizedTensorEPKfPaP14TfLiteIntArrayPfPiP24TfLiteAffineQuantizationib10TfLiteType
+3277-                0x0000000000000000       0xd4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3278- .rodata._ZN6tflite22MicroMutableOpResolverILj10EE9AddCustomEPKcPK16TFLMRegistration.str1.1
+3279-                0x0000000000000000       0x8e modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3280- .text._ZN6tflite22MicroMutableOpResolverILj10EE9AddCustomEPKcPK16TFLMRegistration
+--
+3284- .text._ZN6tflite22MicroMutableOpResolverILj10EE5AddIfEv
+3285-                0x0000000000000000       0xa0 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3286- .rodata._ZN6tflite7testing20GetTestingOpResolverERNS_22MicroMutableOpResolverILj10EEE.str1.1
+3287-                0x0000000000000000       0x5a modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3288- .text._ZN6tflite7testing20GetTestingOpResolverERNS_22MicroMutableOpResolverILj10EEE
+3289-                0x0000000000000000       0x84 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3290- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE10TrackFieldEtj
+3291-                0x0000000000000000       0x2a modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3292: .text._ZN11flatbuffers14GetMutableRootIN6tflite5ModelEEEPT_Pv
+3293-                0x0000000000000000        0x8 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3294- .text._ZN11flatbuffers15vector_downwardIjE10make_spaceEj
+3295-                0x0000000000000000       0x1c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3296- .text._ZN11flatbuffers15vector_downwardIjE4pushEPKhj.part.0
+3297-                0x0000000000000000       0x18 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3298- .text._ZN11flatbuffers15vector_downwardIjE4fillEj
+3299-                0x0000000000000000       0x1e modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3300- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE5AlignEj
+--
+3324- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE10AddElementIiEEvtT_S3_
+3325-                0x0000000000000000       0x24 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3326- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE8EndTableEj
+3327-                0x0000000000000000       0xde modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3328- .text._ZN6tflite12CreateBufferERN11flatbuffers21FlatBufferBuilderImplILb0EEENS0_6OffsetINS0_6VectorIhjEEEEyy
+3329-                0x0000000000000000       0x54 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3330- .text._ZN6tflite14CreateSubGraphERN11flatbuffers21FlatBufferBuilderImplILb0EEENS0_6OffsetINS0_6VectorINS4_INS_6TensorEEEjEEEENS4_INS5_IijEEEESB_NS4_INS5_INS4_INS_8OperatorEEEjEEEENS4_INS0_6StringEEEi
+3331-                0x0000000000000000       0x80 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3332: .text._ZN6tflite11CreateModelERN11flatbuffers21FlatBufferBuilderImplILb0EEEjNS0_6OffsetINS0_6VectorINS4_INS_12OperatorCodeEEEjEEEENS4_INS5_INS4_INS_8SubGraphEEEjEEEENS4_INS0_6StringEEENS4_INS5_INS4_INS_6BufferEEEjEEEENS4_INS5_IijEEEENS4_INS5_INS4_INS_8MetadataEEEjEEEENS4_INS5_INS4_INS_12SignatureDefEEEjEEEE
+3333-                0x0000000000000000       0xbc modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3334- .text._ZN6tflite15CreateIfOptionsERN11flatbuffers21FlatBufferBuilderImplILb0EEEii
+3335-                0x0000000000000000       0x2c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3336- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE10AddElementIhEEvtT_S3_
+3337-                0x0000000000000000       0x32 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3338- .text._ZN6tflite28CreateQuantizationParametersERN11flatbuffers21FlatBufferBuilderImplILb0EEENS0_6OffsetINS0_6VectorIfjEEEES7_S7_NS4_INS5_IxjEEEENS_19QuantizationDetailsENS4_IvEEi
+3339-                0x0000000000000000       0x80 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3340- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE10AddElementIaEEvtT_S3_
+--
+3342- .text._ZN6tflite14CreateOperatorERN11flatbuffers21FlatBufferBuilderImplILb0EEEjNS0_6OffsetINS0_6VectorIijEEEES7_NS_14BuiltinOptionsENS4_IvEENS4_INS5_IhjEEEENS_19CustomOptionsFormatESB_S7_yyNS_15BuiltinOptions2ES9_i
+3343-                0x0000000000000000       0xd4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3344- .text._ZN6tflite12CreateTensorERN11flatbuffers21FlatBufferBuilderImplILb0EEENS0_6OffsetINS0_6VectorIijEEEENS_10TensorTypeEjNS4_INS0_6StringEEENS4_INS_22QuantizationParametersEEEbNS4_INS_18SparsityParametersEEES7_bNS4_INS5_INS4_INS_14VariantSubTypeEEEjEEEE
+3345-                0x0000000000000000       0xc4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3346- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE8PreAlignEjj
+3347-                0x0000000000000000       0x1c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3348- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE6FinishEjPKcb
+3349-                0x0000000000000000       0x5e modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3350: .rodata._ZN6tflite17FinishModelBufferERN11flatbuffers21FlatBufferBuilderImplILb0EEENS0_6OffsetINS_5ModelEEE.str1.1
+3351-                0x0000000000000000        0x5 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3352: .text._ZN6tflite17FinishModelBufferERN11flatbuffers21FlatBufferBuilderImplILb0EEENS0_6OffsetINS_5ModelEEE
+3353-                0x0000000000000000       0x10 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3354- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE11StartVectorINS_6OffsetEjEEvjjj
+3355-                0x0000000000000000       0x24 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3356- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE12CreateVectorIN6tflite6TensorEEENS_6OffsetINS_6VectorINS5_IT_EEjEEEEPKS8_j
+3357-                0x0000000000000000       0x36 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3358- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE12CreateVectorIN6tflite8OperatorEEENS_6OffsetINS_6VectorINS5_IT_EEjEEEEPKS8_j
+3359-                0x0000000000000000       0x36 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3360- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE12CreateVectorIN6tflite12OperatorCodeEEENS_6OffsetINS_6VectorINS5_IT_EEjEEEEPKS8_j
+--
+3364- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE12CreateVectorIN6tflite6BufferEEENS_6OffsetINS_6VectorINS5_IT_EEjEEEEPKS8_j
+3365-                0x0000000000000000       0x36 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3366- .text._ZN6tflite7testing23CreateFlatbufferBuffersEv
+3367-                0x0000000000000000       0x3a modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3368- .text._ZN11flatbuffers15vector_downwardIjE4pushEPKhj
+3369-                0x0000000000000000        0x8 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3370- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE12CreateVectorIiNS_6OffsetENS_6VectorEEET0_IJT1_IJT_EEEEPKS7_j
+3371-                0x0000000000000000       0x28 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3372: .text._ZN6tflite7testing12_GLOBAL__N_112ModelBuilder9AddTensorENS_10TensorTypeESt16initializer_listIiE
+3373-                0x0000000000000000       0x4e modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3374: .text._ZN6tflite7testing12_GLOBAL__N_112ModelBuilder7AddNodeEiSt16initializer_listIiES4_S4_.isra.0
+3375-                0x0000000000000000       0x80 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3376- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE12CreateStringINS_6OffsetEEET_INS_6StringEEPKc
+3377-                0x0000000000000000       0x36 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3378- .rodata._ZN6tflite7testing24Create1dFlatbufferTensorEib.str1.1
+3379-                0x0000000000000000        0xc modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3380- .text._ZN6tflite7testing24Create1dFlatbufferTensorEib
+3381-                0x0000000000000000       0x5c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3382- .text._ZN6tflite24CreateOperatorCodeDirectERN11flatbuffers21FlatBufferBuilderImplILb0EEEaPKciNS_15BuiltinOperatorE
+3383-                0x0000000000000000       0x5c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3384: .text._ZN6tflite7testing12_GLOBAL__N_112ModelBuilder10RegisterOpENS_15BuiltinOperatorEPKc.constprop.0
+3385-                0x0000000000000000       0x26 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3386: .rodata._ZN6tflite7testing24GetModelWithUnusedInputsEv.str1.1
+3387-                0x0000000000000000       0x6a modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3388: .text._ZN6tflite7testing24GetModelWithUnusedInputsEv
+3389-                0x0000000000000000      0x224 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3390: .rodata._ZN6tflite7testing33GetModelWithUnusedOperatorOutputsEv.str1.1
+3391-                0x0000000000000000       0x1a modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3392: .text._ZN6tflite7testing33GetModelWithUnusedOperatorOutputsEv
+3393-                0x0000000000000000      0x1b4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3394: .text._ZN6tflite7testing12_GLOBAL__N_112ModelBuilder10BuildModelESt16initializer_listIiES4_j
+3395-                0x0000000000000000      0x19c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3396: .text._ZN6tflite7testing12_GLOBAL__N_127BuildModelWith256x256TensorEv
+3397-                0x0000000000000000       0xd8 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3398: .text._ZN6tflite7testing25GetModelWith256x256TensorEv
+3399-                0x0000000000000000       0x30 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3400: .text._ZN6tflite7testing12_GLOBAL__N_126BuildSimpleModelWithBranchEv
+3401-                0x0000000000000000      0x168 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3402: .text._ZN6tflite7testing24GetSimpleModelWithBranchEv
+3403-                0x0000000000000000       0x18 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3404: .text._ZN6tflite7testing12_GLOBAL__N_124BuildSimpleStatefulModelEv
+3405-                0x0000000000000000       0xf0 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3406: .text._ZN6tflite7testing22GetSimpleStatefulModelEv
+3407-                0x0000000000000000       0x18 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3408: .rodata._ZN6tflite7testing28GetSimpleMultipleInputsModelEv.str1.1
+3409-                0x0000000000000000       0x39 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3410: .text._ZN6tflite7testing28GetSimpleMultipleInputsModelEv
+3411-                0x0000000000000000      0x240 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3412: .rodata._ZN6tflite7testing32GetSimpleModelWithSubgraphsAndIfEv.str1.1
+3413-                0x0000000000000000       0x63 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3414: .text._ZN6tflite7testing32GetSimpleModelWithSubgraphsAndIfEv
+3415-                0x0000000000000000      0x4b8 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3416: .text._ZN6tflite7testing36GetSimpleModelWithIfAndEmptySubgraphEv
+3417-                0x0000000000000000      0x46c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3418: .rodata._ZN6tflite7testing43GetModelWithIfAndSubgraphInputTensorOverlapEv.str1.1
+3419-                0x0000000000000000       0x92 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3420: .text._ZN6tflite7testing43GetModelWithIfAndSubgraphInputTensorOverlapEv
+3421-                0x0000000000000000      0x548 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3422: .rodata._ZN6tflite7testing35GetSimpleModelWithSubgraphsAndWhileEv.str1.1
+3423-                0x0000000000000000       0x68 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3424: .text._ZN6tflite7testing35GetSimpleModelWithSubgraphsAndWhileEv
+3425-                0x0000000000000000      0x4c8 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3426: .rodata._ZN6tflite7testing38GetSimpleModelWithNullInputsAndOutputsEv.str1.1
+3427-                0x0000000000000000       0x2e modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3428: .text._ZN6tflite7testing38GetSimpleModelWithNullInputsAndOutputsEv
+3429-                0x0000000000000000      0x200 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3430- .text._ZN6tflite7testing41CreateMissingQuantizationFlatbufferTensorEi
+3431-                0x0000000000000000       0x70 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3432- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE12CreateVectorIhNS_6OffsetENS_6VectorEEET0_IJT1_IJT_EEEEPKS7_j
+3433-                0x0000000000000000       0x28 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3434: .rodata._ZN6tflite7testing18GetSimpleMockModelEv.str1.1
+3435-                0x0000000000000000       0x27 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3436: .text._ZN6tflite7testing18GetSimpleMockModelEv
+3437-                0x0000000000000000      0x28c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3438: .rodata._ZN6tflite7testing19GetComplexMockModelEv.str1.1
+3439-                0x0000000000000000       0xd7 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3440: .text._ZN6tflite7testing19GetComplexMockModelEv
+3441-                0x0000000000000000      0x4b8 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3442: .rodata._ZN6tflite7testing12_GLOBAL__N_129BuildModelWithOfflinePlanningEiPKiPNS0_15NodeConnection_Eii.str1.1
+3443-                0x0000000000000000       0x18 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3444: .text._ZN6tflite7testing12_GLOBAL__N_129BuildModelWithOfflinePlanningEiPKiPNS0_15NodeConnection_Eii
+3445-                0x0000000000000000      0x12c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3446: .text._ZN6tflite7testing27GetModelWithOfflinePlanningEiPKiPNS0_15NodeConnection_Eii
+3447-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3448- .text._ZN11flatbuffers21FlatBufferBuilderImplILb0EE12CreateVectorIfNS_6OffsetENS_6VectorEEET0_IJT1_IJT_EEEEPKS7_j
+3449-                0x0000000000000000       0x28 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3450- .text._ZN6tflite7testing31CreateQuantizedFlatbufferTensorEi
+3451-                0x0000000000000000       0xd4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3452- .rodata._ZTVN6tflite7testing12_GLOBAL__N_114StackAllocatorE
+3453-                0x0000000000000000       0x1c modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3454: .bss._ZZN6tflite7testing22GetSimpleStatefulModelEvE5model
+3455-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3456: .bss._ZZN6tflite7testing24GetSimpleModelWithBranchEvE5model
+3457-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3458: .bss._ZZN6tflite7testing19GetComplexMockModelEvE5model
+3459-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3460: .bss._ZZN6tflite7testing38GetSimpleModelWithNullInputsAndOutputsEvE5model
+3461-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3462: .bss._ZZN6tflite7testing43GetModelWithIfAndSubgraphInputTensorOverlapEvE5model
+3463-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3464: .bss._ZZN6tflite7testing35GetSimpleModelWithSubgraphsAndWhileEvE5model
+3465-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3466: .bss._ZZN6tflite7testing36GetSimpleModelWithIfAndEmptySubgraphEvE5model
+3467-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3468: .bss._ZZN6tflite7testing32GetSimpleModelWithSubgraphsAndIfEvE5model
+3469-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3470: .bss._ZZN6tflite7testing28GetSimpleMultipleInputsModelEvE5model
+3471-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3472: .bss._ZZN6tflite7testing18GetSimpleMockModelEvE5model
+3473-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3474: .bss._ZGVZN6tflite7testing25GetModelWith256x256TensorEvE5model
+3475-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+3476: .bss._ZZN6tflite7testing25GetModelWith256x256TensorEvE5model
+3477-                0x0000000000000000        0x4 modules/tflite-micro/libmodules__tflite-micro.a(test_helpers.cc.obj)
+
+=== 11. CACHE AND MPU CONFIGURATION ===
+25:CONFIG_XIP=y
+39:CONFIG_CACHE_MANAGEMENT=y
+58:CONFIG_DCACHE=y
+63:CONFIG_CPU_HAS_CUSTOM_FIXED_SOC_MPU_REGIONS=y
+661:CONFIG_ARM_MPU=y
+67:CONFIG_CACHE=y
+710:CONFIG_MPU=y
+736:CONFIG_ICACHE=y
+
+--- MPU/cache source references in Alif SoC ---
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:5:#if DT_NODE_HAS_STATUS(DT_NODELABEL(ospi0), okay)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:6:#if DT_SAME_NODE(DT_NODELABEL(ospi0), DT_PARENT(DT_NODELABEL(ospi_flash)))
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:7:#if DT_NODE_EXISTS(DT_NODELABEL(ext_flash_xip))
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:9:SECTION_PROLOGUE(CONFIG_OSPI0_XIP_REGION, DT_PROP_BY_IDX(DT_NODELABEL(ext_flash_xip), reg, 0), ALIGN(8))
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:11:	KEEP(*(.alif_extflash_OSPI0))
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:12:	KEEP(*(".alif_extflash_OSPI0.*"))
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:13:} GROUP_LINK_IN(OSPI0)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:15:#endif /* DT_NODE_EXISTS(DT_NODELABEL(ext_flash_xip)) */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:16:#endif /* DT_SAME_NODE(DT_NODELABEL(ospi0), DT_PARENT(DT_NODELABEL(ospi_flash))) */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/alif_ospi.ld:17:#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(ospi0), okay) */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/soc_common.c:132:#if DT_NODE_HAS_STATUS(DT_NODELABEL(ospi0), okay)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/soc_common.c:282:#if DT_NODE_HAS_STATUS(DT_NODELABEL(ospi0), okay)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/linker.ld:409:    /* Sections generated from 'zephyr,memory-region' nodes */
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:10:#define OSPI0_NODE			DT_NODELABEL(ospi0)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:20:#define ALIF_HOST_OSPI0_XIP_BASE	DT_PROP_BY_IDX(OSPI0_NODE, xip_base_address, 0)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:21:#define ALIF_HOST_OSPI0_XIP_SIZE	DT_PROP_BY_IDX(OSPI0_NODE, xip_base_address, 1)
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:31:#define OSPI0_XIP_REGION_NAME			"OSPI0_RAM_XIP"
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:32:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_DEVICE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:34:#define OSPI0_XIP_REGION_NAME			"OSPI0_FLASH_XIP"
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:35:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_SRAM_NOCACHE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:37:#define OSPI0_XIP_REGION_NAME			"OSPI0_XIP"
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:38:#define OSPI0_XIP_MAIR_INDEX			MPU_MAIR_INDEX_DEVICE
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:119:	MPU_REGION_ENTRY(OSPI0_XIP_REGION_NAME, ALIF_HOST_OSPI0_XIP_BASE,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:120:			 REGION_OSPI_XIP_ATTR(OSPI0_XIP_MAIR_INDEX,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:121:					      ALIF_HOST_OSPI0_XIP_BASE,
+/home/user/sdk-alif/zephyr/soc/alif/balletto/common/mpu_regions.c:122:					      ALIF_HOST_OSPI0_XIP_SIZE)),
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:5:#if DT_NODE_HAS_STATUS(DT_NODELABEL(ospi0), okay)
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:6:#if DT_SAME_NODE(DT_NODELABEL(ospi0), DT_PARENT(DT_NODELABEL(ospi_flash)))
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:7:#if DT_NODE_EXISTS(DT_NODELABEL(ext_flash_xip))
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:9:SECTION_PROLOGUE(CONFIG_OSPI0_XIP_REGION, DT_PROP_BY_IDX(DT_NODELABEL(ext_flash_xip), reg, 0), ALIGN(8))
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:11:	KEEP(*(.alif_extflash_OSPI0))
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:12:	KEEP(*(".alif_extflash_OSPI0.*"))
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:13:} GROUP_LINK_IN(OSPI0)
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:15:#endif /* DT_NODE_EXISTS(DT_NODELABEL(ext_flash_xip)) */
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:16:#endif /* DT_SAME_NODE(DT_NODELABEL(ospi0), DT_PARENT(DT_NODELABEL(ospi_flash))) */
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:17:#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(ospi0), okay) */
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:22:#if DT_NODE_EXISTS(DT_NODELABEL(ext_flash_xip))
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:24:SECTION_PROLOGUE(CONFIG_OSPI1_XIP_REGION, DT_PROP_BY_IDX(DT_NODELABEL(ext_flash_xip), reg, 0), ALIGN(8))
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/alif_ospi.ld:30:#endif /* DT_NODE_EXISTS(DT_NODELABEL(ext_flash_xip)) */
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/soc_common.c:190:#if DT_NODE_HAS_STATUS(DT_NODELABEL(ospi0), okay)
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/soc_common.c:418:#if DT_NODE_HAS_STATUS(DT_NODELABEL(ospi0), okay)
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/linker.ld:408:    /* Sections generated from 'zephyr,memory-region' nodes */
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/mmu_regions.c:56:	/* SRAM1 — non-cacheable normal memory for NPU tensor arena.
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/mpu_regions.c:13:#define ALIF_ENSEMBLE_OSPI0_XIP_BASE		0xA0000000
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/mpu_regions.c:14:#define ALIF_ENSEMBLE_OSPI0_XIP_SIZE		MB(512)
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/mpu_regions.c:110:	MPU_REGION_ENTRY("OSPI0_XIP", ALIF_ENSEMBLE_OSPI0_XIP_BASE,
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/mpu_regions.c:111:			 REGION_OSPI_FLASH_ATTR(ALIF_ENSEMBLE_OSPI0_XIP_BASE,
+/home/user/sdk-alif/zephyr/soc/alif/ensemble/common/mpu_regions.c:112:							ALIF_ENSEMBLE_OSPI0_XIP_SIZE)),
+/home/user/sdk-alif/alif/tests/drivers/flash/spi_flash/src/test_ospi_ctrl_tests.c:23: * node (ospi0 or ospi1). Change those values with an overlay
+/home/user/sdk-alif/alif/tests/drivers/flash/spi_flash/src/test_ospi_ctrl_tests.c:25: *  boards/ospi0_80Mhz.overlay) and rebuild. This
+/home/user/sdk-alif/alif/tests/drivers/display/src/main.c:827: *   - If cache is configured as non-cacheable: read matches (bug latent).
+/home/user/sdk-alif/alif/tests/drivers/display/src/main.c:941:		TC_PRINT("        (FB may be non-cacheable, or CPU cache served the read)\n");
+/home/user/sdk-alif/alif/include/ethosu/models/keyword_spotting_cnn_small_int8/u55/model_u55_128.h:13:	DT_PROP(DT_NODELABEL(ext_flash_xip), zephyr_memory_region))
+/home/user/sdk-alif/alif/include/ethosu/models/keyword_spotting_cnn_small_int8/u55/model_u55_256.h:39:	DT_PROP(DT_NODELABEL(ext_flash_xip), zephyr_memory_region))
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:579:	pinctrl_ospi0:pinctrl_ospi0 {
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:581:			pinmux = <PIN_P4_2__OSPI0_SCLK_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:582:				 <PIN_P4_1__OSPI0_RXDS_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:583:				 <PIN_P2_1__OSPI0_SS1_B>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:584:				 <PIN_P3_0__OSPI0_D0_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:585:				 <PIN_P3_1__OSPI0_D1_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:586:				 <PIN_P3_2__OSPI0_D2_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:587:				 <PIN_P3_3__OSPI0_D3_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:588:				 <PIN_P3_4__OSPI0_D4_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:589:				 <PIN_P3_5__OSPI0_D5_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:590:				 <PIN_P3_6__OSPI0_D6_A>,
+/home/user/sdk-alif/alif/boards/alif/alif_b1_eb/balletto-eb-pinctrl.dtsi:591:				 <PIN_P3_7__OSPI0_D7_A>;
+/home/user/sdk-alif/alif/samples/drivers/ipm/ipm_arm_mhu_doorbell/src/a32_to_m55_responder.c:25: *   non-cacheable (K_MEM_CACHE_NONE), so A32 accesses go straight to memory and
+/home/user/sdk-alif/alif/samples/drivers/ipm/ipm_arm_mhu_doorbell/src/a32_to_m55_responder.c:28: *   address, which A32 translates into its non-cacheable mapping.
+/home/user/sdk-alif/alif/samples/drivers/ipm/ipm_arm_mhu_doorbell/src/a32_to_m55_responder.c:39: *   2. A32 reads and validates the block via the non-cacheable mapping
+/home/user/sdk-alif/alif/samples/drivers/ipm/ipm_arm_mhu_doorbell/src/a32_to_m55_responder.c:160:	/* Map the shared SRAM1 heap page non-cacheable so A32 sees the data the
+/home/user/sdk-alif/alif/samples/drivers/ipm/ipm_arm_mhu_doorbell/src/a32_to_m55_responder.c:227:		/* Translate the physical block address into the non-cacheable
+/home/user/sdk-alif/alif/samples/drivers/ipm/ipm_arm_mhu_doorbell/src/m55_to_a32_initiator.c:22: *   - A32 (responder) maps the shared SRAM non-cacheable, reads/validates the
+/home/user/sdk-alif/alif/samples/drivers/ipm/ipm_arm_mhu_doorbell/src/m55_to_a32_initiator.c:29: *   A32 accesses SRAM via a non-cacheable mapping, but the M55 has
+/home/user/sdk-alif/alif/samples/drivers/ipm/ipm_arm_mhu_doorbell/src/m55_to_a32_initiator.c:169:	 * is visible to the (non-cacheable) A32 mapping.
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:15: * The OSPI flash and the HyperRAM PSRAM share the single OSPI0 controller
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:29: *                                                    IRQ-backed, owns OSPI0
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:35: *     - reconfigure OSPI0 for octal-DDR HyperRAM    (prepare_transfer +
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:46: * memory region (non-cacheable, ordered), so the memory-mapped writes reach
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:77:/* The OSPI0 controller node (parent of both the flash and the PSRAM child). */
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:78:#define OSPI0_NODE	DT_PARENT(PSRAM_NODE)
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:80:/* PSRAM XiP window base address (declared on the OSPI0 controller node). */
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:81:#define PSRAM_XIP_BASE	DT_PROP_BY_IDX(OSPI0_NODE, xip_base_address, 0)
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:82:#define PSRAM_XIP_SIZE	DT_PROP_BY_IDX(OSPI0_NODE, xip_base_address, 1)
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:89: * Per-device DDR-capture timing. Flash values are the OSPI0 node defaults;
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:121:PINCTRL_DT_DEFINE(DT_NODELABEL(ospi0_flash_pins));
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:122:PINCTRL_DT_DEFINE(DT_NODELABEL(ospi0_psram_pins));
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:125:	PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(ospi0_flash_pins));
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:127:	PINCTRL_DT_DEV_CONFIG_GET(DT_NODELABEL(ospi0_psram_pins));
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:130:	(struct ospi_regs *)DT_REG_ADDR(OSPI0_NODE);
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:132:	(struct ospi_aes_regs *)DT_PROP_BY_IDX(OSPI0_NODE, aes_reg, 0);
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:146: * One-time: grab a second OSPI0 HAL instance for the PSRAM chip-select. This
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:161:	init_config.core_clk = DT_PROP(OSPI0_NODE, clock_frequency);
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:162:	init_config.bus_speed = DT_PROP(OSPI0_NODE, bus_speed);
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:163:	init_config.tx_fifo_threshold = DT_PROP(OSPI0_NODE, tx_fifo_threshold);
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:169:	init_config.baud2_delay = DT_PROP(OSPI0_NODE, baud2_delay);
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:203: * OSPI0 for octal-DDR HyperRAM and enter memory-mapped XiP.
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.c:230:	xip_cfg.xip_wait_cycles = DT_PROP(OSPI0_NODE, xip_wait_cycles);
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/main.c:46:	 * it. The copy alternates OSPI0 between the flash and the PSRAM one chunk
+/home/user/sdk-alif/alif/samples/drivers/spi_flash_to_psram_copy/src/flash_to_psram.h:21: * XiP window at @p psram_off. Flash and PSRAM share one OSPI0 controller, so
+/home/user/sdk-alif/alif/samples/modules/tflite-micro/tflm_ethosu/boards/apss_sram1_sections.ld:5: * Linker snippet: Place the TFLM tensor arena into the SRAM1 memory region.
+/home/user/sdk-alif/alif/samples/modules/tflite-micro/tflm_ethosu/boards/apss_sram1_sections.ld:7: * SRAM1 is mapped as non-cacheable in the MMU so the NPU and CPU share
+/home/user/sdk-alif/alif/samples/modules/tflite-micro/tflm_ethosu/boards/apss_sram1_sections.ld:11: * "zephyr,memory-region" devicetree property.  We use an input-section
+/home/user/sdk-alif/alif/samples/modules/executorch/kws_ethosu/boards/apss_sram1_sections.ld:6: * writes into the SRAM1 memory region.
+/home/user/sdk-alif/alif/samples/modules/executorch/kws_ethosu/boards/apss_sram1_sections.ld:9: * soc/alif/ensemble/common/mmu_regions.c, i.e. non-cacheable, so the CPU and
+/home/user/sdk-alif/alif/samples/modules/executorch/kws_ethosu/boards/apss_sram1_sections.ld:15: * The SRAM1 memory region itself is generated by LINKER_DT_REGIONS() from the
+/home/user/sdk-alif/alif/samples/modules/executorch/kws_ethosu/boards/apss_sram1_sections.ld:16: * "zephyr,memory-region" property of the sram1 node, which the
+
+=== 12. CACHE CONFIGURATION SOURCE REFERENCES ===
+/home/user/sdk-alif/zephyr/arch/arm/core/cortex_m/scb.c:117:	/* Reset D-Cache settings. If the D-Cache was enabled,
+/home/user/sdk-alif/zephyr/arch/arm/core/cortex_m/cache.c:18:void arch_dcache_enable(void)
+/home/user/sdk-alif/zephyr/arch/arm/core/cortex_m/cache.c:20:	SCB_EnableDCache();
+/home/user/sdk-alif/zephyr/arch/arm/core/cortex_m/cache.c:70:void arch_icache_enable(void)
+/home/user/sdk-alif/zephyr/arch/arm/core/cortex_m/cache.c:72:	SCB_EnableICache();
+
+=== 13. LINKED MODEL SECTION ===
+ 24 k_fifo_area   00000028  2000b0d4  80064950  00064a4c  2**2
+                  CONTENTS, ALLOC, LOAD, DATA
+ 25 ospi0         00a83f20  b0000000  b0000000  00064a80  2**4
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA
+ 26 .comment      00000020  00000000  00000000  00ae89a0  2**0
+
+=== 14. FINAL CONFIGURATION SUMMARY ===
+1657:			bus-speed = < 0x4c4b400 >;
+1658:			clock-frequency = < 0x9896800 >;
+1660:			ddr-drive-edge = < 0x1 >;
+1661:			rx-ds-delay = < 0xb >;
+1662:			baud2-delay = < 0x1 >;
+1664:			xip-rxds-vl-en;
+1665:			xip-wait-cycles = < 0xf >;
+1666:			xip-base-address = < 0xb0000000 0x20000000 >;
+1729:			clock-frequency = < 0x9896800 >;
+1739:			clock-frequency = < 0x9896800 >;
+1752:			clock-frequency = < 0x9896800 >;
+1776:			clock-frequency = < 0x9896800 >;
+
+============================================================
+OSPI DRIVER / PROTOCOL / CACHE AUDIT COMPLETE
+============================================================
