@@ -1,0 +1,877 @@
+
+============================================================
+FILE: /home/user/sdk-alif/beeinventor/test_heatstroke/experiments/validate_static_model_real_dataset.py
+============================================================
+  339 10974 /home/user/sdk-alif/beeinventor/test_heatstroke/experiments/validate_static_model_real_dataset.py
+2:import argparse
+3:import sys
+4:from pathlib import Path
+6:import torch
+7:from torch.utils.data import DataLoader
+14:from run import Reg_Model, Cla_Model, Heat_Stress_Dataset
+15:from a_prepare_static_model import (
+18:    load_state_dict_compat,
+22:def max_abs(a, b):
+32:def main():
+33:    parser = argparse.ArgumentParser()
+70:    original_reg.load_state_dict(
+71:        load_state_dict_compat(reg_path), strict=True
+75:    original_cla.load_state_dict(
+76:        load_state_dict_compat(cla_path), strict=True
+82:    static_model.load_state_dict(
+83:        load_state_dict_compat(args.static_checkpoint), strict=True
+87:    dataset = Heat_Stress_Dataset(
+93:        seq_random_missing=not args.no_random_missing,
+97:        batch_size=1,
+107:    print("Random missing injection:", not args.no_random_missing)
+338:if __name__ == "__main__":
+
+--- SOURCE: first 260 lines ---
+#!/usr/bin/env python3
+import argparse
+import sys
+from pathlib import Path
+
+import torch
+from torch.utils.data import DataLoader
+
+MODEL_ROOT = Path(
+    "/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514"
+)
+sys.path.insert(0, str(MODEL_ROOT))
+
+from run import Reg_Model, Cla_Model, Heat_Stress_Dataset
+from a_prepare_static_model import (
+    StaticRegModel,
+    StaticCombinedModel,
+    load_state_dict_compat,
+)
+
+
+def max_abs(a, b):
+    if a.shape != b.shape:
+        raise ValueError(
+            f"Shape mismatch: {tuple(a.shape)} vs {tuple(b.shape)}"
+        )
+    if a.numel() == 0:
+        return 0.0
+    return (a - b).abs().max().item()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data-root", type=Path, default=MODEL_ROOT / "data"
+    )
+    parser.add_argument("--split-type", default="split_byid")
+    parser.add_argument("--data-type", choices=["val", "test"], default="val")
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=MODEL_ROOT / "models" / "trained_by_data_split_byid",
+    )
+    parser.add_argument(
+        "--static-checkpoint",
+        type=Path,
+        default=MODEL_ROOT / "export" / "combined_static_model.pth",
+    )
+    parser.add_argument("--max-batches", type=int, default=16)
+    parser.add_argument("--atol", type=float, default=1e-3)
+    parser.add_argument("--rtol", type=float, default=1e-3)
+    parser.add_argument("--no-random-missing", action="store_true")
+    args = parser.parse_args()
+
+    torch.set_grad_enabled(False)
+    torch.set_num_threads(1)
+
+    reg_path = args.model_dir / "reg_model.pth"
+    cla_path = args.model_dir / "rpe_psi_cla_model.pth"
+    for path in (reg_path, cla_path, args.static_checkpoint):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+
+    print("=== CHECKPOINTS ===")
+    print("Original regression:", reg_path)
+    print("Original classifier:", cla_path)
+    print("Static checkpoint:", args.static_checkpoint)
+
+    original_reg = Reg_Model().cpu().eval()
+    original_reg.load_state_dict(
+        load_state_dict_compat(reg_path), strict=True
+    )
+
+    original_cla = Cla_Model().cpu().eval()
+    original_cla.load_state_dict(
+        load_state_dict_compat(cla_path), strict=True
+    )
+
+    static_model = StaticCombinedModel(
+        StaticRegModel(), Cla_Model()
+    ).cpu().eval()
+    static_model.load_state_dict(
+        load_state_dict_compat(args.static_checkpoint), strict=True
+    )
+
+    data_dir = args.data_root / args.split_type
+    dataset = Heat_Stress_Dataset(
+        data_root_path=str(data_dir) + "/",
+        flag=args.data_type,
+        seq_input_len=900,
+        seq_pred_len=900,
+        target=["rpe", "psi"],
+        seq_random_missing=not args.no_random_missing,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=0,
+        drop_last=False,
+    )
+
+    print("\n=== DATASET ===")
+    print("Directory:", data_dir)
+    print("Split:", args.data_type)
+    print("Samples:", len(dataset))
+    print("Random missing injection:", not args.no_random_missing)
+    print("Maximum batches:", args.max_batches or "all")
+
+    totals = {
+        "samples": 0,
+        "missing": 0,
+        "observed_mismatches": 0,
+        "reg_allclose_failures": 0,
+        "restored_allclose_failures": 0,
+        "rpe_allclose_failures": 0,
+        "psi_allclose_failures": 0,
+        "rpe_class_matches": 0,
+        "psi_class_matches": 0,
+    }
+    maxima = {
+        "regression": 0.0,
+        "regression_missing_positions": 0.0,
+        "restored_sequence": 0.0,
+        "rpe_logits": 0.0,
+        "psi_logits": 0.0,
+        "observed_input_difference": 0.0,
+    }
+    finite_ok = True
+
+    with torch.inference_mode():
+        for batch_index, batch in enumerate(loader):
+            if args.max_batches and batch_index >= args.max_batches:
+                break
+
+            (
+                batch_x1_1,
+                batch_x1_2,
+                batch_x2,
+                _batch_y,
+                batch_x_mark,
+                _additional,
+            ) = batch
+
+            x_original = batch_x1_1.float()
+            x_reg = batch_x1_2.float()
+            worker = batch_x2.float()
+            x_mark = batch_x_mark.float()
+
+            if x_original.shape != (1, 900, 6):
+                raise ValueError(
+                    f"x_original shape unexpected: {tuple(x_original.shape)}"
+                )
+            if x_reg.shape != x_original.shape:
+                raise ValueError("x_reg shape differs from x_original")
+            if x_mark.shape != (1, 900, 3):
+                raise ValueError(f"x_mark shape: {tuple(x_mark.shape)}")
+            if worker.shape != (1, 30):
+                raise ValueError(f"worker shape: {tuple(worker.shape)}")
+
+            mask = (
+                (x_reg == -9997.0)
+                | (x_reg == -9998.0)
+                | (x_reg == -9999.0)
+            )
+            valid = ~mask
+
+            # Exact four-input preprocessing contract.
+            x_values = torch.where(
+                mask, torch.zeros_like(x_original), x_original
+            )
+            mask_float = mask.float()
+
+            observed_diff = (
+                (x_reg[valid] - x_original[valid]).abs().max().item()
+                if valid.any()
+                else 0.0
+            )
+            observed_mismatches = (
+                (x_reg[valid] != x_original[valid]).sum().item()
+            )
+
+            # Original two-model reference: raw sentinel sequence to Reg_Model.
+            old_reg_prediction = original_reg(
+                x_reg,
+                x_mark_enc=x_mark,
+                one_hot_x=worker[:, :18],
+                device="cpu",
+            )
+            old_restored = torch.where(
+                mask, old_reg_prediction, x_original
+            )
+            old_rpe, old_psi = original_cla(
+                old_restored,
+                x_mark_enc=x_mark,
+                one_hot_x=worker[:, :30],
+                device="cpu",
+            )
+
+            # Capture the regression output from the actual static combined
+            # checkpoint while executing its real forward method.
+            captured = []
+
+            def capture_regression(_module, _inputs, output):
+                captured.append(output.detach())
+
+            hook = static_model.reg_model.register_forward_hook(
+                capture_regression
+            )
+            try:
+                static_rpe, static_psi = static_model(
+                    x_values, mask_float, x_mark, worker
+                )
+            finally:
+                hook.remove()
+
+            if len(captured) != 1:
+                raise RuntimeError(
+                    f"Expected one static regression call; got {len(captured)}"
+                )
+
+            static_reg_prediction = captured[0]
+            static_restored = torch.where(
+                mask, static_reg_prediction, x_values
+            )
+
+            diffs = {
+                "regression": max_abs(
+                    old_reg_prediction, static_reg_prediction
+                ),
+                "regression_missing_positions": (
+                    max_abs(
+                        old_reg_prediction[mask],
+                        static_reg_prediction[mask],
+                    )
+                    if mask.any()
+                    else 0.0
+                ),
+                "restored_sequence": max_abs(
+                    old_restored, static_restored
+                ),
+                "rpe_logits": max_abs(old_rpe, static_rpe),
+                "psi_logits": max_abs(old_psi, static_psi),
+                "observed_input_difference": observed_diff,
+            }
+
+            for name, value in diffs.items():
+                maxima[name] = max(maxima[name], value)
+
+            def close(a, b):
+                return torch.allclose(
+                    a, b, atol=args.atol, rtol=args.rtol
+                )
+
+            checks = {
+                "regression": close(
+                    old_reg_prediction, static_reg_prediction
+                ),
+                "restored_sequence": close(
+                    old_restored, static_restored
+
+============================================================
+FILE: /home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_vela_tflite_smoke.py
+============================================================
+ 265 8588 /home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_vela_tflite_smoke.py
+1:import random
+2:import sys
+3:import traceback
+4:from pathlib import Path
+6:import numpy as np
+7:import torch
+8:import tensorflow as tf
+9:from torch.utils.data import DataLoader
+17:from run import Cla_Model, Heat_Stress_Dataset
+18:from a_prepare_static_model import (
+21:    load_state_dict_compat,
+25:def max_abs(a, b):
+33:def tensor_description(index, detail_map):
+50:def main():
+68:    static_model.load_state_dict(
+69:        load_state_dict_compat(CHECKPOINT), strict=True
+74:    dataset = Heat_Stress_Dataset(
+86:        dataset, batch_size=1, shuffle=False,
+260:if __name__ == "__main__":
+
+--- SOURCE: first 260 lines ---
+import random
+import sys
+import traceback
+from pathlib import Path
+
+import numpy as np
+import torch
+import tensorflow as tf
+from torch.utils.data import DataLoader
+
+MODEL = Path("/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514")
+TFLITE = Path(sys.argv[1])
+CHECKPOINT = Path(sys.argv[2])
+
+sys.path.insert(0, str(MODEL))
+
+from run import Cla_Model, Heat_Stress_Dataset
+from a_prepare_static_model import (
+    StaticRegModel,
+    StaticCombinedModel,
+    load_state_dict_compat,
+)
+
+
+def max_abs(a, b):
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    if a.shape != b.shape:
+        raise ValueError(f"Shape mismatch: {a.shape} vs {b.shape}")
+    return float(np.max(np.abs(a - b))) if a.size else 0.0
+
+
+def tensor_description(index, detail_map):
+    if index == -1:
+        return "optional tensor (-1)"
+    d = detail_map.get(int(index))
+    if d is None:
+        return f"tensor index {index}: detail unavailable"
+
+    q = d.get("quantization_parameters", {})
+    return (
+        f"index={index}, name={d.get('name')}, "
+        f"shape={d.get('shape')}, dtype={d.get('dtype')}, "
+        f"quantization={d.get('quantization')}, "
+        f"scales={q.get('scales', np.array([]))}, "
+        f"zero_points={q.get('zero_points', np.array([]))}"
+    )
+
+
+def main():
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
+    torch.set_num_threads(1)
+
+    print("=== MODEL FILES ===")
+    print("TFLite:", TFLITE)
+    print("Static checkpoint:", CHECKPOINT)
+    if not TFLITE.is_file():
+        raise FileNotFoundError(TFLITE)
+    if not CHECKPOINT.is_file():
+        raise FileNotFoundError(CHECKPOINT)
+
+    print("\n=== LOAD STATIC FP32 REFERENCE ===")
+    static_model = StaticCombinedModel(
+        StaticRegModel(), Cla_Model()
+    ).cpu().eval()
+    static_model.load_state_dict(
+        load_state_dict_compat(CHECKPOINT), strict=True
+    )
+    print("Static checkpoint loaded successfully")
+
+    print("\n=== LOAD ONE REAL TEST SAMPLE ===")
+    dataset = Heat_Stress_Dataset(
+        data_root_path=str(MODEL / "data" / "split_byid") + "/",
+        flag="test",
+        seq_input_len=900,
+        seq_pred_len=900,
+        target=["rpe", "psi"],
+        seq_random_missing=True,
+    )
+    if len(dataset) == 0:
+        raise RuntimeError("Test dataset is empty")
+
+    loader = DataLoader(
+        dataset, batch_size=1, shuffle=False,
+        num_workers=0, drop_last=False
+    )
+    batch = next(iter(loader))
+    batch_x1_1, batch_x1_2, batch_x2, _, batch_x_mark, _ = batch
+
+    x_original = batch_x1_1.float()
+    x_reg = batch_x1_2.float()
+    worker = batch_x2.float()
+    x_mark = batch_x_mark.float()
+
+    mask = (
+        (x_reg == -9997.0)
+        | (x_reg == -9998.0)
+        | (x_reg == -9999.0)
+    )
+    x_values = torch.where(
+        mask, torch.zeros_like(x_original), x_original
+    )
+    mask_float = mask.float()
+
+    print("x_values:", tuple(x_values.shape), x_values.dtype)
+    print("missing_mask:", tuple(mask_float.shape), mask_float.dtype)
+    print("x_mark:", tuple(x_mark.shape), x_mark.dtype)
+    print("worker_features:", tuple(worker.shape), worker.dtype)
+    print("Missing positions:", int(mask.sum().item()))
+    print(
+        "Observed-position mismatches:",
+        int((x_reg[~mask] != x_original[~mask]).sum().item())
+    )
+
+    with torch.inference_mode():
+        static_rpe, static_psi = static_model(
+            x_values, mask_float, x_mark, worker
+        )
+
+    static_rpe = static_rpe.cpu().numpy()
+    static_psi = static_psi.cpu().numpy()
+
+    print("\n=== CREATE TFLITE INTERPRETER ===")
+    resolver = (
+        tf.lite.experimental.OpResolverType
+        .BUILTIN_WITHOUT_DEFAULT_DELEGATES
+    )
+    interpreter = tf.lite.Interpreter(
+        model_path=str(TFLITE),
+        experimental_preserve_all_tensors=True,
+        experimental_op_resolver_type=resolver,
+    )
+    interpreter.allocate_tensors()
+    print("TFLite allocate_tensors(): PASS")
+
+    inputs = interpreter.get_input_details()
+    outputs = interpreter.get_output_details()
+    tensor_map = {
+        int(d["index"]): d for d in interpreter.get_tensor_details()
+    }
+
+    print("\n=== TFLITE INPUT INTERFACE ===")
+    input_values = {
+        "x_values": x_values.numpy().astype(np.float32, copy=True),
+        "missing_mask": mask_float.numpy().astype(np.float32, copy=True),
+        "x_mark": x_mark.numpy().astype(np.float32, copy=True),
+        "worker_features": worker.numpy().astype(np.float32, copy=True),
+    }
+
+    for name, value in input_values.items():
+        matches = [d for d in inputs if name in d["name"]]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Expected exactly one input matching {name}; "
+                f"found {[d['name'] for d in matches]}"
+            )
+        d = matches[0]
+        print(
+            f"{name}: index={d['index']}, tensor_name={d['name']}, "
+            f"shape={d['shape']}, dtype={d['dtype']}, "
+            f"quantization={d['quantization']}"
+        )
+        if d["dtype"] != np.float32:
+            raise RuntimeError(
+                f"{name} is {d['dtype']}, expected FP32"
+            )
+        if tuple(value.shape) != tuple(d["shape"]):
+            raise RuntimeError(
+                f"{name} shape mismatch: {value.shape} vs {d['shape']}"
+            )
+        interpreter.set_tensor(d["index"], value)
+
+    print("\n=== TFLITE OUTPUT INTERFACE ===")
+    output_map = {}
+    for name in ("rpe_logits", "psi_logits"):
+        matches = [d for d in outputs if name in d["name"]]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Expected exactly one output matching {name}; "
+                f"found {[d['name'] for d in matches]}"
+            )
+        d = matches[0]
+        output_map[name] = d
+        print(
+            f"{name}: index={d['index']}, tensor_name={d['name']}, "
+            f"shape={d['shape']}, dtype={d['dtype']}, "
+            f"quantization={d['quantization']}"
+        )
+        if d["dtype"] != np.float32:
+            raise RuntimeError(
+                f"{name} is {d['dtype']}, expected FP32"
+            )
+
+    print("\n=== OPERATOR INVENTORY ===")
+    ops = interpreter._get_ops_details()
+    counts = {}
+    for op in ops:
+        counts[op["op_name"]] = counts.get(op["op_name"], 0) + 1
+    print("Total operators:", len(ops))
+    for name, count in sorted(counts.items()):
+        print(f"{name}: {count}")
+
+    print("\n=== BIDIRECTIONAL LSTM TENSOR TYPES ===")
+    lstm_index = 0
+    for op in ops:
+        if op["op_name"] != "BIDIRECTIONAL_SEQUENCE_LSTM":
+            continue
+        lstm_index += 1
+        print(f"\nBiLSTM operator {lstm_index}:")
+        for index in op["inputs"]:
+            print("  INPUT ", tensor_description(index, tensor_map))
+        for index in op["outputs"]:
+            print("  OUTPUT", tensor_description(index, tensor_map))
+
+    ethos_ops = [op for op in ops if op["op_name"] == "ethos-u"]
+    print("\nEthos-U operators:", len(ethos_ops))
+    if ethos_ops:
+        for label, op in (
+            ("first", ethos_ops[0]),
+            ("last", ethos_ops[-1]),
+        ):
+            print(f"{label} Ethos-U operator:")
+            for index in op["inputs"]:
+                print("  INPUT ", tensor_description(index, tensor_map))
+            for index in op["outputs"]:
+                print("  OUTPUT", tensor_description(index, tensor_map))
+
+    print("\n=== TFLITE INVOKE ===")
+    interpreter.reset_all_variables()
+    interpreter.invoke()
+    print("TFLite invoke(): PASS")
+
+    tflite_rpe = interpreter.get_tensor(
+        output_map["rpe_logits"]["index"]
+    )
+    tflite_psi = interpreter.get_tensor(
+        output_map["psi_logits"]["index"]
+    )
+
+    print("\n=== STATIC FP32 VS VELA TFLITE ===")
+    for name, reference, actual in (
+        ("RPE", static_rpe, tflite_rpe),
+        ("PSI", static_psi, tflite_psi),
+    ):
+        if not np.isfinite(actual).all():
+            raise RuntimeError(f"{name} TFLite output contains non-finite values")
+        print(f"{name} FP32 reference: {reference}")
+        print(f"{name} TFLite output:  {actual}")
+        print(f"{name} max_abs_error: {max_abs(reference, actual):.10g}")
+        print(
+            f"{name} class_match:",
+            bool(np.array_equal(reference.argmax(1), actual.argmax(1)))
+        )
+
+    print("\nONE-SAMPLE VELA TFLITE RUNTIME SMOKE: PASS")
+
+
+if __name__ == "__main__":
+
+============================================================
+FILE: /home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_fp32_tflite_full_dataset.py
+============================================================
+  327 10487 /home/user/sdk-alif/beeinventor/test_heatstroke/experiments/compare_static_fp32_vs_fp32_tflite_full_dataset.py
+1:import hashlib
+2:import random
+3:import sys
+4:import traceback
+5:from pathlib import Path
+7:import numpy as np
+8:import torch
+9:import tensorflow as tf
+18:from run import Cla_Model, Heat_Stress_Dataset
+19:from a_prepare_static_model import (
+22:    load_state_dict_compat,
+26:def sha256_file(path):
+34:def as_sample_array(value, expected_shape, name):
+51:def max_error(values):
+56:def report_errors(name, errors):
+66:def main():
+87:    static_model.load_state_dict(
+88:        load_state_dict_compat(CHECKPOINT), strict=True
+93:    dataset = Heat_Stress_Dataset(
+121:    def find_tensor(details, name, kind):
+163:        for sample_index in range(sample_count):
+164:            sample = dataset[sample_index]
+167:                    f"Dataset item {sample_index}: expected 6 entries, "
+273:            per_sample_max.append((sample_max, sample_index))
+299:        print(f"sample_index={index}, max_abs_error={error:.10g}")
+321:if __name__ == "__main__":
+
+--- SOURCE: first 260 lines ---
+import hashlib
+import random
+import sys
+import traceback
+from pathlib import Path
+
+import numpy as np
+import torch
+import tensorflow as tf
+
+MODEL = Path("/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514")
+TFLITE = Path(sys.argv[1])
+CHECKPOINT = Path(sys.argv[2])
+EXPECTED_SHA = "8dc264a764c25c949af7fcbd6683267f44ca8471bcde4a2993dda27c16bc403f"
+
+sys.path.insert(0, str(MODEL))
+
+from run import Cla_Model, Heat_Stress_Dataset
+from a_prepare_static_model import (
+    StaticRegModel,
+    StaticCombinedModel,
+    load_state_dict_compat,
+)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def as_sample_array(value, expected_shape, name):
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().numpy()
+
+    # Copy protects against read-only NumPy dataset buffers.
+    array = np.array(value, dtype=np.float32, copy=True)
+
+    if array.shape == (1,) + expected_shape:
+        array = array[0]
+
+    if array.shape != expected_shape:
+        raise ValueError(
+            f"{name} shape {array.shape}; expected {expected_shape}"
+        )
+    return array
+
+
+def max_error(values):
+    values = np.asarray(values, dtype=np.float64)
+    return float(np.max(values)) if values.size else 0.0
+
+
+def report_errors(name, errors):
+    values = np.concatenate(errors).astype(np.float64)
+    print(f"{name}_elements={values.size}")
+    print(f"{name}_max_abs_error={np.max(values):.10g}")
+    print(f"{name}_mean_abs_error={np.mean(values):.10g}")
+    print(f"{name}_p95_abs_error={np.percentile(values, 95):.10g}")
+    print(f"{name}_p99_abs_error={np.percentile(values, 99):.10g}")
+    print(f"{name}_rmse={np.sqrt(np.mean(values ** 2)):.10g}")
+
+
+def main():
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
+    torch.set_num_threads(1)
+
+    print("=== MODEL IDENTITY ===")
+    actual_sha = sha256_file(TFLITE)
+    print("Pre-Vela model:", TFLITE)
+    print("Actual SHA256:", actual_sha)
+    print("Expected SHA256:", EXPECTED_SHA)
+
+    if actual_sha != EXPECTED_SHA:
+        raise RuntimeError("Pre-Vela model SHA-256 mismatch")
+    if not CHECKPOINT.is_file():
+        raise FileNotFoundError(CHECKPOINT)
+
+    print("\n=== STATIC FP32 CHECKPOINT ===")
+    static_model = StaticCombinedModel(
+        StaticRegModel(), Cla_Model()
+    ).cpu().eval()
+    static_model.load_state_dict(
+        load_state_dict_compat(CHECKPOINT), strict=True
+    )
+    print("Static checkpoint loaded")
+
+    print("\n=== LOAD HELD-OUT TEST DATASET ===")
+    dataset = Heat_Stress_Dataset(
+        data_root_path=str(MODEL / "data" / "split_byid") + "/",
+        flag="test",
+        seq_input_len=900,
+        seq_pred_len=900,
+        target=["rpe", "psi"],
+        seq_random_missing=True,
+    )
+    sample_count = len(dataset)
+    print("Dataset samples:", sample_count)
+
+    if sample_count == 0:
+        raise RuntimeError("Test dataset is empty")
+
+    print("\n=== CREATE FP32 TFLITE CPU INTERPRETER ===")
+    resolver = (
+        tf.lite.experimental.OpResolverType
+        .BUILTIN_WITHOUT_DEFAULT_DELEGATES
+    )
+    interpreter = tf.lite.Interpreter(
+        model_path=str(TFLITE),
+        experimental_op_resolver_type=resolver,
+    )
+    interpreter.allocate_tensors()
+
+    inputs = interpreter.get_input_details()
+    outputs = interpreter.get_output_details()
+
+    def find_tensor(details, name, kind):
+        matches = [d for d in details if name in d["name"]]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Expected one {kind} matching {name}; "
+                f"found {[d['name'] for d in matches]}"
+            )
+        detail = matches[0]
+        if np.dtype(detail["dtype"]) != np.dtype(np.float32):
+            raise RuntimeError(
+                f"{kind} {name} is {detail['dtype']}, expected FP32"
+            )
+        return detail
+
+    input_details = {
+        name: find_tensor(inputs, name, "input")
+        for name in (
+            "x_values", "missing_mask",
+            "x_mark", "worker_features"
+        )
+    }
+    output_details = {
+        name: find_tensor(outputs, name, "output")
+        for name in ("rpe_logits", "psi_logits")
+    }
+
+    print("All four model inputs: FP32")
+    print("Both model outputs: FP32")
+    print("Interpreter allocation: PASS")
+
+    rpe_errors = []
+    psi_errors = []
+    per_sample_max = []
+    rpe_class_matches = 0
+    psi_class_matches = 0
+    missing_total = 0
+    observed_mismatch_total = 0
+    finite_inputs = True
+    finite_outputs = True
+    completed = 0
+
+    with torch.inference_mode():
+        for sample_index in range(sample_count):
+            sample = dataset[sample_index]
+            if len(sample) != 6:
+                raise ValueError(
+                    f"Dataset item {sample_index}: expected 6 entries, "
+                    f"received {len(sample)}"
+                )
+
+            x1_original, x1_reg, x2, _target, x_mark, _extra = sample
+
+            x_original = as_sample_array(
+                x1_original, (900, 6), "x_original"
+            )
+            x_reg = as_sample_array(
+                x1_reg, (900, 6), "x_reg"
+            )
+            worker = as_sample_array(
+                x2, (30,), "worker_features"
+            )
+            time_features = as_sample_array(
+                x_mark, (900, 3), "x_mark"
+            )
+
+            mask = np.isin(
+                x_reg, np.array([-9997.0, -9998.0, -9999.0],
+                                dtype=np.float32)
+            )
+            x_values = np.where(
+                mask, np.float32(0.0), x_original
+            ).astype(np.float32, copy=False)
+            mask_float = mask.astype(np.float32)
+
+            missing_total += int(mask.sum())
+            observed_mismatch_total += int(
+                np.count_nonzero(x_reg[~mask] != x_original[~mask])
+            )
+
+            finite_inputs = finite_inputs and all(
+                np.isfinite(a).all()
+                for a in (x_values, mask_float, time_features, worker)
+            )
+
+            # Static FP32 reference.
+            static_inputs = (
+                torch.from_numpy(x_values[None, ...].copy()),
+                torch.from_numpy(mask_float[None, ...].copy()),
+                torch.from_numpy(time_features[None, ...].copy()),
+                torch.from_numpy(worker[None, ...].copy()),
+            )
+            fp32_rpe, fp32_psi = static_model(*static_inputs)
+            fp32_rpe = fp32_rpe.cpu().numpy()
+            fp32_psi = fp32_psi.cpu().numpy()
+
+            # Same exact four inputs to the FP32 TFLite graph.
+            tflite_inputs = {
+                "x_values": x_values[None, ...],
+                "missing_mask": mask_float[None, ...],
+                "x_mark": time_features[None, ...],
+                "worker_features": worker[None, ...],
+            }
+            for name, value in tflite_inputs.items():
+                detail = input_details[name]
+                if tuple(value.shape) != tuple(detail["shape"]):
+                    raise ValueError(
+                        f"{name} shape {value.shape}; "
+                        f"TFLite expects {detail['shape']}"
+                    )
+                interpreter.set_tensor(detail["index"], value)
+
+            # Reset recurrent/resource variables between independent samples.
+            interpreter.reset_all_variables()
+            interpreter.invoke()
+
+            tflite_rpe = interpreter.get_tensor(
+                output_details["rpe_logits"]["index"]
+            )
+            tflite_psi = interpreter.get_tensor(
+                output_details["psi_logits"]["index"]
+            )
+
+            finite_outputs = finite_outputs and (
+                np.isfinite(tflite_rpe).all()
+                and np.isfinite(tflite_psi).all()
+            )
+
+            rpe_diff = np.abs(
+                fp32_rpe.astype(np.float64)
+                - tflite_rpe.astype(np.float64)
+            )
+            psi_diff = np.abs(
+                fp32_psi.astype(np.float64)
+                - tflite_psi.astype(np.float64)
+            )
+
+            rpe_errors.append(rpe_diff.reshape(-1))
+            psi_errors.append(psi_diff.reshape(-1))
+
+            rpe_class_matches += int(
+
+=== CHECKPOINT FILES ===
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/models/trained_by_data_split_random/reg_model.pth 40801320 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/models/trained_by_data_split_random/rpe_psi_cla_model.pth 2515022 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/models/trained_by_data_split_byid/combined_model.pth 43321595 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/models/trained_by_data_split_byid/reg_model.pth 40801320 bytes
+/home/user/sdk-alif/beeinventor/PolyU/Heat_Stress_Model_1_v20260514/models/trained_by_data_split_byid/rpe_psi_cla_model.pth 2515022 bytes
+
+SOURCE_INSPECTION_COMPLETE
